@@ -625,4 +625,15 @@ button.xs { padding: 3px 8px; font-size: 11px; }
 .cfg-remote-add input { flex: 1; }
 #cfgRemotes li .url { flex: 1; word-break: break-all; }
 #cfgRemotes li .rmt-name { color: var(--accent-2); font-weight: 700; }
+
+/* GitHub (device flow) */
+.gh-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.gh-status { flex: 1; font-size: 13px; }
+.gh-status code { font-size: 12px; background: var(--bg); padding: 1px 5px; border-radius: 4px; }
+.gh-device { margin-top: 10px; padding: 10px; border: 1px dashed var(--border); border-radius: 8px; }
+.gh-device p { margin: 0 0 8px; font-size: 13px; }
+.gh-code-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.gh-code { font-size: 22px; font-weight: 800; letter-spacing: 3px; padding: 4px 10px; background: var(--bg); border-radius: 6px; }
+.gh-wait-row { display: flex; align-items: center; gap: 10px; }
+.gh-wait { flex: 1; font-size: 12px; color: var(--text-dim); }
 .msg.ai { max-width: 94%; } /* un peu plus large pour les tableaux/blocs de code */

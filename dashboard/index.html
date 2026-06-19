@@ -363,6 +363,26 @@
           </label>
         </div>
 
+        <div class="refs-block" id="cfgGithub">
+          <div class="refs-head"><span>GitHub</span><span class="hint">Connexion pour push / pull en HTTPS.</span></div>
+          <div class="gh-row">
+            <span class="gh-status" id="ghStatus">…</span>
+            <button id="ghConnect" class="primary" hidden>Se connecter à GitHub</button>
+            <button id="ghDisconnect" class="danger" hidden>Déconnecter</button>
+          </div>
+          <div class="gh-device" id="ghDevice" hidden>
+            <p>Ouvre <a id="ghVerifyLink" href="https://github.com/login/device" target="_blank" rel="noopener">github.com/login/device</a> et saisis ce code :</p>
+            <div class="gh-code-row">
+              <code class="gh-code" id="ghUserCode"></code>
+              <button id="ghCopyCode" class="ghost xs" title="Copier le code">📋 Copier</button>
+            </div>
+            <div class="gh-wait-row">
+              <span class="gh-wait" id="ghWait">En attente d'autorisation…</span>
+              <button id="ghCancel" class="ghost xs">Annuler</button>
+            </div>
+          </div>
+        </div>
+
         <div class="refs-block">
           <div class="refs-head"><span>Remotes</span><span class="hint">Origines distantes (fetch/push).</span></div>
           <ul id="cfgRemotes" class="ref-list"></ul>

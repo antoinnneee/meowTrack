@@ -678,6 +678,7 @@ const vibes = {
   model: "sonnet",
   user: "",
   wasDown: false,
+  stickToBottom: true, // chat : suivre le bas tant que l'utilisateur n'a pas scrollé vers le haut
   _editing: null,
   _color: "accent",
   // Effets « waouh » sur l'arbre détail : signature des nœuds au rendu précédent
@@ -1958,17 +1959,26 @@ function renderChat(messages) {
   vibes.streams.clear();
   if (!messages.length) feed.innerHTML = `<div class="empty">Discute de ce nœud : décris-le, demande des sous-jalons…</div>`;
   for (const m of messages) appendMessage(m);
-  scrollFeed();
+  scrollFeed(true);
 }
-function scrollFeed() {
+// Vrai si le feed est (quasi) collé en bas — tolérance pour arrondis sous-pixel.
+function isFeedAtBottom(feed) {
+  return feed.scrollHeight - feed.scrollTop - feed.clientHeight < 24;
+}
+// Ne défile en bas que si on « suit » (utilisateur en bas). `force` réactive le suivi
+// (envoi d'un message, ouverture d'un nœud) puis défile.
+function scrollFeed(force) {
   const feed = $("#chatFeed");
-  if (feed) feed.scrollTop = feed.scrollHeight;
+  if (!feed) return;
+  if (force) vibes.stickToBottom = true;
+  if (vibes.stickToBottom) feed.scrollTop = feed.scrollHeight;
 }
 async function sendChat() {
   const ta = $("#chatInput");
   const text = ta.value.trim();
   if (!text || !vibes.current) return;
   const nonce = crypto.randomUUID ? crypto.randomUUID() : "n" + Date.now() + Math.floor(Math.random() * 1e6);
+  vibes.stickToBottom = true; // envoyer un message réactive le suivi du bas
   appendMessage({ id: 0, role: "user", author: vibes.user, body: text, state: "complete", clientNonce: nonce });
   ta.value = "";
   try {
@@ -2162,6 +2172,9 @@ function initVibes() {
   $("#ndNotesAddBtn").addEventListener("click", () => addNoteEditor());
   $("#chatSend").addEventListener("click", sendChat);
   $("#chatClearBtn").addEventListener("click", clearChatHistory);
+  // Suivi du scroll : on coupe l'auto-défilement dès que l'utilisateur remonte,
+  // on le rétablit quand il revient en bas (pendant la génération comme après).
+  $("#chatFeed").addEventListener("scroll", () => { vibes.stickToBottom = isFeedAtBottom($("#chatFeed")); });
   // Autocomplete @ fichier dans le chat (même UX que la modale d'entrée du tracker).
   const chatInput = $("#chatInput");
   const chatMenu = $("#chatMentionMenu");
@@ -2585,12 +2598,15 @@ async function openConfigModal() {
     $("#cfgAutocrlf").value = c.autocrlf || "";
     $("#cfgPullRebase").value = c.pullRebase || "";
     renderRemotes(c.remotes || []);
+    $("#ghDevice").hidden = true;
     $("#cfgBackdrop").hidden = false;
+    loadGithubStatus();
   } catch (e) {
     alert("Erreur config : " + e.message);
   }
 }
 function closeConfigModal() {
+  stopGithubPoll();
   $("#cfgBackdrop").hidden = true;
 }
 function renderRemotes(remotes) {
@@ -2622,6 +2638,96 @@ async function saveConfig() {
   } catch (e) {
     alert("Échec : " + e.message);
   }
+}
+
+// ── GitHub : connexion par device flow ────────────────────────────────────────
+const ghAuth = { timer: null, flowId: null };
+
+async function loadGithubStatus() {
+  try {
+    renderGithubStatus(await api.get("/api/git/github/status"));
+  } catch {
+    $("#ghStatus").textContent = "État indisponible";
+  }
+}
+function renderGithubStatus(s) {
+  const st = $("#ghStatus");
+  if (!s.configured) {
+    st.innerHTML = "⚠️ OAuth App non configurée côté serveur (<code>MEOWTRACK_GITHUB_CLIENT_ID</code>)";
+    $("#ghConnect").hidden = true;
+    $("#ghDisconnect").hidden = true;
+    return;
+  }
+  if (s.connected) {
+    st.textContent = "✓ Connecté" + (s.username ? " : " + s.username : "");
+    $("#ghConnect").hidden = true;
+    $("#ghDisconnect").hidden = false;
+  } else {
+    st.textContent = "Non connecté";
+    $("#ghConnect").hidden = false;
+    $("#ghDisconnect").hidden = true;
+  }
+}
+function stopGithubPoll() {
+  if (ghAuth.timer) clearTimeout(ghAuth.timer);
+  ghAuth.timer = null;
+  ghAuth.flowId = null;
+  $("#ghDevice").hidden = true;
+}
+async function startGithubConnect() {
+  $("#ghConnect").disabled = true;
+  try {
+    const r = await api.send("POST", "/api/git/github/device/start", {});
+    if (r.configured === false) {
+      alert(r.message || "OAuth App GitHub non configurée côté serveur.");
+      return;
+    }
+    ghAuth.flowId = r.flowId;
+    $("#ghUserCode").textContent = r.userCode || "";
+    if (r.verificationUri) $("#ghVerifyLink").href = r.verificationUri;
+    $("#ghWait").textContent = "En attente d'autorisation…";
+    $("#ghDevice").hidden = false;
+    scheduleGithubPoll((r.interval || 5) * 1000);
+  } catch (e) {
+    alert("Échec : " + e.message);
+  } finally {
+    $("#ghConnect").disabled = false;
+  }
+}
+function scheduleGithubPoll(ms) {
+  ghAuth.timer = setTimeout(githubPollOnce, ms);
+}
+async function githubPollOnce() {
+  if (!ghAuth.flowId) return;
+  let interval = 5000;
+  try {
+    const r = await api.send("POST", "/api/git/github/device/poll", { flowId: ghAuth.flowId });
+    if (r.interval) interval = r.interval * 1000;
+    if (r.status === "success") {
+      stopGithubPoll();
+      await loadGithubStatus();
+      toast("Connecté à GitHub" + (r.login ? " : " + r.login : ""));
+      return;
+    }
+    if (r.status === "error") {
+      $("#ghWait").textContent = "Échec : " + (r.message || "erreur");
+      ghAuth.flowId = null; // arrête le polling, garde le panneau pour afficher l'erreur
+      return;
+    }
+    // status "pending" → on continue
+  } catch {
+    $("#ghWait").textContent = "Erreur réseau, nouvel essai…";
+  }
+  if (ghAuth.flowId) scheduleGithubPoll(interval);
+}
+async function disconnectGithub() {
+  if (!confirm("Oublier le credential GitHub stocké sur le serveur ?")) return;
+  try {
+    await api.send("POST", "/api/git/github/disconnect", {});
+  } catch (e) {
+    alert("Échec : " + e.message);
+  }
+  await loadGithubStatus();
 }
 
 // ── Câblage ───────────────────────────────────────────────────────────────────
@@ -2723,6 +2829,14 @@ function initRepo() {
   $("#cfgSave").addEventListener("click", saveConfig);
   $("#cfgBackdrop").addEventListener("mousedown", (e) => {
     if (e.target === $("#cfgBackdrop")) closeConfigModal();
+  });
+  // Modale config : section GitHub (device flow)
+  $("#ghConnect").addEventListener("click", startGithubConnect);
+  $("#ghDisconnect").addEventListener("click", disconnectGithub);
+  $("#ghCancel").addEventListener("click", stopGithubPoll);
+  $("#ghCopyCode").addEventListener("click", () => {
+    const code = $("#ghUserCode").textContent;
+    if (code && navigator.clipboard) navigator.clipboard.writeText(code).then(() => toast("Code copié")).catch(() => {});
   });
   $("#cfgRemoteAdd").addEventListener("click", () => {
     const name = $("#cfgRemoteName").value.trim();

@@ -13,6 +13,8 @@
 
 import "dotenv/config";
 import { createServer } from "node:http";
+import { request as httpsRequest } from "node:https";
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
@@ -101,6 +103,9 @@ import {
   stashListFor,
   setRemoteFor,
   removeRemoteFor,
+  storeGithubCredentialFor,
+  clearGithubCredentialFor,
+  githubCredentialStatusFor,
 } from "./repos.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -116,6 +121,11 @@ const TOKEN = (process.env.MEOWTRACK_TOKEN || "").trim();
 // Binaire CLI Claude pour les features IA (claude -p). Doit être installé +
 // authentifié sur la machine du serveur. Configurable.
 const CLAUDE_BIN = (process.env.MEOWTRACK_CLAUDE_BIN || "claude").trim();
+
+// client_id d'une OAuth App GitHub (Device Flow activé) pour le bouton « Se connecter
+// à GitHub ». Le client_id n'est PAS un secret (pas de client_secret en device flow).
+// Créer : github.com/settings/developers → New OAuth App → cocher « Enable Device Flow ».
+const GITHUB_CLIENT_ID = (process.env.MEOWTRACK_GITHUB_CLIENT_ID || "").trim();
 
 // Env minimal pour toute invocation IA : JAMAIS le MEOWTRACK_TOKEN ni secret du
 // service (PATH/HOME/USERPROFILE seulement — HOME requis pour l'auth du CLI).
@@ -219,6 +229,78 @@ async function suggestCommitMessage(repoId) {
     throw new Error(e.stderr ? String(e.stderr).trim() : e.message || String(e));
   }
 }
+
+// ── Auth GitHub : device flow (OAuth) ──────────────────────────────────────────
+// Petit client HTTPS sans dépendance. POST form-urlencoded → JSON.
+function githubPost(host, reqPath, form) {
+  const data = new URLSearchParams(form).toString();
+  return new Promise((resolve, reject) => {
+    const r = httpsRequest(
+      {
+        host,
+        path: reqPath,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          Accept: "application/json",
+          "Content-Length": Buffer.byteLength(data),
+          "User-Agent": "meowtrack",
+        },
+      },
+      (resp) => {
+        let body = "";
+        resp.on("data", (c) => (body += c));
+        resp.on("end", () => {
+          try {
+            resolve({ status: resp.statusCode, json: body ? JSON.parse(body) : {} });
+          } catch {
+            resolve({ status: resp.statusCode, json: {} });
+          }
+        });
+      }
+    );
+    r.on("error", reject);
+    r.setTimeout(15000, () => r.destroy(new Error("Délai dépassé (GitHub)")));
+    r.write(data);
+    r.end();
+  });
+}
+
+// GET api.github.com avec token bearer → JSON (sert à récupérer le login).
+function githubGet(reqPath, token) {
+  return new Promise((resolve, reject) => {
+    const r = httpsRequest(
+      {
+        host: "api.github.com",
+        path: reqPath,
+        method: "GET",
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: `Bearer ${token}`,
+          "User-Agent": "meowtrack",
+        },
+      },
+      (resp) => {
+        let body = "";
+        resp.on("data", (c) => (body += c));
+        resp.on("end", () => {
+          try {
+            resolve({ status: resp.statusCode, json: body ? JSON.parse(body) : {} });
+          } catch {
+            resolve({ status: resp.statusCode, json: {} });
+          }
+        });
+      }
+    );
+    r.on("error", reject);
+    r.setTimeout(15000, () => r.destroy(new Error("Délai dépassé (GitHub)")));
+    r.end();
+  });
+}
+
+// Device flows en cours : flowId → { deviceCode, repoId, interval, expiresAt }.
+// Le device_code (secret de poll) reste côté serveur ; le client ne voit que le user_code.
+const githubFlows = new Map();
 
 // Verrou anti-collision : une seule opération git MUTANTE en vol par repo (sinon
 // 409). Les lectures (status/log/diff) ne sont pas verrouillées.
@@ -1066,6 +1148,88 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === "GET" && path === "/api/git/config") {
       return send(res, 200, getGitConfigFor(repoOf()));
+    }
+    // ── Auth GitHub (device flow) ──
+    // État : OAuth App configurée ? credential github.com présent ? (jamais le token)
+    if (req.method === "GET" && path === "/api/git/github/status") {
+      return send(res, 200, { configured: !!GITHUB_CLIENT_ID, ...githubCredentialStatusFor(repoOf()) });
+    }
+    // Démarre le device flow : renvoie le user_code + l'URL à ouvrir (device_code gardé serveur).
+    if (req.method === "POST" && path === "/api/git/github/device/start") {
+      const id = repoOf(await readBody(req));
+      if (!GITHUB_CLIENT_ID)
+        return send(res, 200, {
+          configured: false,
+          message:
+            "MEOWTRACK_GITHUB_CLIENT_ID n'est pas défini sur le serveur. Crée une OAuth App GitHub " +
+            "(Settings → Developer settings → OAuth Apps → New, coche « Enable Device Flow ») et renseigne son client_id.",
+        });
+      const r = await githubPost("github.com", "/login/device/code", { client_id: GITHUB_CLIENT_ID, scope: "repo" });
+      if (r.status !== 200 || !r.json.device_code)
+        return send(res, 502, { error: "github_error", message: r.json.error_description || "Échec du device flow GitHub." });
+      const flowId = randomUUID();
+      const interval = Math.max(5, Number(r.json.interval) || 5);
+      githubFlows.set(flowId, {
+        deviceCode: r.json.device_code,
+        repoId: id,
+        interval,
+        expiresAt: Date.now() + (Number(r.json.expires_in) || 900) * 1000,
+      });
+      return send(res, 200, {
+        configured: true,
+        flowId,
+        userCode: r.json.user_code,
+        verificationUri: r.json.verification_uri,
+        interval,
+        expiresIn: r.json.expires_in,
+      });
+    }
+    // Poll : pending / pending+slow_down / success (token stocké) / error.
+    if (req.method === "POST" && path === "/api/git/github/device/poll") {
+      const body = await readBody(req);
+      const flow = githubFlows.get(body.flowId);
+      if (!flow) return send(res, 200, { status: "error", message: "Session expirée, relance la connexion." });
+      if (Date.now() > flow.expiresAt) {
+        githubFlows.delete(body.flowId);
+        return send(res, 200, { status: "error", message: "Code expiré, relance la connexion." });
+      }
+      const r = await githubPost("github.com", "/login/oauth/access_token", {
+        client_id: GITHUB_CLIENT_ID,
+        device_code: flow.deviceCode,
+        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+      });
+      const j = r.json || {};
+      if (j.error === "authorization_pending") return send(res, 200, { status: "pending" });
+      if (j.error === "slow_down") {
+        flow.interval = Math.max(flow.interval + 5, Number(j.interval) || flow.interval + 5);
+        return send(res, 200, { status: "pending", interval: flow.interval });
+      }
+      if (j.error) {
+        githubFlows.delete(body.flowId);
+        return send(res, 200, { status: "error", message: j.error_description || j.error });
+      }
+      if (!j.access_token) return send(res, 200, { status: "pending" });
+      // Succès : récupère le login (best-effort) puis persiste le credential.
+      const token = j.access_token;
+      let login = "x-access-token";
+      try {
+        const u = await githubGet("/user", token);
+        if (u.status === 200 && u.json.login) login = u.json.login;
+      } catch {
+        /* login best-effort : on garde x-access-token */
+      }
+      githubFlows.delete(body.flowId);
+      const stored = storeGithubCredentialFor(flow.repoId, { username: login, token });
+      if (!stored.ok)
+        return send(res, 200, { status: "error", message: "Token reçu mais échec d'enregistrement : " + (stored.output || "") });
+      return send(res, 200, { status: "success", login });
+    }
+    // Déconnexion : oublie le credential github.com.
+    if (req.method === "POST" && path === "/api/git/github/disconnect") {
+      const id = repoOf(await readBody(req));
+      const st = githubCredentialStatusFor(id);
+      const r = clearGithubCredentialFor(id, { username: st.username });
+      return send(res, 200, { ok: r.ok, output: r.output });
     }
     if (req.method === "GET" && path === "/api/git/diff") {
       return send(res, 200, diffFileFor(repoOf(), q.get("path") || "", { staged: q.get("staged") === "true", untracked: q.get("untracked") === "true" }));

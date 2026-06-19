@@ -57,6 +57,9 @@ import {
   stashList,
   setRemote,
   removeRemote,
+  storeGithubCredential,
+  clearGithubCredential,
+  githubCredentialStatus,
 } from "./repo.js";
 import { getRepoRow, listRepoRows, createRepo } from "./db.js";
 
@@ -335,4 +338,13 @@ export function setRemoteFor(repoId, name, url, opts) {
 }
 export function removeRemoteFor(repoId, name) {
   return removeRemote(rootForRepo(repoId), name);
+}
+export function storeGithubCredentialFor(repoId, opts) {
+  return storeGithubCredential(rootForRepo(repoId), opts);
+}
+export function clearGithubCredentialFor(repoId, opts) {
+  return clearGithubCredential(rootForRepo(repoId), opts);
+}
+export function githubCredentialStatusFor(repoId) {
+  return githubCredentialStatus(rootForRepo(repoId));
 }

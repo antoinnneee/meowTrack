@@ -17,7 +17,9 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 // Env de TOUTES les invocations git : GIT_LITERAL_PATHSPECS=1 neutralise la « magie »
 // de pathspec (:(exclude), :/, :!, :(top)…) — un pathspec ne peut JAMAIS échapper au
 // chemin littéral fourni (défense en profondeur, en plus du rejet « : » de normalizePath).
-const GIT_ENV = { ...process.env, GIT_LITERAL_PATHSPECS: "1" };
+// GIT_TERMINAL_PROMPT=0 : jamais de prompt interactif (pas de TTY côté serveur) →
+// une auth manquante échoue immédiatement avec un message clair au lieu de bloquer.
+const GIT_ENV = { ...process.env, GIT_LITERAL_PATHSPECS: "1", GIT_TERMINAL_PROMPT: "0" };
 
 // Exécute git dans `cwd` et retourne stdout trimé (ou null si échec). Lecture seule.
 function git(args, cwd) {
@@ -644,4 +646,57 @@ export function removeRemote(root, name) {
   if (!isGitClone(root)) return { ok: false, output: "Pas un clone git" };
   if (!isValidRemoteName(name)) return { ok: false, output: "Nom de remote invalide" };
   return gitRun(["remote", "remove", name], root);
+}
+
+// ── GitHub : authentification via le credential helper ─────────────────────────
+// Le device flow (server.js) obtient un token OAuth ; on le persiste dans le
+// credential store standard de git (helper « store » → ~/.git-credentials) pour que
+// `git push` HTTPS fonctionne sans prompt. Le token transite UNIQUEMENT par stdin
+// (jamais en argument de ligne de commande, jamais loggé, jamais renvoyé au client).
+
+// Neutralise toute injection : un \n permettrait d'écrire d'autres clés du protocole
+// credential (ex. forcer un autre host/url). On supprime les retours de ligne.
+function sanitizeCredField(v) {
+  return String(v == null ? "" : v).replace(/[\r\n]/g, "").trim();
+}
+
+// Active le helper « store » au niveau global (fichier ~/.git-credentials standard).
+export function enableCredentialStore(root) {
+  return gitRun(["config", "--global", "credential.helper", "store"], root);
+}
+
+// Persiste (username, token) pour https://github.com via `git credential approve`.
+export function storeGithubCredential(root, { username, token } = {}) {
+  if (!isGitClone(root)) return { ok: false, output: "Pas un clone git" };
+  const t = String(token || "");
+  if (!t || /[\r\n]/.test(t)) return { ok: false, output: "Token invalide" };
+  const ensured = enableCredentialStore(root);
+  if (!ensured.ok) return ensured;
+  const u = sanitizeCredField(username);
+  const input = `protocol=https\nhost=github.com\nusername=${u}\npassword=${t}\n\n`;
+  const r = gitRun(["credential", "approve"], root, input);
+  // `approve` ne produit pas de sortie : on ne renvoie jamais l'input (token).
+  return r.ok ? { ok: true, output: "" } : { ok: false, output: r.output };
+}
+
+// Oublie le credential github.com (déconnexion) via `git credential reject`.
+export function clearGithubCredential(root, { username } = {}) {
+  if (!isGitClone(root)) return { ok: false, output: "Pas un clone git" };
+  const u = sanitizeCredField(username);
+  const input = `protocol=https\nhost=github.com\n${u ? `username=${u}\n` : ""}\n`;
+  const r = gitRun(["credential", "reject"], root, input);
+  return r.ok ? { ok: true, output: "" } : { ok: false, output: r.output };
+}
+
+// État de connexion github.com SANS jamais exposer le mot de passe : on lit le
+// credential et on ne renvoie que { connected, username }. Si rien n'est stocké,
+// `git credential fill` échoue (prompt désactivé par GIT_TERMINAL_PROMPT=0) → non connecté.
+export function githubCredentialStatus(root) {
+  if (!isGitClone(root)) return { connected: false, username: null };
+  const r = gitRun(["credential", "fill"], root, "protocol=https\nhost=github.com\n\n");
+  if (!r.ok) return { connected: false, username: null };
+  const out = r.output || "";
+  const pw = /(?:^|\n)password=(.+)/.exec(out);
+  const un = /(?:^|\n)username=(.+)/.exec(out);
+  return { connected: !!(pw && pw[1]), username: un ? un[1].trim() : null };
 }
