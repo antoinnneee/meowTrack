@@ -281,6 +281,8 @@ body:not(.view-repo) .repo-only { display: none; }
 .msg-body { font-size: 13px; white-space: pre-wrap; word-break: break-word; }
 .msg .dots::after { content: ""; animation: blinkdots 1.2s steps(4) infinite; }
 @keyframes blinkdots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
+.msg-action-status { margin-top: 7px; font-size: 12px; font-weight: 600; color: var(--accent); animation: statuspulse 1.4s ease-in-out infinite; }
+@keyframes statuspulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
 .action-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 7px; align-items: center; }
 .action-chip { font-size: 10.5px; padding: 2px 7px; border-radius: 10px; border: 1px solid var(--accent); color: var(--accent); }
 .action-chip.danger { border-color: var(--bug); color: var(--bug); }

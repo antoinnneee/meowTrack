@@ -717,6 +717,7 @@ function runClaudeStreaming(prompt, model, root, { onThinking, onText, onTool, o
 // Coalesce les deltas (par kind) → un seul `ai:stream` toutes les ~80ms / 256 chars.
 function makeStreamBatcher(nodeId, turnId) {
   const pending = { thinking: "", text: "" };
+  let status = null; // dernier libellé d'action en cours (remplacé, jamais concaténé)
   let timer = null;
   const flush = () => {
     timer = null;
@@ -726,13 +727,44 @@ function makeStreamBatcher(nodeId, turnId) {
         pending[kind] = "";
       }
     }
+    if (status !== null) {
+      // émis après le texte du même flush → l'ordre d'affichage reste cohérent
+      broadcast(`node:${nodeId}`, "ai:stream", { turnId, kind: "status", text: status });
+      status = null;
+    }
   };
   const push = (kind, delta) => {
+    if (kind === "status") {
+      status = delta; // remplace : seul le dernier libellé compte
+      if (!timer) timer = setTimeout(flush, 80);
+      return;
+    }
     pending[kind] += delta;
     if (pending[kind].length >= 256) flush();
     else if (!timer) timer = setTimeout(flush, 80);
   };
   return { push, end: () => { if (timer) clearTimeout(timer); flush(); } };
+}
+
+// Libellé court décrivant le bloc d'actions en cours de rédaction par l'IA,
+// affiché à la place du JSON brut pendant le streaming.
+function actionStatusLabel(ops) {
+  if (!ops || !ops.length) return "⚙️ Préparation des actions…";
+  const names = {
+    add_node: "Création",
+    update_node: "Mise à jour",
+    set_node_fields: "Mise à jour",
+    delete_node: "Suppression",
+    move_node: "Déplacement",
+    reorder_children: "Réorganisation",
+  };
+  const byName = new Map();
+  for (const op of ops) {
+    const name = names[op] || "Action";
+    byName.set(name, (byName.get(name) || 0) + 1);
+  }
+  const parts = [...byName].map(([name, n]) => `${name} de ${n} nœud${n > 1 ? "s" : ""}`);
+  return "⚙️ " + parts.join(" · ") + " en cours…";
 }
 
 function tryParse(s) {
@@ -830,6 +862,38 @@ async function runNodeTurn(nodeId, scopeSnapshot, descendants, history, userText
   const batcher = makeStreamBatcher(nodeId, pendingId);
   let reasoning = "";
   let answer = "";
+  let shownLen = 0; // longueur de `answer` déjà diffusée comme texte conversationnel
+  let inActions = false; // true dès que la sentinelle d'actions est rencontrée
+  let actionStatus = ""; // dernier libellé d'action diffusé (anti-doublon)
+  // Diffuse le texte conversationnel en retenant une marge (taille sentinelle) au
+  // cas où une sentinelle partielle serait en cours d'arrivée, puis bascule en
+  // mode « actions » dès que la sentinelle complète apparaît.
+  const pumpVisible = () => {
+    const idx = answer.indexOf(ACTIONS_SENTINEL);
+    let visibleEnd;
+    if (idx >= 0) {
+      visibleEnd = idx; // tout ce qui précède la sentinelle = conversationnel
+      inActions = true;
+    } else {
+      visibleEnd = answer.length - ACTIONS_SENTINEL.length; // marge anti-sentinelle partielle
+      if (visibleEnd < shownLen) visibleEnd = shownLen;
+    }
+    if (visibleEnd > shownLen) {
+      batcher.push("text", answer.slice(shownLen, visibleEnd));
+      shownLen = visibleEnd;
+    }
+  };
+  // Recalcule le libellé d'action à partir des `op` déjà reçus dans le bloc JSON.
+  const refreshActionStatus = () => {
+    const i = answer.indexOf(ACTIONS_SENTINEL);
+    if (i < 0) return;
+    const ops = [...answer.slice(i).matchAll(/"op"\s*:\s*"([a-z_]+)"/g)].map((m) => m[1]);
+    const label = actionStatusLabel(ops);
+    if (label !== actionStatus) {
+      actionStatus = label;
+      batcher.push("status", label);
+    }
+  };
   let switchedToStreaming = false;
   const ensureStreaming = () => {
     if (switchedToStreaming) return;
@@ -849,7 +913,8 @@ async function runNodeTurn(nodeId, scopeSnapshot, descendants, history, userText
       onText: (d) => {
         ensureStreaming();
         answer += d;
-        batcher.push("text", d);
+        if (!inActions) pumpVisible();
+        if (inActions) refreshActionStatus();
       },
       onTool: (name, target) => {
         ensureStreaming();

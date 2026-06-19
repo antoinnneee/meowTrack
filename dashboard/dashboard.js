@@ -1874,6 +1874,9 @@ function messageEl(m) {
 
   const body = document.createElement("div");
   body.className = "msg-body";
+  // Indicateur d'action en cours (« Création de nœuds… ») affiché à la place du
+  // JSON brut pendant que l'IA rédige son bloc d'actions.
+  let statusEl = null;
   if (streaming) {
     body.textContent = m.body || "";
     if (!m.body) {
@@ -1882,7 +1885,10 @@ function messageEl(m) {
       dots.textContent = "Claude rédige";
       body.appendChild(dots);
     }
-    if (m.id) vibes.streams.set(m.id, { reasoning: m.reasoning || "", text: m.body || "", reasoningEl: reasoningBody, bodyEl: body });
+    statusEl = document.createElement("div");
+    statusEl.className = "msg-action-status";
+    statusEl.hidden = true;
+    if (m.id) vibes.streams.set(m.id, { reasoning: m.reasoning || "", text: m.body || "", reasoningEl: reasoningBody, bodyEl: body, statusEl });
   } else {
     // Message finalisé : rendu markdown (tableaux, listes, code…) pour l'IA ;
     // texte simple pour les humains (on n'interprète pas leur frappe comme du markdown).
@@ -1895,6 +1901,7 @@ function messageEl(m) {
     if (m.id) vibes.streams.delete(m.id);
   }
   div.appendChild(body);
+  if (statusEl) div.appendChild(statusEl);
 
   if (!streaming) {
     const chips = actionChipsHtml(m);
@@ -1949,6 +1956,13 @@ function onStreamDelta(d) {
   } else if (d.kind === "text") {
     s.text += d.delta;
     if (s.bodyEl) s.bodyEl.textContent = s.text;
+  } else if (d.kind === "status") {
+    // Libellé d'action en cours (remplace, ne concatène pas) — affiché à la
+    // place du JSON brut pendant que l'IA rédige son bloc d'actions.
+    if (s.statusEl) {
+      s.statusEl.textContent = d.text || "";
+      s.statusEl.hidden = !d.text;
+    }
   }
   scrollFeed();
 }
