@@ -2601,6 +2601,7 @@ async function openConfigModal() {
     $("#ghDevice").hidden = true;
     $("#cfgBackdrop").hidden = false;
     loadGithubStatus();
+    loadCredentials();
   } catch (e) {
     alert("Erreur config : " + e.message);
   }
@@ -2746,6 +2747,60 @@ async function saveGithubClientId() {
   }
 }
 
+// ── Credentials HTTP(S) génériques (Gitea/GitLab self-hosted…) ────────────────
+async function loadCredentials() {
+  try {
+    const r = await api.get("/api/git/credentials");
+    renderCredentials(r.credentials || []);
+  } catch {
+    $("#credsList").innerHTML = '<li class="empty" style="font-family:inherit">État indisponible.</li>';
+  }
+}
+function renderCredentials(list) {
+  const ul = $("#credsList");
+  if (!list.length) {
+    ul.innerHTML = '<li class="empty" style="font-family:inherit">Aucun identifiant enregistré.</li>';
+    return;
+  }
+  ul.innerHTML = list
+    .map(
+      (c) => `<li>
+        <span class="rmt-name">${esc(c.protocol)}://${esc(c.host)}</span>
+        <span class="url">${esc(c.username || "(sans utilisateur)")} ${c.connected ? "✓" : "⚠️ non vérifié"}</span>
+        <button class="ghost xs" data-cred-edit='${esc(JSON.stringify({ protocol: c.protocol, host: c.host, username: c.username }))}' title="Mettre à jour le mot de passe">✎</button>
+        <button class="danger xs" data-cred-del='${esc(JSON.stringify({ protocol: c.protocol, host: c.host, username: c.username }))}' title="Supprimer">🗑</button>
+      </li>`
+    )
+    .join("");
+}
+async function addCredential() {
+  const protocol = $("#credProto").value;
+  const host = $("#credHost").value.trim();
+  const username = $("#credUser").value.trim();
+  const password = $("#credPass").value;
+  if (!host || !password) return alert("Hôte et mot de passe/token requis.");
+  try {
+    const r = await api.send("POST", "/api/git/credentials", { protocol, host, username, password });
+    if (r.ok === false) return alert("Échec : " + (r.output || "erreur inconnue"));
+    $("#credHost").value = "";
+    $("#credUser").value = "";
+    $("#credPass").value = "";
+    toast("Identifiant enregistré");
+    await loadCredentials();
+  } catch (e) {
+    alert("Échec : " + e.message);
+  }
+}
+async function deleteCredential(entry) {
+  if (!confirm(`Oublier les identifiants pour ${entry.protocol}://${entry.host} ?`)) return;
+  try {
+    await api.send("POST", "/api/git/credentials/delete", entry);
+  } catch (e) {
+    alert("Échec : " + e.message);
+  }
+  await loadCredentials();
+}
+
 // ── Câblage ───────────────────────────────────────────────────────────────────
 function initRepo() {
   // Toolbar
@@ -2854,6 +2909,25 @@ function initRepo() {
   $("#ghCopyCode").addEventListener("click", () => {
     const code = $("#ghUserCode").textContent;
     if (code && navigator.clipboard) navigator.clipboard.writeText(code).then(() => toast("Code copié")).catch(() => {});
+  });
+  // Modale config : credentials HTTP(S) génériques (Gitea/GitLab…)
+  $("#credAdd").addEventListener("click", addCredential);
+  $("#credPass").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") addCredential();
+  });
+  $("#credsList").addEventListener("click", (e) => {
+    const edit = e.target.closest("[data-cred-edit]");
+    if (edit) {
+      const entry = JSON.parse(edit.dataset.credEdit);
+      $("#credProto").value = entry.protocol || "https";
+      $("#credHost").value = entry.host || "";
+      $("#credUser").value = entry.username || "";
+      $("#credPass").value = "";
+      $("#credPass").focus();
+      return;
+    }
+    const del = e.target.closest("[data-cred-del]");
+    if (del) deleteCredential(JSON.parse(del.dataset.credDel));
   });
   $("#cfgRemoteAdd").addEventListener("click", () => {
     const name = $("#cfgRemoteName").value.trim();

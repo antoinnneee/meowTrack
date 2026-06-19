@@ -390,6 +390,21 @@
           </div>
         </div>
 
+        <div class="refs-block" id="cfgCreds">
+          <div class="refs-head"><span>Autres dépôts HTTP/HTTPS</span><span class="hint">Identifiants pour push/pull vers un git auto-hébergé (Gitea, GitLab…).</span></div>
+          <ul id="credsList" class="ref-list"></ul>
+          <div class="creds-add">
+            <select id="credProto">
+              <option value="https">https</option>
+              <option value="http">http</option>
+            </select>
+            <input id="credHost" type="text" placeholder="hôte (ex. gitea.exemple.com ou gitea.exemple.com:3000)" autocomplete="off" spellcheck="false" />
+            <input id="credUser" type="text" placeholder="utilisateur" autocomplete="off" spellcheck="false" />
+            <input id="credPass" type="password" placeholder="mot de passe / token" autocomplete="off" />
+            <button id="credAdd" class="ghost">＋ Ajouter</button>
+          </div>
+        </div>
+
         <div class="refs-block">
           <div class="refs-head"><span>Remotes</span><span class="hint">Origines distantes (fetch/push).</span></div>
           <ul id="cfgRemotes" class="ref-list"></ul>

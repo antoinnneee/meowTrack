@@ -108,6 +108,9 @@ import {
   storeGithubCredentialFor,
   clearGithubCredentialFor,
   githubCredentialStatusFor,
+  storeCredentialFor,
+  clearCredentialFor,
+  credentialStatusFor,
 } from "./repos.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -131,6 +134,21 @@ const CLAUDE_BIN = (process.env.MEOWTRACK_CLAUDE_BIN || "claude").trim();
 const GITHUB_CLIENT_ID_ENV = (process.env.MEOWTRACK_GITHUB_CLIENT_ID || "").trim();
 function githubClientId() {
   return (getSetting("github_client_id", "") || GITHUB_CLIENT_ID_ENV).trim();
+}
+
+// Liste des hôtes git custom (Gitea/GitLab self-hosted…) dont on a enregistré un
+// credential HTTP(S). On ne stocke JAMAIS le mot de passe ici (il vit dans le
+// credential store git) — seulement { protocol, host, username } pour l'affichage.
+function loadCustomHosts() {
+  try {
+    const v = JSON.parse(getSetting("custom_git_hosts", "[]"));
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
+}
+function saveCustomHosts(list) {
+  setSetting("custom_git_hosts", JSON.stringify(list));
 }
 
 // Env minimal pour toute invocation IA : JAMAIS le MEOWTRACK_TOKEN ni secret du
@@ -1249,6 +1267,42 @@ const server = createServer(async (req, res) => {
       const id = repoOf(await readBody(req));
       const st = githubCredentialStatusFor(id);
       const r = clearGithubCredentialFor(id, { username: st.username });
+      return send(res, 200, { ok: r.ok, output: r.output });
+    }
+    // ── Credentials HTTP(S) génériques (Gitea/GitLab self-hosted…) ──
+    // Liste enrichie de l'état de connexion en direct (jamais le mot de passe).
+    if (req.method === "GET" && path === "/api/git/credentials") {
+      const id = repoOf();
+      const list = loadCustomHosts().map((e) => ({
+        protocol: e.protocol || "https",
+        host: e.host,
+        username: e.username || "",
+        ...credentialStatusFor(id, { protocol: e.protocol || "https", host: e.host }),
+      }));
+      return send(res, 200, { credentials: list });
+    }
+    // Enregistre un credential (host + username + mot de passe/token) + mémorise l'hôte.
+    if (req.method === "POST" && path === "/api/git/credentials") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      const protocol = String(body.protocol || "https").toLowerCase() === "http" ? "http" : "https";
+      const host = String(body.host || "").trim();
+      const username = String(body.username || "").trim();
+      const r = storeCredentialFor(id, { protocol, host, username, password: body.password });
+      if (!r.ok) return send(res, 200, { ok: false, output: r.output });
+      const list = loadCustomHosts().filter((e) => !(e.host === host && (e.protocol || "https") === protocol));
+      list.push({ protocol, host, username });
+      saveCustomHosts(list);
+      return send(res, 200, { ok: true });
+    }
+    // Supprime un credential (reject git) + retire l'hôte de la liste mémorisée.
+    if (req.method === "POST" && path === "/api/git/credentials/delete") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      const protocol = String(body.protocol || "https").toLowerCase() === "http" ? "http" : "https";
+      const host = String(body.host || "").trim();
+      const r = clearCredentialFor(id, { protocol, host, username: body.username });
+      saveCustomHosts(loadCustomHosts().filter((e) => !(e.host === host && (e.protocol || "https") === protocol)));
       return send(res, 200, { ok: r.ok, output: r.output });
     }
     if (req.method === "GET" && path === "/api/git/diff") {

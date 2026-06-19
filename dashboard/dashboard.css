@@ -623,6 +623,9 @@ button.xs { padding: 3px 8px; font-size: 11px; }
 /* Modale config : ajout de remote */
 .cfg-remote-add { display: flex; gap: 8px; margin-top: 8px; }
 .cfg-remote-add input { flex: 1; }
+.creds-add { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.creds-add input { flex: 1; min-width: 120px; }
+.creds-add select { flex: 0 0 auto; }
 #cfgRemotes li .url { flex: 1; word-break: break-all; }
 #cfgRemotes li .rmt-name { color: var(--accent-2); font-weight: 700; }
 

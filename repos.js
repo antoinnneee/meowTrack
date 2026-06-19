@@ -60,6 +60,9 @@ import {
   storeGithubCredential,
   clearGithubCredential,
   githubCredentialStatus,
+  storeCredential,
+  clearCredential,
+  credentialStatus,
 } from "./repo.js";
 import { getRepoRow, listRepoRows, createRepo } from "./db.js";
 
@@ -347,4 +350,13 @@ export function clearGithubCredentialFor(repoId, opts) {
 }
 export function githubCredentialStatusFor(repoId) {
   return githubCredentialStatus(rootForRepo(repoId));
+}
+export function storeCredentialFor(repoId, opts) {
+  return storeCredential(rootForRepo(repoId), opts);
+}
+export function clearCredentialFor(repoId, opts) {
+  return clearCredential(rootForRepo(repoId), opts);
+}
+export function credentialStatusFor(repoId, opts) {
+  return credentialStatus(rootForRepo(repoId), opts);
 }

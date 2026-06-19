@@ -665,38 +665,68 @@ export function enableCredentialStore(root) {
   return gitRun(["config", "--global", "credential.helper", "store"], root);
 }
 
-// Persiste (username, token) pour https://github.com via `git credential approve`.
-export function storeGithubCredential(root, { username, token } = {}) {
+// Seuls http/https sont acceptés (le helper credential ne gère pas ssh ; http permet
+// les Gitea/Forgejo auto-hébergés en clair). Host : domaine ou domaine:port.
+function normProtocol(p) {
+  const v = sanitizeCredField(p).toLowerCase();
+  return v === "http" ? "http" : "https";
+}
+
+// ── Credentials HTTP(S) génériques (github.com, Gitea, GitLab self-hosted…) ─────
+// Persiste (username, password/token) pour <protocol>://<host> via `git credential
+// approve`. Le secret transite UNIQUEMENT par stdin (jamais en argument, jamais loggé,
+// jamais renvoyé au client). Toute remote pointant cet hôte l'utilisera ensuite.
+export function storeCredential(root, { protocol = "https", host, username, password } = {}) {
   if (!isGitClone(root)) return { ok: false, output: "Pas un clone git" };
-  const t = String(token || "");
-  if (!t || /[\r\n]/.test(t)) return { ok: false, output: "Token invalide" };
+  const h = sanitizeCredField(host);
+  if (!h) return { ok: false, output: "Hôte requis (ex. gitea.exemple.com ou gitea.exemple.com:3000)" };
+  const pw = String(password || "");
+  if (!pw || /[\r\n]/.test(pw)) return { ok: false, output: "Mot de passe / token invalide" };
   const ensured = enableCredentialStore(root);
   if (!ensured.ok) return ensured;
+  const p = normProtocol(protocol);
   const u = sanitizeCredField(username);
-  const input = `protocol=https\nhost=github.com\nusername=${u}\npassword=${t}\n\n`;
+  const input = `protocol=${p}\nhost=${h}\nusername=${u}\npassword=${pw}\n\n`;
   const r = gitRun(["credential", "approve"], root, input);
-  // `approve` ne produit pas de sortie : on ne renvoie jamais l'input (token).
+  // `approve` ne produit pas de sortie : on ne renvoie jamais l'input (secret).
   return r.ok ? { ok: true, output: "" } : { ok: false, output: r.output };
 }
 
-// Oublie le credential github.com (déconnexion) via `git credential reject`.
-export function clearGithubCredential(root, { username } = {}) {
+// Oublie le credential <protocol>://<host> via `git credential reject`.
+export function clearCredential(root, { protocol = "https", host, username } = {}) {
   if (!isGitClone(root)) return { ok: false, output: "Pas un clone git" };
+  const h = sanitizeCredField(host);
+  if (!h) return { ok: false, output: "Hôte requis" };
+  const p = normProtocol(protocol);
   const u = sanitizeCredField(username);
-  const input = `protocol=https\nhost=github.com\n${u ? `username=${u}\n` : ""}\n`;
+  const input = `protocol=${p}\nhost=${h}\n${u ? `username=${u}\n` : ""}\n`;
   const r = gitRun(["credential", "reject"], root, input);
   return r.ok ? { ok: true, output: "" } : { ok: false, output: r.output };
 }
 
-// État de connexion github.com SANS jamais exposer le mot de passe : on lit le
-// credential et on ne renvoie que { connected, username }. Si rien n'est stocké,
-// `git credential fill` échoue (prompt désactivé par GIT_TERMINAL_PROMPT=0) → non connecté.
-export function githubCredentialStatus(root) {
+// État d'un credential SANS jamais exposer le mot de passe : on lit via `git
+// credential fill` et on ne renvoie que { connected, username }. Si rien n'est
+// stocké, fill échoue (prompt désactivé par GIT_TERMINAL_PROMPT=0) → non connecté.
+export function credentialStatus(root, { protocol = "https", host } = {}) {
   if (!isGitClone(root)) return { connected: false, username: null };
-  const r = gitRun(["credential", "fill"], root, "protocol=https\nhost=github.com\n\n");
+  const h = sanitizeCredField(host);
+  if (!h) return { connected: false, username: null };
+  const p = normProtocol(protocol);
+  const r = gitRun(["credential", "fill"], root, `protocol=${p}\nhost=${h}\n\n`);
   if (!r.ok) return { connected: false, username: null };
   const out = r.output || "";
   const pw = /(?:^|\n)password=(.+)/.exec(out);
   const un = /(?:^|\n)username=(.+)/.exec(out);
   return { connected: !!(pw && pw[1]), username: un ? un[1].trim() : null };
+}
+
+// ── GitHub : raccourcis (host fixe github.com) au-dessus des primitives génériques ─
+export function storeGithubCredential(root, { username, token } = {}) {
+  return storeCredential(root, { protocol: "https", host: "github.com", username, password: token });
+}
+export function clearGithubCredential(root, { username } = {}) {
+  return clearCredential(root, { protocol: "https", host: "github.com", username });
+}
+export function githubCredentialStatus(root) {
+  return credentialStatus(root, { protocol: "https", host: "github.com" });
 }
