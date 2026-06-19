@@ -69,6 +69,38 @@ import {
   ensureAllRepos,
   invalidateRepo,
   importReposFromDir,
+  // Gestionnaire de repos (git)
+  statusFor,
+  logGraphFor,
+  branchesDetailedFor,
+  diffFileFor,
+  stagedDiffFor,
+  commitDetailFor,
+  getGitConfigFor,
+  setGitConfigFor,
+  stageFor,
+  unstageFor,
+  discardFor,
+  commitFor,
+  fetchFor,
+  pushFor,
+  pullRepo,
+  createBranchFor,
+  checkoutBranchFor,
+  checkoutCommitFor,
+  deleteBranchFor,
+  renameBranchFor,
+  mergeFor,
+  cherryPickFor,
+  revertCommitFor,
+  resetToFor,
+  createTagFor,
+  deleteTagFor,
+  stashSaveFor,
+  stashPopFor,
+  stashListFor,
+  setRemoteFor,
+  removeRemoteFor,
 } from "./repos.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -163,6 +195,41 @@ async function improveDescriptionWithClaude(title, description) {
   } catch (e) {
     if (e.code === "ENOENT") throw new Error(`CLI Claude introuvable (${CLAUDE_BIN}). Installer/configurer MEOWTRACK_CLAUDE_BIN.`);
     throw new Error(e.stderr ? String(e.stderr).trim() : e.message || String(e));
+  }
+}
+
+// Rédige un message de commit à partir du DIFF indexé (staged), via Claude headless
+// SANS accès disque (le diff est passé dans le prompt — claudeToolArgs(false)).
+async function suggestCommitMessage(repoId) {
+  const diff = stagedDiffFor(repoId);
+  if (!diff || !diff.trim()) throw new Error("Rien n'est indexé (staged) à committer.");
+  const prompt =
+    "Tu rédiges un message de commit git à partir du diff INDEXÉ ci-dessous.\n" +
+    "Format : une 1re ligne impérative ≤ 72 caractères (style Conventional Commits si pertinent : " +
+    "feat:/fix:/refactor:/docs:/chore:…), puis si utile une ligne vide et un corps court en puces expliquant le POURQUOI.\n" +
+    "Langue : français. Réponds UNIQUEMENT avec le message, sans préambule, sans guillemets, sans bloc de code.\n\n" +
+    "DIFF INDEXÉ :\n" +
+    diff;
+  try {
+    const out = (await runClaudeSandboxed(prompt, "sonnet")).trim();
+    if (!out) throw new Error("Réponse vide de Claude");
+    return out.replace(/^```[a-z]*\s*/i, "").replace(/\s*```$/i, "").trim();
+  } catch (e) {
+    if (e.code === "ENOENT") throw new Error(`CLI Claude introuvable (${CLAUDE_BIN}). Installer/configurer MEOWTRACK_CLAUDE_BIN.`);
+    throw new Error(e.stderr ? String(e.stderr).trim() : e.message || String(e));
+  }
+}
+
+// Verrou anti-collision : une seule opération git MUTANTE en vol par repo (sinon
+// 409). Les lectures (status/log/diff) ne sont pas verrouillées.
+const gitLocks = new Set();
+async function withGitLock(repoId, res, fn) {
+  if (gitLocks.has(repoId)) return send(res, 409, { error: "git_busy", message: "Une opération git est déjà en cours sur ce repo." });
+  gitLocks.add(repoId);
+  try {
+    return await fn();
+  } finally {
+    gitLocks.delete(repoId);
   }
 }
 
@@ -981,6 +1048,154 @@ const server = createServer(async (req, res) => {
       const { title, description } = await readBody(req);
       const improved = await improveDescriptionWithClaude(title, description);
       return send(res, 200, { description: improved });
+    }
+
+    // ───────────────────── Gestionnaire de repos (git) ──────────────────────
+    // Lectures (non verrouillées) :
+    if (req.method === "GET" && path === "/api/git/status") {
+      return send(res, 200, statusFor(repoOf()));
+    }
+    if (req.method === "GET" && path === "/api/git/log") {
+      return send(res, 200, logGraphFor(repoOf(), { limit: Number(q.get("limit")) || 300 }));
+    }
+    if (req.method === "GET" && path === "/api/git/branches") {
+      return send(res, 200, branchesDetailedFor(repoOf()));
+    }
+    if (req.method === "GET" && path === "/api/git/stashes") {
+      return send(res, 200, stashListFor(repoOf()));
+    }
+    if (req.method === "GET" && path === "/api/git/config") {
+      return send(res, 200, getGitConfigFor(repoOf()));
+    }
+    if (req.method === "GET" && path === "/api/git/diff") {
+      return send(res, 200, diffFileFor(repoOf(), q.get("path") || "", { staged: q.get("staged") === "true", untracked: q.get("untracked") === "true" }));
+    }
+    const gitCommitMatch = path.match(/^\/api\/git\/commit\/([0-9a-fA-F]{4,64})$/);
+    if (req.method === "GET" && gitCommitMatch) {
+      return send(res, 200, commitDetailFor(repoOf(), gitCommitMatch[1]));
+    }
+
+    // Écritures (verrouillées par repo) :
+    if (req.method === "POST" && path === "/api/git/stage") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, stageFor(id, body.paths, !!body.all)));
+    }
+    if (req.method === "POST" && path === "/api/git/unstage") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, unstageFor(id, body.paths, !!body.all)));
+    }
+    if (req.method === "POST" && path === "/api/git/discard") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, discardFor(id, body.paths)));
+    }
+    if (req.method === "POST" && path === "/api/git/commit") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, commitFor(id, body.message)));
+    }
+    if (req.method === "POST" && path === "/api/git/commit-message") {
+      const message = await suggestCommitMessage(repoOf(await readBody(req)));
+      return send(res, 200, { message });
+    }
+    if (req.method === "POST" && path === "/api/git/fetch") {
+      const id = repoOf(await readBody(req));
+      return withGitLock(id, res, () => send(res, 200, fetchFor(id)));
+    }
+    if (req.method === "POST" && path === "/api/git/pull") {
+      const id = repoOf(await readBody(req));
+      return withGitLock(id, res, () => send(res, 200, pullRepo(id)));
+    }
+    if (req.method === "POST" && path === "/api/git/push") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, pushFor(id, { setUpstream: !!body.setUpstream })));
+    }
+    if (req.method === "POST" && path === "/api/git/branch") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, createBranchFor(id, body.name, { checkout: body.checkout !== false, ref: body.ref || null })));
+    }
+    if (req.method === "POST" && path === "/api/git/branch/rename") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, renameBranchFor(id, body.oldName, body.newName)));
+    }
+    if (req.method === "POST" && path === "/api/git/branch/delete") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, deleteBranchFor(id, body.name, { force: !!body.force })));
+    }
+    if (req.method === "POST" && path === "/api/git/checkout") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, checkoutBranchFor(id, body.name)));
+    }
+    if (req.method === "POST" && path === "/api/git/checkout-commit") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, checkoutCommitFor(id, body.hash)));
+    }
+    if (req.method === "POST" && path === "/api/git/merge") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, mergeFor(id, body.name)));
+    }
+    if (req.method === "POST" && path === "/api/git/cherry-pick") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, cherryPickFor(id, body.hash)));
+    }
+    if (req.method === "POST" && path === "/api/git/revert") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, revertCommitFor(id, body.hash)));
+    }
+    if (req.method === "POST" && path === "/api/git/reset") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, resetToFor(id, body.hash, body.mode)));
+    }
+    if (req.method === "POST" && path === "/api/git/tag") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, createTagFor(id, body.name, { ref: body.ref || "HEAD", message: body.message || "" })));
+    }
+    if (req.method === "POST" && path === "/api/git/tag/delete") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, deleteTagFor(id, body.name)));
+    }
+    if (req.method === "POST" && path === "/api/git/stash") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, stashSaveFor(id, { message: body.message, includeUntracked: body.includeUntracked !== false })));
+    }
+    if (req.method === "POST" && path === "/api/git/stash/pop") {
+      const id = repoOf(await readBody(req));
+      return withGitLock(id, res, () => send(res, 200, stashPopFor(id)));
+    }
+    if (req.method === "POST" && path === "/api/git/config") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      const results = {};
+      if ("userName" in body) results.userName = setGitConfigFor(id, "user.name", body.userName);
+      if ("userEmail" in body) results.userEmail = setGitConfigFor(id, "user.email", body.userEmail);
+      if ("autocrlf" in body) results.autocrlf = setGitConfigFor(id, "core.autocrlf", body.autocrlf);
+      if ("pullRebase" in body) results.pullRebase = setGitConfigFor(id, "pull.rebase", body.pullRebase);
+      return send(res, 200, { ok: Object.values(results).every((r) => r.ok), results, config: getGitConfigFor(id) });
+    }
+    if (req.method === "POST" && path === "/api/git/remote") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, setRemoteFor(id, body.name, body.url, { add: !!body.add })));
+    }
+    if (req.method === "POST" && path === "/api/git/remote/delete") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, removeRemoteFor(id, body.name)));
     }
 
     // GET /api/issues?repo= — liste filtrée (scopée repo).
