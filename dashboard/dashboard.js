@@ -979,6 +979,7 @@ async function openVibes() {
   $("#vibesBar").hidden = false;
   vibes.current = null;
   vibes.currentNode = null;
+  vibes._ghostNodes = []; // pas de fantômes hérités (turn antérieur / autre vue)
   vibes.chat = FOREST_CHAT_CTX; // chat actif = forêt
   const fm = $("#forestModelSel");
   if (fm) fm.value = vibes.model;
@@ -1639,6 +1640,7 @@ async function openNode(ref) {
     vibes._notesEditing = false; // pas d'édition de notes héritée d'un autre nœud
     vibes._notesOpen = new Set(); // état plié/déplié des notes propre à ce nœud
     vibes._ghostKids = []; // pas de fantômes hérités d'un autre nœud
+    vibes._ghostNodes = []; // ni de fantômes de la forêt (on quitte la vue objectifs)
     renderNodeHeader(node);
     renderTree(node);
     renderChat(node.messages || []);
@@ -2005,6 +2007,7 @@ function backToForest() {
   closeStream();
   vibes.current = null;
   vibes.currentNode = null;
+  vibes._ghostNodes = []; // pas de fantômes hérités (turn antérieur / autre vue)
   vibes.chat = FOREST_CHAT_CTX; // chat actif = forêt
   $("#nodeView").hidden = true;
   $("#vibesBar").hidden = false;
@@ -2261,7 +2264,7 @@ function subscribeForest() {
   closeStream();
   const es = new EventSource(streamUrl("/api/nodes/stream"));
   vibes.es = es;
-  es.onopen = () => { setLive(true); if (vibes.wasDown) { loadForest(); loadForestChat(); } vibes.wasDown = false; };
+  es.onopen = () => { setLive(true); if (vibes.wasDown) { clearGhostsForest(); loadForest(); loadForestChat(); } vibes.wasDown = false; };
   es.onerror = () => { setLive(false); vibes.wasDown = true; };
   // Chat « top level » : mêmes events que la room d'un nœud, sur le canal forêt.
   es.addEventListener("message", (e) => appendMessage(JSON.parse(e.data)));
