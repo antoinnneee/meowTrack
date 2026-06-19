@@ -2652,8 +2652,14 @@ async function loadGithubStatus() {
 }
 function renderGithubStatus(s) {
   const st = $("#ghStatus");
+  // Pré-remplit le Client ID (sauf si l'utilisateur est en train de l'éditer).
+  const inp = $("#ghClientId");
+  if (document.activeElement !== inp) inp.value = s.clientId || "";
+  $("#ghClientIdHint").textContent = s.clientIdFromEnv
+    ? "Client ID fourni par MEOWTRACK_GITHUB_CLIENT_ID (env) — saisir une valeur ici la remplacera."
+    : "OAuth App GitHub avec « Enable Device Flow » — le Client ID n'est pas secret.";
   if (!s.configured) {
-    st.innerHTML = "⚠️ OAuth App non configurée côté serveur (<code>MEOWTRACK_GITHUB_CLIENT_ID</code>)";
+    st.textContent = "Renseigne d'abord le Client ID ci-dessus, puis enregistre.";
     $("#ghConnect").hidden = true;
     $("#ghDisconnect").hidden = true;
     return;
@@ -2728,6 +2734,16 @@ async function disconnectGithub() {
     alert("Échec : " + e.message);
   }
   await loadGithubStatus();
+}
+async function saveGithubClientId() {
+  const clientId = $("#ghClientId").value.trim();
+  try {
+    await api.send("POST", "/api/git/github/client-id", { clientId });
+    toast(clientId ? "Client ID enregistré" : "Client ID effacé");
+    await loadGithubStatus();
+  } catch (e) {
+    alert("Échec : " + e.message);
+  }
 }
 
 // ── Câblage ───────────────────────────────────────────────────────────────────
@@ -2831,6 +2847,7 @@ function initRepo() {
     if (e.target === $("#cfgBackdrop")) closeConfigModal();
   });
   // Modale config : section GitHub (device flow)
+  $("#ghClientIdSave").addEventListener("click", saveGithubClientId);
   $("#ghConnect").addEventListener("click", startGithubConnect);
   $("#ghDisconnect").addEventListener("click", disconnectGithub);
   $("#ghCancel").addEventListener("click", stopGithubPoll);

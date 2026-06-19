@@ -60,6 +60,8 @@ import {
   clearNodeMessages,
   nodePathIds,
   CHAT_MODELS,
+  getSetting,
+  setSetting,
 } from "./db.js";
 import {
   searchPathsFor,
@@ -125,7 +127,11 @@ const CLAUDE_BIN = (process.env.MEOWTRACK_CLAUDE_BIN || "claude").trim();
 // client_id d'une OAuth App GitHub (Device Flow activé) pour le bouton « Se connecter
 // à GitHub ». Le client_id n'est PAS un secret (pas de client_secret en device flow).
 // Créer : github.com/settings/developers → New OAuth App → cocher « Enable Device Flow ».
-const GITHUB_CLIENT_ID = (process.env.MEOWTRACK_GITHUB_CLIENT_ID || "").trim();
+// Priorité au réglage saisi dans l'UI (table app_settings), repli sur la variable d'env.
+const GITHUB_CLIENT_ID_ENV = (process.env.MEOWTRACK_GITHUB_CLIENT_ID || "").trim();
+function githubClientId() {
+  return (getSetting("github_client_id", "") || GITHUB_CLIENT_ID_ENV).trim();
+}
 
 // Env minimal pour toute invocation IA : JAMAIS le MEOWTRACK_TOKEN ni secret du
 // service (PATH/HOME/USERPROFILE seulement — HOME requis pour l'auth du CLI).
@@ -1151,20 +1157,34 @@ const server = createServer(async (req, res) => {
     }
     // ── Auth GitHub (device flow) ──
     // État : OAuth App configurée ? credential github.com présent ? (jamais le token)
+    // `clientId` (non secret) sert à pré-remplir le champ de l'UI.
     if (req.method === "GET" && path === "/api/git/github/status") {
-      return send(res, 200, { configured: !!GITHUB_CLIENT_ID, ...githubCredentialStatusFor(repoOf()) });
+      const clientId = githubClientId();
+      return send(res, 200, {
+        configured: !!clientId,
+        clientId,
+        clientIdFromEnv: !getSetting("github_client_id", "") && !!GITHUB_CLIENT_ID_ENV,
+        ...githubCredentialStatusFor(repoOf()),
+      });
+    }
+    // Enregistre/efface le client_id de l'OAuth App (saisi dans l'UI, persisté en base).
+    if (req.method === "POST" && path === "/api/git/github/client-id") {
+      const body = await readBody(req);
+      const clientId = setSetting("github_client_id", String(body.clientId || "").trim());
+      return send(res, 200, { ok: true, configured: !!clientId, clientId });
     }
     // Démarre le device flow : renvoie le user_code + l'URL à ouvrir (device_code gardé serveur).
     if (req.method === "POST" && path === "/api/git/github/device/start") {
       const id = repoOf(await readBody(req));
-      if (!GITHUB_CLIENT_ID)
+      const clientId = githubClientId();
+      if (!clientId)
         return send(res, 200, {
           configured: false,
           message:
-            "MEOWTRACK_GITHUB_CLIENT_ID n'est pas défini sur le serveur. Crée une OAuth App GitHub " +
-            "(Settings → Developer settings → OAuth Apps → New, coche « Enable Device Flow ») et renseigne son client_id.",
+            "Aucun Client ID GitHub configuré. Renseigne le Client ID de ton OAuth App " +
+            "(Settings → Developer settings → OAuth Apps, « Enable Device Flow ») dans le champ ci-dessus.",
         });
-      const r = await githubPost("github.com", "/login/device/code", { client_id: GITHUB_CLIENT_ID, scope: "repo" });
+      const r = await githubPost("github.com", "/login/device/code", { client_id: clientId, scope: "repo" });
       if (r.status !== 200 || !r.json.device_code)
         return send(res, 502, { error: "github_error", message: r.json.error_description || "Échec du device flow GitHub." });
       const flowId = randomUUID();
@@ -1194,7 +1214,7 @@ const server = createServer(async (req, res) => {
         return send(res, 200, { status: "error", message: "Code expiré, relance la connexion." });
       }
       const r = await githubPost("github.com", "/login/oauth/access_token", {
-        client_id: GITHUB_CLIENT_ID,
+        client_id: githubClientId(),
         device_code: flow.deviceCode,
         grant_type: "urn:ietf:params:oauth:grant-type:device_code",
       });

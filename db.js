@@ -146,6 +146,12 @@ db.exec(`
     FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
   );
   CREATE INDEX IF NOT EXISTS idx_node_messages_node ON node_messages(node_id, id);
+
+  -- Réglages globaux de l'instance (clé/valeur), ex. github_client_id éditable via l'UI.
+  CREATE TABLE IF NOT EXISTS app_settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+  );
 `);
 
 // ── Migrations additives idempotentes (colonnes ajoutées sur bases existantes) ─
@@ -155,6 +161,18 @@ function ensureColumn(table, column, ddl) {
 }
 function tableHasColumn(table, column) {
   return db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column);
+}
+
+// ── Réglages globaux (clé/valeur) ──────────────────────────────────────────────
+export function getSetting(key, fallback = "") {
+  const row = db.prepare("SELECT value FROM app_settings WHERE key = ?").get(key);
+  return row ? row.value : fallback;
+}
+export function setSetting(key, value) {
+  db.prepare(
+    "INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+  ).run(key, String(value ?? ""));
+  return getSetting(key);
 }
 ensureColumn("nodes", "notes", "notes TEXT NOT NULL DEFAULT ''"); // notes markdown par nœud (JSON liste)
 ensureColumn("nodes", "pos_x", "pos_x REAL"); // position manuelle graphe (drag & drop)

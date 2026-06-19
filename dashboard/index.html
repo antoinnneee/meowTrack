@@ -365,6 +365,13 @@
 
         <div class="refs-block" id="cfgGithub">
           <div class="refs-head"><span>GitHub</span><span class="hint">Connexion pour push / pull en HTTPS.</span></div>
+          <div class="gh-clientid">
+            <label>Client ID de l'OAuth App
+              <input id="ghClientId" type="text" placeholder="Ov23li…" autocomplete="off" spellcheck="false" />
+            </label>
+            <button id="ghClientIdSave" class="ghost">Enregistrer</button>
+          </div>
+          <p class="hint" id="ghClientIdHint">OAuth App GitHub avec « Enable Device Flow » — le Client ID n'est pas secret.</p>
           <div class="gh-row">
             <span class="gh-status" id="ghStatus">…</span>
             <button id="ghConnect" class="primary" hidden>Se connecter à GitHub</button>
