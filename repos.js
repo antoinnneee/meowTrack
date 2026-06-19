@@ -45,6 +45,7 @@ import {
   checkoutBranch,
   checkoutCommit,
   deleteBranch,
+  deleteRemoteBranch,
   renameBranch,
   merge,
   cherryPick,
@@ -293,6 +294,9 @@ export function checkoutCommitFor(repoId, hash) {
 }
 export function deleteBranchFor(repoId, name, opts) {
   return deleteBranch(rootForRepo(repoId), name, opts);
+}
+export function deleteRemoteBranchFor(repoId, remote, branch) {
+  return deleteRemoteBranch(rootForRepo(repoId), remote, branch);
 }
 export function renameBranchFor(repoId, oldName, newName) {
   return renameBranch(rootForRepo(repoId), oldName, newName);

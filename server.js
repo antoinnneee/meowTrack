@@ -93,6 +93,7 @@ import {
   checkoutBranchFor,
   checkoutCommitFor,
   deleteBranchFor,
+  deleteRemoteBranchFor,
   renameBranchFor,
   mergeFor,
   cherryPickFor,
@@ -1365,6 +1366,11 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req);
       const id = repoOf(body);
       return withGitLock(id, res, () => send(res, 200, deleteBranchFor(id, body.name, { force: !!body.force })));
+    }
+    if (req.method === "POST" && path === "/api/git/branch/delete-remote") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, deleteRemoteBranchFor(id, body.remote, body.branch)));
     }
     if (req.method === "POST" && path === "/api/git/checkout") {
       const body = await readBody(req);

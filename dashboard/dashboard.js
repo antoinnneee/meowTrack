@@ -2305,7 +2305,7 @@ function renderRepoSide() {
   if (!br.remote.length) html += `<div class="side-empty">—</div>`;
   for (const b of br.remote) {
     const short = b.name.includes("/") ? b.name.slice(b.name.indexOf("/") + 1) : b.name;
-    html += item("remote", b.name, `data-checkout-remote="${esc(short)}"`, "");
+    html += item("remote", b.name, `data-checkout-remote="${esc(short)}" data-remote-full="${esc(b.name)}"`, "");
   }
   html += `</div>`;
 
@@ -2335,7 +2335,32 @@ function branchCtxMenu(name, clientX, clientY) {
       if (newName && newName !== name) doGit(() => api.send("POST", "/api/git/branch/rename", { oldName: name, newName }));
     },
   });
-  if (name !== current) items.push({ label: "Supprimer", danger: true, onClick: () => doGitDeleteBranch(name) });
+  if (name !== current) items.push({ label: "Supprimer la branche locale", danger: true, onClick: () => doGitDeleteBranch(name) });
+  showCtxMenu(clientX, clientY, items);
+}
+
+// Menu contextuel d'une branche distante (clic droit) : checkout (suivi local),
+// merge dans la branche courante, suppression côté distant (git push --delete).
+function remoteBranchCtxMenu(fullName, shortName, clientX, clientY) {
+  const current = repoMgr.branches && repoMgr.branches.current;
+  const slash = fullName.indexOf("/");
+  const remote = slash > 0 ? fullName.slice(0, slash) : "origin";
+  const branch = slash > 0 ? fullName.slice(slash + 1) : fullName;
+  const items = [
+    { label: `Checkout « ${shortName} » (suivi local)`, onClick: () => doGit(() => api.send("POST", "/api/git/checkout", { name: shortName })) },
+    {
+      label: `Merge « ${fullName} » dans « ${current || "?"} »`,
+      onClick: () => doGit(() => api.send("POST", "/api/git/merge", { name: fullName }), { confirmMsg: `Fusionner « ${fullName} » dans « ${current} » ?` }),
+    },
+    {
+      label: "Supprimer la branche distante",
+      danger: true,
+      onClick: () =>
+        doGit(() => api.send("POST", "/api/git/branch/delete-remote", { remote, branch }), {
+          confirmMsg: `⚠️ Supprimer la branche distante « ${fullName} » ?\n\ngit push ${remote} --delete ${branch}\n\nAction irréversible côté serveur distant.`,
+        }),
+    },
+  ];
   showCtxMenu(clientX, clientY, items);
 }
 
@@ -2872,7 +2897,7 @@ function initRepo() {
     commitCtxMenu(row.dataset.hash, e.clientX, e.clientY);
   });
 
-  // Sidebar : clic gauche = checkout ; clic droit (branche locale) = menu.
+  // Sidebar : clic gauche = checkout ; clic droit (branche locale/distante) = menu.
   $("#repoSide").addEventListener("click", (e) => {
     const local = e.target.closest("[data-branch]");
     if (local) {
@@ -2884,9 +2909,16 @@ function initRepo() {
   });
   $("#repoSide").addEventListener("contextmenu", (e) => {
     const local = e.target.closest("[data-branch]");
-    if (!local) return;
-    e.preventDefault();
-    branchCtxMenu(local.dataset.branch, e.clientX, e.clientY);
+    if (local) {
+      e.preventDefault();
+      branchCtxMenu(local.dataset.branch, e.clientX, e.clientY);
+      return;
+    }
+    const remote = e.target.closest("[data-remote-full]");
+    if (remote) {
+      e.preventDefault();
+      remoteBranchCtxMenu(remote.dataset.remoteFull, remote.dataset.checkoutRemote, e.clientX, e.clientY);
+    }
   });
 
   // Modale diff

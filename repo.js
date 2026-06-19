@@ -553,6 +553,14 @@ export function deleteBranch(root, name, { force = false } = {}) {
   return gitRun(["branch", force ? "-D" : "-d", name], root);
 }
 
+// Supprime une branche côté distant : git push <remote> --delete <branch>.
+// `remote` (ex. origin) et `branch` (ex. feature/x) validés séparément.
+export function deleteRemoteBranch(root, remote, branch) {
+  if (!isGitClone(root)) return { ok: false, output: "Pas un clone git" };
+  if (!isValidRef(remote) || !isValidRef(branch)) return { ok: false, output: "Nom de remote ou de branche invalide" };
+  return gitRun(["push", remote, "--delete", branch], root);
+}
+
 export function renameBranch(root, oldName, newName) {
   if (!isGitClone(root)) return { ok: false, output: "Pas un clone git" };
   if (!isValidRef(oldName) || !isValidRef(newName)) return { ok: false, output: "Nom de branche invalide" };
