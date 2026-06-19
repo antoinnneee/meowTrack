@@ -25,8 +25,9 @@ import {
   buildIndex,
   listBranches,
   searchPaths,
+  discoverGitRepos,
 } from "./repo.js";
-import { getRepoRow, listRepoRows } from "./db.js";
+import { getRepoRow, listRepoRows, createRepo } from "./db.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -131,6 +132,50 @@ export function pullRepo(repoId) {
   refreshPathsFor(repoId); // l'arbre a pu changer
   const ctx = gitContext(root);
   return { ok: r.ok, pulled: r.pulled, branch: ctx.branch, commit: ctx.commit, output: r.output, root };
+}
+
+// ── Import en masse d'un dossier multi-repos ─────────────────────────────────
+// Détecte tous les clones git d'un dossier (repo.js:discoverGitRepos) et enregistre
+// chacun dans le registre par `local_path` (aucune url → clone géré à la main, juste
+// lu). Les clones déjà suivis (même local_path résolu) sont ignorés. Le slug est
+// dérivé du nom de dossier ; en cas de collision, on suffixe `-2`, `-3`… Tolérant :
+// un repo en échec n'empêche pas les autres. Renvoie { dir, found, added[], skipped[], errors[] }.
+export function importReposFromDir(dir) {
+  const found = discoverGitRepos(dir);
+  const known = new Set(
+    listRepoRows()
+      .map((r) => r.local_path && resolve(String(r.local_path).trim()))
+      .filter(Boolean)
+  );
+  const added = [];
+  const skipped = [];
+  const errors = [];
+  for (const { path, name } of found) {
+    if (known.has(path)) {
+      skipped.push({ path, name, reason: "already_registered" });
+      continue;
+    }
+    try {
+      // createRepo détecte les collisions de slug (lève « slug déjà utilisé ») :
+      // on suffixe et on réessaie. Toute autre erreur remonte sur ce repo.
+      let repo = null;
+      for (let attempt = 0; attempt < 50 && !repo; attempt++) {
+        const slug = attempt === 0 ? name : `${name}-${attempt + 1}`;
+        try {
+          repo = createRepo({ slug, name, localPath: path });
+        } catch (e) {
+          if (!/déjà utilisé/.test(e.message || "")) throw e;
+        }
+      }
+      if (!repo) throw new Error("impossible de dériver un slug unique");
+      known.add(path);
+      const ctx = gitContext(path);
+      added.push({ slug: repo.slug, name: repo.name, path, branch: ctx.branch, commit: ctx.commit });
+    } catch (e) {
+      errors.push({ path, name, error: e.message || String(e) });
+    }
+  }
+  return { dir: resolve(dir), found: found.length, added, skipped, errors };
 }
 
 // Sync de TOUS les repos au démarrage (clone si absent, sinon pull). Renvoie un

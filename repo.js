@@ -11,8 +11,8 @@
 // sauf clone/fetch/pull explicites (cloneInto / pull).
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, statSync } from "node:fs";
-import { dirname, join, resolve, sep } from "node:path";
+import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { basename, dirname, join, resolve, sep } from "node:path";
 
 // Exécute git dans `cwd` et retourne stdout trimé (ou null si échec). Lecture seule.
 function git(args, cwd) {
@@ -47,6 +47,26 @@ function gitRun(args, cwd) {
 
 export function isGitClone(dir) {
   return !!dir && existsSync(join(dir, ".git"));
+}
+
+// Détecte les clones git contenus dans un dossier (import en masse). Inspecte le
+// dossier lui-même ET chacun de ses sous-dossiers DIRECTS : profondeur 1, on ne
+// descend pas dans les sous-arbres (évite de scanner des arbres de travail entiers
+// et les `node_modules`). Lecture seule. Renvoie une liste { path, name } triée
+// (chemins absolus, name = nom du dossier). Lève si `dir` n'est pas un dossier.
+export function discoverGitRepos(dir) {
+  const root = resolve(dir);
+  if (!existsSync(root) || !statSync(root).isDirectory()) throw new Error(`Dossier introuvable : ${root}`);
+  const found = [];
+  const seen = new Set();
+  const add = (p) => {
+    if (isGitClone(p) && !seen.has(p)) { seen.add(p); found.push({ path: p, name: basename(p) }); }
+  };
+  add(root);
+  for (const ent of readdirSync(root, { withFileTypes: true })) {
+    if (ent.isDirectory() && ent.name !== ".git") add(join(root, ent.name));
+  }
+  return found.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 // Clone `url` dans `root` (crée le dossier parent). Renvoie {ok, output}.

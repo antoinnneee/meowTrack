@@ -1,0 +1,56 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+Meowtrack is a local, single-machine issue tracker for the Meownopoly project. It ships **two front doors over one SQLite database**: an MCP server (stdio) for use from Claude Code, and an HTTP dashboard (vanilla-JS SPA) for manual use. File/folder references on issues are anchored to **cloned git repos** and validated against them. The codebase, README, and comments are in **French** — match that when editing.
+
+## Commands
+
+```bash
+npm install                       # deps: @modelcontextprotocol/sdk, better-sqlite3, dotenv, zod
+npm run dashboard                 # = node server.js  → http://127.0.0.1:7702 (localhost only)
+npm run mcp                       # = node mcp.js      (stdio MCP server, normally launched by the host)
+node test/parse_ai_turn.test.mjs  # the only test (regression test for parseAiTurn)
+./deploy.sh                       # SCP + npm install + systemctl restart (reads gitignored .deployEnv)
+./install-service.sh              # one-shot: create+enable the systemd unit (run on the server)
+```
+
+The MCP server and dashboard share the DB and run **simultaneously** (SQLite WAL → concurrent reads). Restart Claude Code after `npm install` so it reloads `mcp.js` (registered in the repo-root `.mcp.json`).
+
+## Architecture
+
+**One data layer, two transports.** `db.js` (~1600 lines, `better-sqlite3`, synchronous) owns the schema, all queries, and the WAL-mode connection. Both `mcp.js` (MCP tools) and `server.js` (HTTP routes) are thin transport adapters that call into `db.js` — put data logic in `db.js`, not in the transports.
+
+**Two domains live in the same DB:**
+- **Issues** (`BUG-1`, `FEAT-2`…): bug/feature/task/chore tracker with file/folder *references*, comments, tags, captured branch/commit. Exposed via MCP tools (`meowtrack_create/list/get/update/...`) and `/api/issues`.
+- **Nodes** ("Good Vibes", `NODE-1`…): a recursive tree of goals/milestones with per-node AI chat. One node type at any depth; progress is the recursive average of children. Exposed via `/api/nodes/*` and `meowtrack_node_*` tools.
+
+**Multi-repo is pervasive.** A `repos` registry table scopes **every issue and node** to a repo; refs are numbered **per repo** (`(repo_id, ref)` unique, one counter each). Almost every MCP tool and HTTP route takes `repo` / `?repo=` (slug or id); omitted → the `is_default` repo (or `MEOWTRACK_DEFAULT_REPO` on the MCP side). An old single-repo DB is auto-migrated on startup (`migrateMultiRepo` in `db.js`) — preserve that path when touching the schema.
+
+**Git access is read-only and layered:**
+- `repo.js` = low-level git primitives (`git ls-files`/`ls-tree`/`rev-parse`, clone, pull). It **never writes** to a repo. Path validation normalizes to repo-relative and rejects anything outside the resolved git root (anti path-traversal) — this guard backs the `@`-mention autocomplete and reference `existed` flags.
+- `repos.js` = per-repo clone resolution (clone under `meowtrack/.repos/<slug>/` or use a `local_path`), memoized path index per `(repo, branch)`, and `ensureAllRepos()` (clone-or-pull every repo on startup). Branch trees are read via `git ls-tree <branch>` — **no checkout needed**, all known branches served from one clone.
+
+**Node hierarchy uses a materialized `path`** (`/1/4/9/`), so subtree / ancestors / scope checks are plain SQL (no recursive CTEs). Concurrency is optimistic: `nodes.version` is a monotonic integer bumped on the node **and all its ancestors** on every mutation; PATCH with a stale `expectedVersion` → `409`. `node_messages.id` is the total chat order.
+
+**Real-time sync (server.js):** Server-Sent Events, zero deps. Rooms `node:<id>` (chat + stream + node state) and `forest:<repoId>` (whole tree for graph/grid; repos never hear each other's events). Deep changes ring `subtree:dirty` up the ancestor chain so the detail view re-fetches (self-correcting). Stream auth via `?token=`.
+
+### AI integration (server.js) — security-critical
+
+Two features shell out to the `claude` CLI via `spawn`/`execFile` (**never a shell**), gated by `MEOWTRACK_CLAUDE_BIN`:
+
+- **Per-node chat** streams `claude -p --output-format stream-json`, parsed live. `parseAiTurn` separates conversational text from a **closed catalog** of structured actions (`set_node_fields`, `add_node`, `update_node`, `delete_node`, `move_node`, `reorder_children`). It is **fail-closed**: on any doubt, zero actions and show text verbatim — never guess a mutation. The test exists to lock this in. Every action is checked `isInSubtree(scopeNode, target)` (strict scope via the materialized path), capped at 20/turn; destructive actions require human confirmation (`/chat/confirm`); a chat can never delete its own scope root.
+- **"Améliorer (IA)"** on issues (`improveDescriptionWithClaude`) rewrites description text with **no tools at all**.
+
+Chat read access to source (`MEOWTRACK_AI_REPO_ACCESS=1`, default) is sandboxed: `--allowedTools Read Glob Grep`, everything else denied (deny wins), env stripped of the token, and `--settings` denies `.env`/keys/`*.db`/`.git`. Preserve these constraints when modifying AI code paths.
+
+### Front-end
+
+`dashboard/` is a static vanilla-JS SPA (`index.html` + `dashboard.js` + `dashboard.css`), served by `server.js`. No build step, no framework. The graph view is hand-rolled SVG built via DOM API (anti-XSS — no `innerHTML` of user data). All DB writes go through the HTTP API; the front reconciles node state by `version`.
+
+## Configuration & conventions
+
+- Config via `dotenv` (`.env`, see `.env.example`). Key vars: `MEOWTRACK_HOST` (`127.0.0.1`; `0.0.0.0` to expose), `MEOWTRACK_PORT` (`7702`), `MEOWTRACK_TOKEN` (when set, `/api/*` requires `Authorization: Bearer` — **mandatory in deployment**), `MEOWTRACK_DB`, `MEOWTRACK_REPO_URL`/`MEOWTRACK_REPO` (default-repo bootstrap only).
+- `MEOWTRACK_NO_LISTEN=1` imports `server.js` (handlers, `parseAiTurn`) **without** starting the HTTP listener — used by the test.
+- The DB (`meowtrack.db*`) is **gitignored and per-machine**; `node_modules/`, `.env`, `.deployEnv`, and the DB are never copied by `deploy.sh` (prod data/config preserved).
+- The README documents the full data model, every endpoint, and the deploy flow in detail — consult it before changing schema, routes, or deployment.

@@ -129,6 +129,29 @@ async function addRepoPrompt() {
   }
 }
 
+// Importe en masse un dossier contenant plusieurs dépôts git : le serveur détecte
+// les clones (profondeur 1) et les enregistre par local_path — utilisés SUR PLACE,
+// aucune copie. Bascule sur le 1er repo ajouté si la liste en contenait. Le dernier
+// dossier saisi est mémorisé (pré-rempli au prochain import).
+async function importReposPrompt() {
+  const last = localStorage.getItem("meowtrack_import_dir") || "";
+  const dir = (window.prompt("Dossier contenant plusieurs dépôts git (utilisés SUR PLACE, sans copie ; tous détectés et ajoutés) :", last) || "").trim();
+  if (!dir) return;
+  localStorage.setItem("meowtrack_import_dir", dir);
+  try {
+    const r = await api.send("POST", "/api/repos/import", { dir });
+    const parts = [`${r.added.length} ajouté(s)`, `${r.skipped.length} déjà suivi(s)`];
+    if (r.errors.length) parts.push(`${r.errors.length} en erreur`);
+    let msg = `Import « ${r.dir} » : ${r.found} dépôt(s) trouvé(s) → ` + parts.join(", ") + ".";
+    if (r.errors.length) msg += "\n\nErreurs :\n" + r.errors.map((e) => `· ${e.name} : ${e.error}`).join("\n");
+    alert(msg);
+    await loadRepos();
+    if (r.added.length) await onRepoChange(r.added[0].slug);
+  } catch (e) {
+    alert("Erreur : " + e.message);
+  }
+}
+
 // Charge la liste des branches du repo serveur → sélecteur topbar.
 async function loadBranches() {
   try {
@@ -599,6 +622,7 @@ function init() {
   // Sélecteur de repo (topbar, multi-repos) + ajout d'un repo.
   $("#repoSel")?.addEventListener("change", (e) => onRepoChange(e.target.value));
   $("#addRepoBtn")?.addEventListener("click", addRepoPrompt);
+  $("#importReposBtn")?.addEventListener("click", importReposPrompt);
 
   const desc = $("#mDesc");
   desc.addEventListener("input", onDescInput);

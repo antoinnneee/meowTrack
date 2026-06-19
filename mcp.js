@@ -145,6 +145,20 @@ server.registerTool(
   guard(async (a) => apiFetch("POST", "/api/repos", a))
 );
 server.registerTool(
+  "meowtrack_repo_import",
+  {
+    title: "Importer un dossier multi-repos",
+    description:
+      "Détecte TOUS les clones git d'un dossier (le dossier lui-même + ses sous-dossiers directs, profondeur 1) " +
+      "et les enregistre d'un coup dans le registre, chacun par son `local_path` (sans url : clones lus tels quels, " +
+      "non gérés par le service). Les clones déjà suivis sont ignorés. Retourne { found, added[], skipped[], errors[] }.",
+    inputSchema: {
+      dir: z.string().describe("Chemin absolu du dossier contenant plusieurs dépôts git."),
+    },
+  },
+  guard(async ({ dir }) => apiFetch("POST", "/api/repos/import", { dir }))
+);
+server.registerTool(
   "meowtrack_repo_update",
   {
     title: "Mettre à jour un repo (pull) ou ses métadonnées",

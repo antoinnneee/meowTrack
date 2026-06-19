@@ -68,6 +68,7 @@ import {
   ensureRepo,
   ensureAllRepos,
   invalidateRepo,
+  importReposFromDir,
 } from "./repos.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -903,6 +904,19 @@ const server = createServer(async (req, res) => {
         sync = { ok: false, output: e.message || String(e) };
       }
       return send(res, 201, { repo, sync });
+    }
+    // POST /api/repos/import { dir } — détecte tous les clones git d'un dossier
+    // (profondeur 1) et les enregistre par local_path. Doit précéder le match
+    // /api/repos/:idOrSlug (qui capturerait "import").
+    if (req.method === "POST" && path === "/api/repos/import") {
+      const body = await readBody(req);
+      const dir = body && String(body.dir || "").trim();
+      if (!dir) return send(res, 400, { error: "dir requis" });
+      try {
+        return send(res, 201, importReposFromDir(dir));
+      } catch (e) {
+        return send(res, 400, { error: e.message || String(e) });
+      }
     }
     // /api/repos/:idOrSlug  et  /api/repos/:idOrSlug/update
     const repoMatch = path.match(/^\/api\/repos\/([^/]+)(\/update)?$/);

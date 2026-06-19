@@ -21,6 +21,11 @@ listes, l'autocomplete `@`, les branches et le chat IA sont tous scopés sur le 
   fixe un défaut local.
 - **Ajouter / retirer un repo** : sélecteur + bouton **`＋ repo`** du dashboard, ou outils
   `meowtrack_repo_add` / `meowtrack_repo_remove` / `meowtrack_repo_update` (et `meowtrack_repos` pour lister).
+- **Importer un dossier multi-repos** : bouton **`📁 dossier`** du dashboard (ou outil `meowtrack_repo_import`)
+  → on donne un dossier, **tous les clones git qu'il contient** (le dossier lui-même + ses sous-dossiers
+  directs, profondeur 1) sont détectés et enregistrés d'un coup, chacun par son `local_path` (sans `url` :
+  lus tels quels, pas gérés par le service). Les clones déjà suivis sont ignorés ; slug dérivé du nom de
+  dossier (suffixé en cas de collision).
 - **Clones** : un repo avec `url` est cloné dans `meowtrack/.repos/<slug>/` (gitignoré). Un seul clone par
   repo sert toutes ses branches (lecture via `git ls-tree`, sans checkout).
 - **Bootstrap / migration** : sur une base vierge, un repo par défaut est créé depuis `MEOWTRACK_REPO_URL` /
