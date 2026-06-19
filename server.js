@@ -840,6 +840,24 @@ function makeStreamBatcher(room, turnId) {
 // Extrait les objets d'action COMPLETS (équilibrés) du tableau "actions" d'un blob
 // JSON potentiellement partiel (streaming). Ignore le dernier objet s'il n'est pas
 // encore refermé. Best-effort : tente une réparation légère, saute les illisibles.
+// Construit le payload `node:ghost` d'une action `add_node` (ou null sinon). Partagé
+// par le chat par nœud ET le chat « top level ». `fallbackKey` sert quand l'action
+// n'a pas de tmpKey. `parentId` = id réel d'un parent ; `parentKey` = réf à un autre
+// fantôme (tmpKey) → permet de nicher les sous-jalons dans l'aperçu. Exporté pour test.
+export function ghostPayloadFromAction(a, fallbackKey) {
+  if (!a || a.op !== "add_node" || !a.title) return null;
+  const pidNum = a.parentId != null && Number.isFinite(Number(a.parentId)) ? Number(a.parentId) : null;
+  const pidKey = a.parentId != null && pidNum == null ? "k:" + String(a.parentId) : null;
+  return {
+    key: a.tmpKey != null ? "k:" + String(a.tmpKey) : fallbackKey,
+    title: String(a.title).slice(0, 200),
+    emoji: a.emoji ? String(a.emoji).slice(0, 8) : "",
+    status: typeof a.status === "string" ? a.status : "active",
+    parentId: pidNum,
+    parentKey: pidKey,
+  };
+}
+
 function parseActionObjects(blob) {
   const ai = blob.indexOf('"actions"');
   if (ai < 0) return [];
@@ -1035,15 +1053,8 @@ async function runNodeTurn(nodeId, scopeSnapshot, descendants, history, userText
     if (i < 0) return;
     const objs = parseActionObjects(answer.slice(i)); // objets complets seulement
     for (let k = ghostCount; k < objs.length; k++) {
-      const a = objs[k];
-      if (a && a.op === "add_node" && a.title) {
-        broadcast(`node:${nodeId}`, "node:ghost", {
-          key: a.tmpKey != null ? "k:" + String(a.tmpKey) : "g:" + pendingId + ":" + k,
-          title: String(a.title).slice(0, 200),
-          emoji: a.emoji ? String(a.emoji).slice(0, 8) : "",
-          status: typeof a.status === "string" ? a.status : "active",
-        });
-      }
+      const gh = ghostPayloadFromAction(objs[k], "g:" + pendingId + ":" + k);
+      if (gh) broadcast(`node:${nodeId}`, "node:ghost", gh);
     }
     ghostCount = objs.length;
   };
@@ -1233,6 +1244,20 @@ async function runForestTurn(repoId, forestSnapshot, history, userText, author, 
       batcher.push("status", label);
     }
   };
+  // Aperçu « fantôme » pour le graphe/grille de la forêt : chaque add_node complet
+  // est diffusé (node:ghost) avant persistance. parentId (id réel) / parentKey (réf
+  // tmpKey) permettent au front de nicher les sous-jalons sous leur parent fantôme.
+  let ghostCount = 0;
+  const refreshGhosts = () => {
+    const i = answer.indexOf(ACTIONS_SENTINEL);
+    if (i < 0) return;
+    const objs = parseActionObjects(answer.slice(i));
+    for (let k = ghostCount; k < objs.length; k++) {
+      const gh = ghostPayloadFromAction(objs[k], "g:" + pendingId + ":" + k);
+      if (gh) broadcast(room, "node:ghost", gh);
+    }
+    ghostCount = objs.length;
+  };
   let switchedToStreaming = false;
   const ensureStreaming = () => {
     if (switchedToStreaming) return;
@@ -1253,7 +1278,7 @@ async function runForestTurn(repoId, forestSnapshot, history, userText, author, 
         ensureStreaming();
         answer += d;
         if (!inActions) pumpVisible();
-        if (inActions) refreshActionStatus();
+        if (inActions) { refreshActionStatus(); refreshGhosts(); }
       },
       onTool: (name, target) => {
         ensureStreaming();

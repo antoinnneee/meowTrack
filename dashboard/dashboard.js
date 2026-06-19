@@ -686,7 +686,8 @@ const vibes = {
   _treeSnap: new Map(),
   _treeInitial: true,
   _fxClear: null,
-  _ghostKids: [], // sous-nœuds « fantômes » (non persistés) pendant un tour IA en cours
+  _ghostKids: [], // sous-nœuds « fantômes » (non persistés) pendant un tour IA en cours (vue détail)
+  _ghostNodes: [], // nœuds « fantômes » du chat « top level » (graphe/grille) pendant un tour IA
   _notesEditing: false, // éditeur de notes markdown ouvert (ne pas écraser par les maj live)
   // spawned/pulsed/celebrated : ids de nœuds à animer au prochain rendu (créés /
   // mis à jour / venant d'atteindre « done »). fxFired : éclats déjà tirés (anti-doublon
@@ -1046,10 +1047,19 @@ function nodeCardHtml(n) {
     <div class="gc-foot"><span>${n.progress}%</span><span>${n.childCount} sous-nœud${n.childCount > 1 ? "s" : ""}</span><span>${esc(NODE_STATUS_LABEL[n.status] || n.status)}</span></div>
   </div>`;
 }
+function ghostCardHtml(gh) {
+  return `<div class="goal-card ghost-preview status-${esc(gh.status || "active")}">
+    <div class="gc-top"><span class="gc-emoji">${esc(gh.emoji || "✨")}</span><span class="gc-title">${esc(gh.title)}</span></div>
+    <div class="gc-ref">⏳ en cours…</div>
+  </div>`;
+}
 function renderGrid() {
   const wrap = $("#goalCards");
   if (!wrap) return;
-  wrap.innerHTML = rootsOf().map(nodeCardHtml).join("") + `<div class="goal-card ghost-card" id="ghostAddNode">＋ Nouvel objectif</div>`;
+  wrap.innerHTML =
+    rootsOf().map(nodeCardHtml).join("") +
+    vibes._ghostNodes.map(ghostCardHtml).join("") +
+    `<div class="goal-card ghost-card" id="ghostAddNode">＋ Nouvel objectif</div>`;
   wrap.querySelectorAll(".goal-card[data-ref]").forEach((c) => c.addEventListener("click", () => openNode(c.dataset.ref)));
   $("#ghostAddNode").addEventListener("click", () => openNodeModal(null, null));
   // Éclats sur les cartes fraîchement nées / atteintes (uniquement si la grille est visible).
@@ -1190,6 +1200,50 @@ function nodeGroup(n, p) {
   g.appendChild(inner);
   return g;
 }
+// Positions des nœuds fantômes (chat « top level ») dans le graphe. Les racines
+// (sans parent) prolongent la rangée du haut après les vraies racines ; les sous-
+// jalons fantômes se posent sous leur parent (réel via parentId, ou fantôme via
+// parentKey — l'IA écrit le parent avant l'enfant, donc gpos le connaît déjà).
+function computeGhostPositions(pos) {
+  const gpos = new Map();
+  let maxRootX = -Infinity;
+  for (const r of rootsOf()) { const p = pos.get(r.id); if (p) maxRootX = Math.max(maxRootX, p.x); }
+  if (maxRootX === -Infinity) maxRootX = -G_NODE_GAP; // aucune racine réelle → démarre à 0
+  const childIdx = new Map(); // parent → nb d'enfants fantômes déjà posés
+  let rootI = 0;
+  for (const gh of vibes._ghostNodes) {
+    let parentPos = null, pkey = null;
+    if (gh.parentKey && gpos.has(gh.parentKey)) { parentPos = gpos.get(gh.parentKey); pkey = "k:" + gh.parentKey; }
+    else if (gh.parentId != null && pos.has(gh.parentId)) { parentPos = pos.get(gh.parentId); pkey = "n:" + gh.parentId; }
+    if (parentPos) {
+      const c = childIdx.get(pkey) || 0; childIdx.set(pkey, c + 1);
+      gpos.set(gh.key, { x: parentPos.x + c * G_NODE_GAP, y: parentPos.y + G_LEVEL_GAP });
+    } else {
+      gpos.set(gh.key, { x: maxRootX + ++rootI * G_NODE_GAP, y: 0 }); // racine fantôme
+    }
+  }
+  return gpos;
+}
+function ghostNodeGroup(gh, p) {
+  const g = svgEl("g", { transform: `translate(${p.x},${p.y})`, class: "g-node g-ghost status-" + gh.status });
+  const ttl = svgEl("title", {});
+  ttl.textContent = gh.title;
+  g.appendChild(ttl);
+  const inner = svgEl("g", { class: "g-inner" });
+  const r = 18;
+  inner.appendChild(svgEl("circle", { r, class: "g-disc g-ghost-disc" }));
+  const emo = svgEl("text", { class: "g-emoji", "text-anchor": "middle", dy: "0.35em", "font-size": "16" });
+  emo.textContent = gh.emoji || "✨";
+  inner.appendChild(emo);
+  const lbl = svgEl("text", { class: "g-label", "text-anchor": "middle", y: String(r + 18) });
+  lbl.textContent = gh.title.length > 18 ? gh.title.slice(0, 17) + "…" : gh.title;
+  inner.appendChild(lbl);
+  g.appendChild(inner);
+  return g;
+}
+function ghostEdge(p, c) {
+  return svgEl("path", { d: edgeD(p, c), class: "g-edge g-ghost-edge" });
+}
 function renderGraph() {
   const svg = $("#graphSvg");
   if (!svg || $("#graphView").hidden) return;
@@ -1211,12 +1265,28 @@ function renderGraph() {
     const pp = pos.get(n.id);
     if (pp) gNodes.appendChild(nodeGroup(n, pp));
   }
-  if (!rootsOf().length) {
+  // Aperçu fantôme (chat « top level ») : arêtes + nœuds non persistés, par-dessus.
+  const gpos = vibes._ghostNodes.length ? computeGhostPositions(pos) : null;
+  if (gpos) {
+    for (const gh of vibes._ghostNodes) {
+      const gp = gpos.get(gh.key);
+      if (!gp) continue;
+      let pp = null;
+      if (gh.parentKey && gpos.has(gh.parentKey)) pp = gpos.get(gh.parentKey);
+      else if (gh.parentId != null && pos.has(gh.parentId)) pp = pos.get(gh.parentId);
+      if (pp) gEdges.appendChild(ghostEdge(pp, gp));
+      gNodes.appendChild(ghostNodeGroup(gh, gp));
+    }
+  }
+  if (!rootsOf().length && !vibes._ghostNodes.length) {
     const t = svgEl("text", { x: "0", y: "0", "text-anchor": "middle", class: "g-empty" });
     t.textContent = "Aucun objectif — clique « + Nouvel objectif »";
     gNodes.appendChild(t);
   }
-  if (!vibes.graph.userView) fitView(pos, svg);
+  // Le fit englobe aussi les fantômes (sinon ils apparaîtraient hors cadre).
+  let fitPos = pos;
+  if (gpos && gpos.size) { fitPos = new Map(pos); let i = 0; for (const v of gpos.values()) fitPos.set("ghost:" + i++, v); }
+  if (!vibes.graph.userView) fitView(fitPos, svg);
   else applyViewBox(svg);
   // Feu d'artifice sur les nœuds qui viennent d'apparaître / d'être atteints.
   if (!REDUCED) {
@@ -1852,6 +1922,30 @@ function paintGhostKids() {
   }
 }
 
+// Fantômes du chat « top level » : nœuds non persistés diffusés (node:ghost) sur le
+// canal forêt pendant un tour. Rendus en aperçu dans le graphe ET la grille, puis
+// remplacés par les vrais nœuds (node:updated / rechargement) en fin de tour.
+function applyGhostForest(d) {
+  if (!d || !d.key) return;
+  const gh = {
+    key: String(d.key),
+    title: d.title || "…",
+    emoji: d.emoji || "✨",
+    status: d.status || "active",
+    parentId: d.parentId != null ? Number(d.parentId) : null,
+    parentKey: d.parentKey != null ? String(d.parentKey) : null,
+  };
+  const i = vibes._ghostNodes.findIndex((g) => g.key === gh.key);
+  if (i >= 0) vibes._ghostNodes[i] = gh;
+  else vibes._ghostNodes.push(gh);
+  renderForestSoon();
+}
+function clearGhostsForest() {
+  if (!vibes._ghostNodes.length) return;
+  vibes._ghostNodes = [];
+  renderForestSoon();
+}
+
 // Réconcilie le nœud courant reçu en live (par version monotone) + re-fetch arbre.
 function applyNodeUpdate(n) {
   if (!n || !vibes.current) return;
@@ -2172,7 +2266,12 @@ function subscribeForest() {
   // Chat « top level » : mêmes events que la room d'un nœud, sur le canal forêt.
   es.addEventListener("message", (e) => appendMessage(JSON.parse(e.data)));
   es.addEventListener("ai:stream", (e) => onStreamDelta(JSON.parse(e.data)));
-  es.addEventListener("ai:turn", (e) => applyAiTurnEvent(JSON.parse(e.data)));
+  es.addEventListener("ai:turn", (e) => {
+    const d = JSON.parse(e.data);
+    applyAiTurnEvent(d);
+    if (d.state === "start" || d.state === "end") clearGhostsForest(); // début/fin → les vrais nœuds remplacent les fantômes
+  });
+  es.addEventListener("node:ghost", (e) => applyGhostForest(JSON.parse(e.data)));
   es.addEventListener("chat:cleared", () => renderChat([]));
   const applyNode = (raw, kind) => {
     if (!raw) return;

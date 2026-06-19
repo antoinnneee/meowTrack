@@ -226,6 +226,9 @@ body:not(.view-repo) .repo-only { display: none; }
 .gc-foot { display: flex; justify-content: space-between; gap: 6px; font-size: 11px; color: var(--text-dim); }
 .ghost-card { border-style: dashed; border-left-style: dashed; align-items: center; justify-content: center; color: var(--text-dim); font-weight: 600; min-height: 130px; }
 .ghost-card:hover { color: var(--accent); }
+/* Carte « fantôme » (aperçu d'un objectif créé par l'IA, non persisté) */
+.goal-card.ghost-preview { border-style: dashed; border-left: 3px dashed var(--accent); opacity: .8; animation: ghostPulse 1.4s ease-in-out infinite; pointer-events: none; }
+.goal-card.ghost-preview .gc-ref { color: var(--accent); }
 
 /* Vue détail */
 .goal-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
@@ -360,6 +363,12 @@ body:not(.view-repo) .repo-only { display: none; }
 .g-emoji { pointer-events: none; }
 .g-label { fill: var(--text); font: 12px "Segoe UI", system-ui, sans-serif; pointer-events: none; }
 .g-empty { fill: var(--text-dim); font: 14px "Segoe UI", system-ui, sans-serif; }
+/* Aperçu « fantôme » dans le graphe (chat « top level », non persisté) */
+.g-ghost { cursor: default; pointer-events: none; animation: ghostPulse 1.4s ease-in-out infinite; }
+.g-ghost-disc { fill: var(--surface-2); stroke: var(--accent); stroke-width: 2; stroke-dasharray: 4 4; }
+.g-ghost .g-label { fill: var(--text-dim); font-style: italic; }
+.g-ghost-edge { stroke: var(--accent); stroke-dasharray: 4 5; opacity: .5; pointer-events: none; }
+@keyframes ghostPulse { 0%, 100% { opacity: .85; } 50% { opacity: .45; } }
 /* Animation d'apparition d'un nœud (création, surtout via l'IA en live) + tracé de l'arête */
 @keyframes nodeSpawn {
   0% { transform: scale(0) rotate(-30deg); opacity: 0; }
