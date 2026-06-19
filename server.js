@@ -747,6 +747,46 @@ function makeStreamBatcher(nodeId, turnId) {
   return { push, end: () => { if (timer) clearTimeout(timer); flush(); } };
 }
 
+// Extrait les objets d'action COMPLETS (équilibrés) du tableau "actions" d'un blob
+// JSON potentiellement partiel (streaming). Ignore le dernier objet s'il n'est pas
+// encore refermé. Best-effort : tente une réparation légère, saute les illisibles.
+function parseActionObjects(blob) {
+  const ai = blob.indexOf('"actions"');
+  if (ai < 0) return [];
+  const lb = blob.indexOf("[", ai);
+  if (lb < 0) return [];
+  const out = [];
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  let start = -1;
+  for (let i = lb + 1; i < blob.length; i++) {
+    const ch = blob[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === "\\") esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === "{") {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === "}") {
+      depth--;
+      if (depth === 0 && start >= 0) {
+        const frag = blob.slice(start, i + 1);
+        const obj = tryParse(frag) || tryParse(repairJson(frag));
+        if (obj) out.push(obj);
+        start = -1;
+      }
+    } else if (ch === "]" && depth === 0) {
+      break; // fin du tableau actions
+    }
+  }
+  return out;
+}
+
 // Libellé court décrivant le bloc d'actions en cours de rédaction par l'IA,
 // affiché à la place du JSON brut pendant le streaming.
 function actionStatusLabel(ops) {
@@ -866,6 +906,7 @@ async function runNodeTurn(nodeId, scopeSnapshot, descendants, history, userText
   let shownLen = 0; // longueur de `answer` déjà diffusée comme texte conversationnel
   let inActions = false; // true dès que la sentinelle d'actions est rencontrée
   let actionStatus = ""; // dernier libellé d'action diffusé (anti-doublon)
+  let ghostCount = 0; // nb d'actions déjà traitées pour l'aperçu fantôme (high-water)
   // Diffuse le texte conversationnel en retenant une marge (taille sentinelle) au
   // cas où une sentinelle partielle serait en cours d'arrivée, puis bascule en
   // mode « actions » dès que la sentinelle complète apparaît.
@@ -895,6 +936,27 @@ async function runNodeTurn(nodeId, scopeSnapshot, descendants, history, userText
       batcher.push("status", label);
     }
   };
+  // Aperçu « fantôme » : dès qu'un add_node complet apparaît dans le bloc JSON en
+  // cours, on diffuse un nœud non persisté (node:ghost) pour que le sous-arbre se
+  // construise sous les yeux. Les vrais nœuds (créés en bloc à la fin) les
+  // remplaceront via le refetch. Rien n'est écrit en base ici.
+  const refreshGhosts = () => {
+    const i = answer.indexOf(ACTIONS_SENTINEL);
+    if (i < 0) return;
+    const objs = parseActionObjects(answer.slice(i)); // objets complets seulement
+    for (let k = ghostCount; k < objs.length; k++) {
+      const a = objs[k];
+      if (a && a.op === "add_node" && a.title) {
+        broadcast(`node:${nodeId}`, "node:ghost", {
+          key: a.tmpKey != null ? "k:" + String(a.tmpKey) : "g:" + pendingId + ":" + k,
+          title: String(a.title).slice(0, 200),
+          emoji: a.emoji ? String(a.emoji).slice(0, 8) : "",
+          status: typeof a.status === "string" ? a.status : "active",
+        });
+      }
+    }
+    ghostCount = objs.length;
+  };
   let switchedToStreaming = false;
   const ensureStreaming = () => {
     if (switchedToStreaming) return;
@@ -915,7 +977,7 @@ async function runNodeTurn(nodeId, scopeSnapshot, descendants, history, userText
         ensureStreaming();
         answer += d;
         if (!inActions) pumpVisible();
-        if (inActions) refreshActionStatus();
+        if (inActions) { refreshActionStatus(); refreshGhosts(); }
       },
       onTool: (name, target) => {
         ensureStreaming();

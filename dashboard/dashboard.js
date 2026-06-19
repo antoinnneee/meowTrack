@@ -686,6 +686,7 @@ const vibes = {
   _treeSnap: new Map(),
   _treeInitial: true,
   _fxClear: null,
+  _ghostKids: [], // sous-nœuds « fantômes » (non persistés) pendant un tour IA en cours
   _notesEditing: false, // éditeur de notes markdown ouvert (ne pas écraser par les maj live)
   // spawned/pulsed/celebrated : ids de nœuds à animer au prochain rendu (créés /
   // mis à jour / venant d'atteindre « done »). fxFired : éclats déjà tirés (anti-doublon
@@ -1526,6 +1527,7 @@ async function openNode(ref) {
     vibes._treeInitial = true;
     vibes._notesEditing = false; // pas d'édition de notes héritée d'un autre nœud
     vibes._notesOpen = new Set(); // état plié/déplié des notes propre à ce nœud
+    vibes._ghostKids = []; // pas de fantômes hérités d'un autre nœud
     renderNodeHeader(node);
     renderTree(node);
     renderChat(node.messages || []);
@@ -1750,6 +1752,63 @@ function renderTree(node) {
       if (confirm("Supprimer ce nœud et tout son sous-arbre ?")) deleteNodeById(id);
     });
   });
+}
+
+// ── Nœuds fantômes : aperçu des sous-nœuds que l'IA est en train de créer ─────
+// Reçus via SSE (node:ghost) pendant un tour, AVANT persistance. Rendus en bas de
+// l'arbre détail, puis remplacés par les vrais nœuds au refetch de fin de tour.
+function applyGhostDetail(d) {
+  if (!d || !d.key || !vibes.current) return;
+  const gh = {
+    key: String(d.key),
+    title: d.title || "…",
+    emoji: d.emoji || "✨",
+    status: d.status || "active",
+  };
+  const i = vibes._ghostKids.findIndex((g) => g.key === gh.key);
+  if (i >= 0) vibes._ghostKids[i] = gh;
+  else vibes._ghostKids.push(gh);
+  paintGhostKids();
+}
+function clearGhostsDetail() {
+  if (!vibes._ghostKids.length) return;
+  vibes._ghostKids = [];
+  // Si un refetch d'arbre est déjà programmé (les vrais nœuds arrivent), on laisse
+  // renderTree remplacer les fantômes → pas de clignotement « disparition/réapparition ».
+  if (vibes.dirtyTimer) return;
+  paintGhostKids();
+}
+function paintGhostKids() {
+  const wrap = $("#nodeTree");
+  if (!wrap) return;
+  wrap.querySelectorAll(".tghost").forEach((el) => el.remove());
+  if (!vibes._ghostKids.length) return;
+  let ul = wrap.querySelector(".tree-root");
+  if (!ul) {
+    const empty = wrap.querySelector(".empty");
+    if (empty) empty.remove();
+    ul = document.createElement("ul");
+    ul.className = "tree-root";
+    wrap.appendChild(ul);
+  }
+  for (const gh of vibes._ghostKids) {
+    const li = document.createElement("li");
+    li.className = "tghost"; // volontairement PAS .tnode (pas d'écouteurs/contrôles)
+    const row = document.createElement("div");
+    row.className = "trow tghost-row ms-" + gh.status;
+    const emo = document.createElement("span");
+    emo.className = "temoji";
+    emo.textContent = gh.emoji;
+    const ttl = document.createElement("span");
+    ttl.className = "ttitle";
+    ttl.textContent = gh.title; // textContent → anti-XSS (jamais d'innerHTML de données IA)
+    const spin = document.createElement("span");
+    spin.className = "tghost-spin";
+    spin.textContent = "⏳";
+    row.append(emo, ttl, spin);
+    li.appendChild(row);
+    ul.appendChild(li);
+  }
 }
 
 // Réconcilie le nœud courant reçu en live (par version monotone) + re-fetch arbre.
@@ -2086,7 +2145,13 @@ function subscribeNode(ref) {
   es.onerror = () => { setLive(false); vibes.wasDown = true; };
   es.addEventListener("message", (e) => appendMessage(JSON.parse(e.data)));
   es.addEventListener("ai:stream", (e) => onStreamDelta(JSON.parse(e.data)));
-  es.addEventListener("ai:turn", (e) => { const d = JSON.parse(e.data); $("#typingRow").hidden = d.state !== "start"; if (d.state === "start") $("#typingRow").textContent = `✨ ${d.actor ? d.actor + " — " : ""}Claude travaille…`; });
+  es.addEventListener("ai:turn", (e) => {
+    const d = JSON.parse(e.data);
+    $("#typingRow").hidden = d.state !== "start";
+    if (d.state === "start") { $("#typingRow").textContent = `✨ ${d.actor ? d.actor + " — " : ""}Claude travaille…`; clearGhostsDetail(); }
+    if (d.state === "end") clearGhostsDetail(); // fin de tour → les vrais nœuds (refetch) remplacent les fantômes
+  });
+  es.addEventListener("node:ghost", (e) => applyGhostDetail(JSON.parse(e.data)));
   es.addEventListener("node:updated", (e) => applyNodeUpdate(JSON.parse(e.data)));
   es.addEventListener("subtree:dirty", () => scheduleSubtreeRefetch());
   es.addEventListener("chat:cleared", () => renderChat([])); // un autre client a vidé l'historique
