@@ -26,6 +26,43 @@ import {
   listBranches,
   searchPaths,
   discoverGitRepos,
+  // Gestionnaire de repos (git lecture + écriture)
+  status,
+  logGraph,
+  branchesDetailed,
+  diffFile,
+  stagedDiff,
+  commitDetail,
+  getGitConfig,
+  setGitConfig,
+  stage,
+  unstage,
+  discard,
+  commit,
+  fetchRemote,
+  push,
+  createBranch,
+  checkoutBranch,
+  checkoutCommit,
+  deleteBranch,
+  renameBranch,
+  merge,
+  cherryPick,
+  revertCommit,
+  resetTo,
+  createTag,
+  deleteTag,
+  stashSave,
+  stashPop,
+  stashList,
+  setRemote,
+  removeRemote,
+  storeGithubCredential,
+  clearGithubCredential,
+  githubCredentialStatus,
+  storeCredential,
+  clearCredential,
+  credentialStatus,
 } from "./repo.js";
 import { getRepoRow, listRepoRows, createRepo } from "./db.js";
 
@@ -190,4 +227,136 @@ export function ensureAllRepos() {
     }
   }
   return out;
+}
+
+// ── Gestionnaire de repos : wrappers « par repoId » (résolvent le root + délèguent
+// à repo.js). Les opérations qui modifient le working tree invalident l'index des
+// chemins (l'arbre a pu changer).
+export function statusFor(repoId) {
+  return status(rootForRepo(repoId));
+}
+export function logGraphFor(repoId, opts) {
+  return logGraph(rootForRepo(repoId), opts);
+}
+export function branchesDetailedFor(repoId) {
+  return branchesDetailed(rootForRepo(repoId));
+}
+export function diffFileFor(repoId, relPath, opts) {
+  return diffFile(rootForRepo(repoId), relPath, opts);
+}
+export function stagedDiffFor(repoId, opts) {
+  return stagedDiff(rootForRepo(repoId), opts);
+}
+export function commitDetailFor(repoId, hash) {
+  return commitDetail(rootForRepo(repoId), hash);
+}
+export function getGitConfigFor(repoId) {
+  return getGitConfig(rootForRepo(repoId));
+}
+export function setGitConfigFor(repoId, key, value) {
+  return setGitConfig(rootForRepo(repoId), key, value);
+}
+export function stageFor(repoId, paths, all) {
+  return stage(rootForRepo(repoId), paths, all);
+}
+export function unstageFor(repoId, paths, all) {
+  return unstage(rootForRepo(repoId), paths, all);
+}
+export function discardFor(repoId, paths) {
+  const r = discard(rootForRepo(repoId), paths);
+  refreshPathsFor(repoId, "");
+  return r;
+}
+export function commitFor(repoId, message) {
+  return commit(rootForRepo(repoId), message);
+}
+export function fetchFor(repoId) {
+  return fetchRemote(rootForRepo(repoId));
+}
+export function pushFor(repoId, opts) {
+  return push(rootForRepo(repoId), opts);
+}
+export function createBranchFor(repoId, name, opts) {
+  const r = createBranch(rootForRepo(repoId), name, opts);
+  if (r.ok) refreshPathsFor(repoId, "");
+  return r;
+}
+export function checkoutBranchFor(repoId, name) {
+  const r = checkoutBranch(rootForRepo(repoId), name);
+  if (r.ok) refreshPathsFor(repoId, "");
+  return r;
+}
+export function checkoutCommitFor(repoId, hash) {
+  const r = checkoutCommit(rootForRepo(repoId), hash);
+  if (r.ok) refreshPathsFor(repoId, "");
+  return r;
+}
+export function deleteBranchFor(repoId, name, opts) {
+  return deleteBranch(rootForRepo(repoId), name, opts);
+}
+export function renameBranchFor(repoId, oldName, newName) {
+  return renameBranch(rootForRepo(repoId), oldName, newName);
+}
+export function mergeFor(repoId, name) {
+  const r = merge(rootForRepo(repoId), name);
+  refreshPathsFor(repoId, "");
+  return r;
+}
+export function cherryPickFor(repoId, hash) {
+  const r = cherryPick(rootForRepo(repoId), hash);
+  refreshPathsFor(repoId, "");
+  return r;
+}
+export function revertCommitFor(repoId, hash) {
+  const r = revertCommit(rootForRepo(repoId), hash);
+  refreshPathsFor(repoId, "");
+  return r;
+}
+export function resetToFor(repoId, hash, mode) {
+  const r = resetTo(rootForRepo(repoId), hash, mode);
+  refreshPathsFor(repoId, "");
+  return r;
+}
+export function createTagFor(repoId, name, opts) {
+  return createTag(rootForRepo(repoId), name, opts);
+}
+export function deleteTagFor(repoId, name) {
+  return deleteTag(rootForRepo(repoId), name);
+}
+export function stashSaveFor(repoId, opts) {
+  const r = stashSave(rootForRepo(repoId), opts);
+  refreshPathsFor(repoId, "");
+  return r;
+}
+export function stashPopFor(repoId) {
+  const r = stashPop(rootForRepo(repoId));
+  refreshPathsFor(repoId, "");
+  return r;
+}
+export function stashListFor(repoId) {
+  return stashList(rootForRepo(repoId));
+}
+export function setRemoteFor(repoId, name, url, opts) {
+  return setRemote(rootForRepo(repoId), name, url, opts);
+}
+export function removeRemoteFor(repoId, name) {
+  return removeRemote(rootForRepo(repoId), name);
+}
+export function storeGithubCredentialFor(repoId, opts) {
+  return storeGithubCredential(rootForRepo(repoId), opts);
+}
+export function clearGithubCredentialFor(repoId, opts) {
+  return clearGithubCredential(rootForRepo(repoId), opts);
+}
+export function githubCredentialStatusFor(repoId) {
+  return githubCredentialStatus(rootForRepo(repoId));
+}
+export function storeCredentialFor(repoId, opts) {
+  return storeCredential(rootForRepo(repoId), opts);
+}
+export function clearCredentialFor(repoId, opts) {
+  return clearCredential(rootForRepo(repoId), opts);
+}
+export function credentialStatusFor(repoId, opts) {
+  return credentialStatus(rootForRepo(repoId), opts);
 }

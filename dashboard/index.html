@@ -12,6 +12,7 @@
       <nav class="nav-tabs">
         <button class="tab active" data-view="track">🐞 Suivi</button>
         <button class="tab" data-view="vibes">🌱 Good Vibes</button>
+        <button class="tab" data-view="repo">🔀 Repo</button>
       </nav>
       <div class="meta" id="meta"></div>
       <span class="live-dot" id="liveDot" title="Synchronisation temps réel"></span>
@@ -262,6 +263,161 @@
         <div class="modal-actions">
           <button id="cancelBtn" class="ghost">Annuler</button>
           <button id="saveBtn" class="primary">Enregistrer</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Vue Repo : gestionnaire git (toolbar + sidebar branches + graphe + staging/commit) -->
+    <main class="view repo-view" id="repoView" hidden>
+      <div class="repo-toolbar">
+        <span class="repo-branch" id="repoBranch" title="Branche courante">—</span>
+        <span class="repo-track" id="repoTrack"></span>
+        <span class="repo-toolbar-sp"></span>
+        <button class="ghost" id="rgFetch" title="Récupérer depuis origin (git fetch --all --prune)">⟳ Fetch</button>
+        <button class="ghost" id="rgPull" title="Tirer (git pull --ff-only)">⬇ Pull<span class="cnt" id="rgPullCnt" hidden></span></button>
+        <button class="ghost" id="rgPush" title="Pousser (git push)">⬆ Push<span class="cnt" id="rgPushCnt" hidden></span></button>
+        <button class="ghost" id="rgBranch" title="Créer une nouvelle branche">⎇ Branche</button>
+        <button class="ghost" id="rgMerge" title="Fusionner une branche dans la branche courante">⑂ Merge</button>
+        <button class="ghost" id="rgStash" title="Remiser les modifications (git stash push -u)">📦 Stash</button>
+        <button class="ghost" id="rgStashPop" title="Restaurer la dernière remise (git stash pop)">📤 Pop</button>
+        <button class="ghost" id="rgConfig" title="Configuration git du dépôt">⚙ Config</button>
+        <button class="ghost" id="rgRefresh" title="Rafraîchir">↻</button>
+      </div>
+
+      <div class="repo-body">
+        <!-- Sidebar : branches locales / distantes / remises -->
+        <aside class="repo-side" id="repoSide"></aside>
+
+        <!-- Graphe d'historique des commits -->
+        <section class="repo-graph-pane">
+          <div class="repo-graph" id="repoGraph"><div class="empty">Chargement…</div></div>
+        </section>
+
+        <!-- Working tree : fichiers non indexés / indexés + commit -->
+        <aside class="repo-wc">
+          <div class="wc-section">
+            <div class="wc-head">
+              <span>Non indexées <b id="wcUnstagedCount">0</b></span>
+              <button class="ghost xs" id="wcStageAll">Tout indexer</button>
+            </div>
+            <ul class="wc-list" id="wcUnstaged"></ul>
+          </div>
+          <div class="wc-section">
+            <div class="wc-head">
+              <span>Indexées <b id="wcStagedCount">0</b></span>
+              <button class="ghost xs" id="wcUnstageAll">Tout désindexer</button>
+            </div>
+            <ul class="wc-list" id="wcStaged"></ul>
+          </div>
+          <div class="wc-commit">
+            <div class="wc-commit-head">
+              <span>Message de commit</span>
+              <button class="ghost xs" id="wcAiMsg" title="Rédiger le message avec Claude à partir du diff indexé">✨ IA</button>
+            </div>
+            <textarea id="wcCommitMsg" rows="4" placeholder="Décris le commit… (✨ IA pour générer à partir du diff indexé)"></textarea>
+            <button class="primary" id="wcCommitBtn">Commit</button>
+          </div>
+        </aside>
+      </div>
+    </main>
+
+    <!-- Modale diff (fichier ou commit) -->
+    <div class="modal-backdrop" id="diffBackdrop" hidden>
+      <div class="modal diff-modal" role="dialog" aria-modal="true">
+        <div class="diff-head">
+          <h2 id="diffTitle">Diff</h2>
+          <button id="diffClose" class="ghost">✕</button>
+        </div>
+        <div class="diff-meta" id="diffMeta" hidden></div>
+        <pre class="diff-body" id="diffBody"></pre>
+      </div>
+    </div>
+
+    <!-- Modale configuration git -->
+    <div class="modal-backdrop" id="cfgBackdrop" hidden>
+      <div class="modal" role="dialog" aria-modal="true">
+        <h2>⚙ Configuration git</h2>
+        <div class="form-row">
+          <label>Nom (user.name)
+            <input id="cfgUserName" type="text" placeholder="Ton nom" />
+          </label>
+          <label>Email (user.email)
+            <input id="cfgUserEmail" type="text" placeholder="toi@exemple.com" />
+          </label>
+        </div>
+        <div class="form-row">
+          <label>Fins de ligne (core.autocrlf)
+            <select id="cfgAutocrlf">
+              <option value="">(non défini)</option>
+              <option value="true">true</option>
+              <option value="input">input</option>
+              <option value="false">false</option>
+            </select>
+          </label>
+          <label>Pull en rebase (pull.rebase)
+            <select id="cfgPullRebase">
+              <option value="">(non défini)</option>
+              <option value="true">true</option>
+              <option value="false">false</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="refs-block" id="cfgGithub">
+          <div class="refs-head"><span>GitHub</span><span class="hint">Connexion pour push / pull en HTTPS.</span></div>
+          <div class="gh-clientid">
+            <label>Client ID de l'OAuth App
+              <input id="ghClientId" type="text" placeholder="Ov23li…" autocomplete="off" spellcheck="false" />
+            </label>
+            <button id="ghClientIdSave" class="ghost">Enregistrer</button>
+          </div>
+          <p class="hint" id="ghClientIdHint">OAuth App GitHub avec « Enable Device Flow » — le Client ID n'est pas secret.</p>
+          <div class="gh-row">
+            <span class="gh-status" id="ghStatus">…</span>
+            <button id="ghConnect" class="primary" hidden>Se connecter à GitHub</button>
+            <button id="ghDisconnect" class="danger" hidden>Déconnecter</button>
+          </div>
+          <div class="gh-device" id="ghDevice" hidden>
+            <p>Ouvre <a id="ghVerifyLink" href="https://github.com/login/device" target="_blank" rel="noopener">github.com/login/device</a> et saisis ce code :</p>
+            <div class="gh-code-row">
+              <code class="gh-code" id="ghUserCode"></code>
+              <button id="ghCopyCode" class="ghost xs" title="Copier le code">📋 Copier</button>
+            </div>
+            <div class="gh-wait-row">
+              <span class="gh-wait" id="ghWait">En attente d'autorisation…</span>
+              <button id="ghCancel" class="ghost xs">Annuler</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="refs-block" id="cfgCreds">
+          <div class="refs-head"><span>Autres dépôts HTTP/HTTPS</span><span class="hint">Identifiants pour push/pull vers un git auto-hébergé (Gitea, GitLab…).</span></div>
+          <ul id="credsList" class="ref-list"></ul>
+          <div class="creds-add">
+            <select id="credProto">
+              <option value="https">https</option>
+              <option value="http">http</option>
+            </select>
+            <input id="credHost" type="text" placeholder="hôte (ex. gitea.exemple.com ou gitea.exemple.com:3000)" autocomplete="off" spellcheck="false" />
+            <input id="credUser" type="text" placeholder="utilisateur" autocomplete="off" spellcheck="false" />
+            <input id="credPass" type="password" placeholder="mot de passe / token" autocomplete="off" />
+            <button id="credAdd" class="ghost">＋ Ajouter</button>
+          </div>
+        </div>
+
+        <div class="refs-block">
+          <div class="refs-head"><span>Remotes</span><span class="hint">Origines distantes (fetch/push).</span></div>
+          <ul id="cfgRemotes" class="ref-list"></ul>
+          <div class="cfg-remote-add">
+            <input id="cfgRemoteName" type="text" placeholder="nom (ex. origin)" />
+            <input id="cfgRemoteUrl" type="text" placeholder="URL (https://… ou git@…)" />
+            <button id="cfgRemoteAdd" class="ghost">＋ Ajouter</button>
+          </div>
+        </div>
+
+        <div class="modal-actions">
+          <button id="cfgCancel" class="ghost">Fermer</button>
+          <button id="cfgSave" class="primary">Enregistrer</button>
         </div>
       </div>
     </div>

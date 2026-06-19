@@ -13,6 +13,8 @@
 
 import "dotenv/config";
 import { createServer } from "node:http";
+import { request as httpsRequest } from "node:https";
+import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
@@ -58,6 +60,8 @@ import {
   clearNodeMessages,
   nodePathIds,
   CHAT_MODELS,
+  getSetting,
+  setSetting,
 } from "./db.js";
 import {
   searchPathsFor,
@@ -69,6 +73,44 @@ import {
   ensureAllRepos,
   invalidateRepo,
   importReposFromDir,
+  // Gestionnaire de repos (git)
+  statusFor,
+  logGraphFor,
+  branchesDetailedFor,
+  diffFileFor,
+  stagedDiffFor,
+  commitDetailFor,
+  getGitConfigFor,
+  setGitConfigFor,
+  stageFor,
+  unstageFor,
+  discardFor,
+  commitFor,
+  fetchFor,
+  pushFor,
+  pullRepo,
+  createBranchFor,
+  checkoutBranchFor,
+  checkoutCommitFor,
+  deleteBranchFor,
+  renameBranchFor,
+  mergeFor,
+  cherryPickFor,
+  revertCommitFor,
+  resetToFor,
+  createTagFor,
+  deleteTagFor,
+  stashSaveFor,
+  stashPopFor,
+  stashListFor,
+  setRemoteFor,
+  removeRemoteFor,
+  storeGithubCredentialFor,
+  clearGithubCredentialFor,
+  githubCredentialStatusFor,
+  storeCredentialFor,
+  clearCredentialFor,
+  credentialStatusFor,
 } from "./repos.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -84,6 +126,30 @@ const TOKEN = (process.env.MEOWTRACK_TOKEN || "").trim();
 // Binaire CLI Claude pour les features IA (claude -p). Doit être installé +
 // authentifié sur la machine du serveur. Configurable.
 const CLAUDE_BIN = (process.env.MEOWTRACK_CLAUDE_BIN || "claude").trim();
+
+// client_id d'une OAuth App GitHub (Device Flow activé) pour le bouton « Se connecter
+// à GitHub ». Le client_id n'est PAS un secret (pas de client_secret en device flow).
+// Créer : github.com/settings/developers → New OAuth App → cocher « Enable Device Flow ».
+// Priorité au réglage saisi dans l'UI (table app_settings), repli sur la variable d'env.
+const GITHUB_CLIENT_ID_ENV = (process.env.MEOWTRACK_GITHUB_CLIENT_ID || "").trim();
+function githubClientId() {
+  return (getSetting("github_client_id", "") || GITHUB_CLIENT_ID_ENV).trim();
+}
+
+// Liste des hôtes git custom (Gitea/GitLab self-hosted…) dont on a enregistré un
+// credential HTTP(S). On ne stocke JAMAIS le mot de passe ici (il vit dans le
+// credential store git) — seulement { protocol, host, username } pour l'affichage.
+function loadCustomHosts() {
+  try {
+    const v = JSON.parse(getSetting("custom_git_hosts", "[]"));
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
+}
+function saveCustomHosts(list) {
+  setSetting("custom_git_hosts", JSON.stringify(list));
+}
 
 // Env minimal pour toute invocation IA : JAMAIS le MEOWTRACK_TOKEN ni secret du
 // service (PATH/HOME/USERPROFILE seulement — HOME requis pour l'auth du CLI).
@@ -163,6 +229,113 @@ async function improveDescriptionWithClaude(title, description) {
   } catch (e) {
     if (e.code === "ENOENT") throw new Error(`CLI Claude introuvable (${CLAUDE_BIN}). Installer/configurer MEOWTRACK_CLAUDE_BIN.`);
     throw new Error(e.stderr ? String(e.stderr).trim() : e.message || String(e));
+  }
+}
+
+// Rédige un message de commit à partir du DIFF indexé (staged), via Claude headless
+// SANS accès disque (le diff est passé dans le prompt — claudeToolArgs(false)).
+async function suggestCommitMessage(repoId) {
+  const diff = stagedDiffFor(repoId);
+  if (!diff || !diff.trim()) throw new Error("Rien n'est indexé (staged) à committer.");
+  const prompt =
+    "Tu rédiges un message de commit git à partir du diff INDEXÉ ci-dessous.\n" +
+    "Format : une 1re ligne impérative ≤ 72 caractères (style Conventional Commits si pertinent : " +
+    "feat:/fix:/refactor:/docs:/chore:…), puis si utile une ligne vide et un corps court en puces expliquant le POURQUOI.\n" +
+    "Langue : français. Réponds UNIQUEMENT avec le message, sans préambule, sans guillemets, sans bloc de code.\n\n" +
+    "DIFF INDEXÉ :\n" +
+    diff;
+  try {
+    const out = (await runClaudeSandboxed(prompt, "sonnet")).trim();
+    if (!out) throw new Error("Réponse vide de Claude");
+    return out.replace(/^```[a-z]*\s*/i, "").replace(/\s*```$/i, "").trim();
+  } catch (e) {
+    if (e.code === "ENOENT") throw new Error(`CLI Claude introuvable (${CLAUDE_BIN}). Installer/configurer MEOWTRACK_CLAUDE_BIN.`);
+    throw new Error(e.stderr ? String(e.stderr).trim() : e.message || String(e));
+  }
+}
+
+// ── Auth GitHub : device flow (OAuth) ──────────────────────────────────────────
+// Petit client HTTPS sans dépendance. POST form-urlencoded → JSON.
+function githubPost(host, reqPath, form) {
+  const data = new URLSearchParams(form).toString();
+  return new Promise((resolve, reject) => {
+    const r = httpsRequest(
+      {
+        host,
+        path: reqPath,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          Accept: "application/json",
+          "Content-Length": Buffer.byteLength(data),
+          "User-Agent": "meowtrack",
+        },
+      },
+      (resp) => {
+        let body = "";
+        resp.on("data", (c) => (body += c));
+        resp.on("end", () => {
+          try {
+            resolve({ status: resp.statusCode, json: body ? JSON.parse(body) : {} });
+          } catch {
+            resolve({ status: resp.statusCode, json: {} });
+          }
+        });
+      }
+    );
+    r.on("error", reject);
+    r.setTimeout(15000, () => r.destroy(new Error("Délai dépassé (GitHub)")));
+    r.write(data);
+    r.end();
+  });
+}
+
+// GET api.github.com avec token bearer → JSON (sert à récupérer le login).
+function githubGet(reqPath, token) {
+  return new Promise((resolve, reject) => {
+    const r = httpsRequest(
+      {
+        host: "api.github.com",
+        path: reqPath,
+        method: "GET",
+        headers: {
+          Accept: "application/vnd.github+json",
+          Authorization: `Bearer ${token}`,
+          "User-Agent": "meowtrack",
+        },
+      },
+      (resp) => {
+        let body = "";
+        resp.on("data", (c) => (body += c));
+        resp.on("end", () => {
+          try {
+            resolve({ status: resp.statusCode, json: body ? JSON.parse(body) : {} });
+          } catch {
+            resolve({ status: resp.statusCode, json: {} });
+          }
+        });
+      }
+    );
+    r.on("error", reject);
+    r.setTimeout(15000, () => r.destroy(new Error("Délai dépassé (GitHub)")));
+    r.end();
+  });
+}
+
+// Device flows en cours : flowId → { deviceCode, repoId, interval, expiresAt }.
+// Le device_code (secret de poll) reste côté serveur ; le client ne voit que le user_code.
+const githubFlows = new Map();
+
+// Verrou anti-collision : une seule opération git MUTANTE en vol par repo (sinon
+// 409). Les lectures (status/log/diff) ne sont pas verrouillées.
+const gitLocks = new Set();
+async function withGitLock(repoId, res, fn) {
+  if (gitLocks.has(repoId)) return send(res, 409, { error: "git_busy", message: "Une opération git est déjà en cours sur ce repo." });
+  gitLocks.add(repoId);
+  try {
+    return await fn();
+  } finally {
+    gitLocks.delete(repoId);
   }
 }
 
@@ -981,6 +1154,286 @@ const server = createServer(async (req, res) => {
       const { title, description } = await readBody(req);
       const improved = await improveDescriptionWithClaude(title, description);
       return send(res, 200, { description: improved });
+    }
+
+    // ───────────────────── Gestionnaire de repos (git) ──────────────────────
+    // Lectures (non verrouillées) :
+    if (req.method === "GET" && path === "/api/git/status") {
+      return send(res, 200, statusFor(repoOf()));
+    }
+    if (req.method === "GET" && path === "/api/git/log") {
+      return send(res, 200, logGraphFor(repoOf(), { limit: Number(q.get("limit")) || 300 }));
+    }
+    if (req.method === "GET" && path === "/api/git/branches") {
+      return send(res, 200, branchesDetailedFor(repoOf()));
+    }
+    if (req.method === "GET" && path === "/api/git/stashes") {
+      return send(res, 200, stashListFor(repoOf()));
+    }
+    if (req.method === "GET" && path === "/api/git/config") {
+      return send(res, 200, getGitConfigFor(repoOf()));
+    }
+    // ── Auth GitHub (device flow) ──
+    // État : OAuth App configurée ? credential github.com présent ? (jamais le token)
+    // `clientId` (non secret) sert à pré-remplir le champ de l'UI.
+    if (req.method === "GET" && path === "/api/git/github/status") {
+      const clientId = githubClientId();
+      return send(res, 200, {
+        configured: !!clientId,
+        clientId,
+        clientIdFromEnv: !getSetting("github_client_id", "") && !!GITHUB_CLIENT_ID_ENV,
+        ...githubCredentialStatusFor(repoOf()),
+      });
+    }
+    // Enregistre/efface le client_id de l'OAuth App (saisi dans l'UI, persisté en base).
+    if (req.method === "POST" && path === "/api/git/github/client-id") {
+      const body = await readBody(req);
+      const clientId = setSetting("github_client_id", String(body.clientId || "").trim());
+      return send(res, 200, { ok: true, configured: !!clientId, clientId });
+    }
+    // Démarre le device flow : renvoie le user_code + l'URL à ouvrir (device_code gardé serveur).
+    if (req.method === "POST" && path === "/api/git/github/device/start") {
+      const id = repoOf(await readBody(req));
+      const clientId = githubClientId();
+      if (!clientId)
+        return send(res, 200, {
+          configured: false,
+          message:
+            "Aucun Client ID GitHub configuré. Renseigne le Client ID de ton OAuth App " +
+            "(Settings → Developer settings → OAuth Apps, « Enable Device Flow ») dans le champ ci-dessus.",
+        });
+      const r = await githubPost("github.com", "/login/device/code", { client_id: clientId, scope: "repo" });
+      if (r.status !== 200 || !r.json.device_code)
+        return send(res, 502, { error: "github_error", message: r.json.error_description || "Échec du device flow GitHub." });
+      const flowId = randomUUID();
+      const interval = Math.max(5, Number(r.json.interval) || 5);
+      githubFlows.set(flowId, {
+        deviceCode: r.json.device_code,
+        repoId: id,
+        interval,
+        expiresAt: Date.now() + (Number(r.json.expires_in) || 900) * 1000,
+      });
+      return send(res, 200, {
+        configured: true,
+        flowId,
+        userCode: r.json.user_code,
+        verificationUri: r.json.verification_uri,
+        interval,
+        expiresIn: r.json.expires_in,
+      });
+    }
+    // Poll : pending / pending+slow_down / success (token stocké) / error.
+    if (req.method === "POST" && path === "/api/git/github/device/poll") {
+      const body = await readBody(req);
+      const flow = githubFlows.get(body.flowId);
+      if (!flow) return send(res, 200, { status: "error", message: "Session expirée, relance la connexion." });
+      if (Date.now() > flow.expiresAt) {
+        githubFlows.delete(body.flowId);
+        return send(res, 200, { status: "error", message: "Code expiré, relance la connexion." });
+      }
+      const r = await githubPost("github.com", "/login/oauth/access_token", {
+        client_id: githubClientId(),
+        device_code: flow.deviceCode,
+        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
+      });
+      const j = r.json || {};
+      if (j.error === "authorization_pending") return send(res, 200, { status: "pending" });
+      if (j.error === "slow_down") {
+        flow.interval = Math.max(flow.interval + 5, Number(j.interval) || flow.interval + 5);
+        return send(res, 200, { status: "pending", interval: flow.interval });
+      }
+      if (j.error) {
+        githubFlows.delete(body.flowId);
+        return send(res, 200, { status: "error", message: j.error_description || j.error });
+      }
+      if (!j.access_token) return send(res, 200, { status: "pending" });
+      // Succès : récupère le login (best-effort) puis persiste le credential.
+      const token = j.access_token;
+      let login = "x-access-token";
+      try {
+        const u = await githubGet("/user", token);
+        if (u.status === 200 && u.json.login) login = u.json.login;
+      } catch {
+        /* login best-effort : on garde x-access-token */
+      }
+      githubFlows.delete(body.flowId);
+      const stored = storeGithubCredentialFor(flow.repoId, { username: login, token });
+      if (!stored.ok)
+        return send(res, 200, { status: "error", message: "Token reçu mais échec d'enregistrement : " + (stored.output || "") });
+      return send(res, 200, { status: "success", login });
+    }
+    // Déconnexion : oublie le credential github.com.
+    if (req.method === "POST" && path === "/api/git/github/disconnect") {
+      const id = repoOf(await readBody(req));
+      const st = githubCredentialStatusFor(id);
+      const r = clearGithubCredentialFor(id, { username: st.username });
+      return send(res, 200, { ok: r.ok, output: r.output });
+    }
+    // ── Credentials HTTP(S) génériques (Gitea/GitLab self-hosted…) ──
+    // Liste enrichie de l'état de connexion en direct (jamais le mot de passe).
+    if (req.method === "GET" && path === "/api/git/credentials") {
+      const id = repoOf();
+      const list = loadCustomHosts().map((e) => ({
+        protocol: e.protocol || "https",
+        host: e.host,
+        username: e.username || "",
+        ...credentialStatusFor(id, { protocol: e.protocol || "https", host: e.host }),
+      }));
+      return send(res, 200, { credentials: list });
+    }
+    // Enregistre un credential (host + username + mot de passe/token) + mémorise l'hôte.
+    if (req.method === "POST" && path === "/api/git/credentials") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      const protocol = String(body.protocol || "https").toLowerCase() === "http" ? "http" : "https";
+      const host = String(body.host || "").trim();
+      const username = String(body.username || "").trim();
+      const r = storeCredentialFor(id, { protocol, host, username, password: body.password });
+      if (!r.ok) return send(res, 200, { ok: false, output: r.output });
+      const list = loadCustomHosts().filter((e) => !(e.host === host && (e.protocol || "https") === protocol));
+      list.push({ protocol, host, username });
+      saveCustomHosts(list);
+      return send(res, 200, { ok: true });
+    }
+    // Supprime un credential (reject git) + retire l'hôte de la liste mémorisée.
+    if (req.method === "POST" && path === "/api/git/credentials/delete") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      const protocol = String(body.protocol || "https").toLowerCase() === "http" ? "http" : "https";
+      const host = String(body.host || "").trim();
+      const r = clearCredentialFor(id, { protocol, host, username: body.username });
+      saveCustomHosts(loadCustomHosts().filter((e) => !(e.host === host && (e.protocol || "https") === protocol)));
+      return send(res, 200, { ok: r.ok, output: r.output });
+    }
+    if (req.method === "GET" && path === "/api/git/diff") {
+      return send(res, 200, diffFileFor(repoOf(), q.get("path") || "", { staged: q.get("staged") === "true", untracked: q.get("untracked") === "true" }));
+    }
+    const gitCommitMatch = path.match(/^\/api\/git\/commit\/([0-9a-fA-F]{4,64})$/);
+    if (req.method === "GET" && gitCommitMatch) {
+      return send(res, 200, commitDetailFor(repoOf(), gitCommitMatch[1]));
+    }
+
+    // Écritures (verrouillées par repo) :
+    if (req.method === "POST" && path === "/api/git/stage") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, stageFor(id, body.paths, !!body.all)));
+    }
+    if (req.method === "POST" && path === "/api/git/unstage") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, unstageFor(id, body.paths, !!body.all)));
+    }
+    if (req.method === "POST" && path === "/api/git/discard") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, discardFor(id, body.paths)));
+    }
+    if (req.method === "POST" && path === "/api/git/commit") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, commitFor(id, body.message)));
+    }
+    if (req.method === "POST" && path === "/api/git/commit-message") {
+      const message = await suggestCommitMessage(repoOf(await readBody(req)));
+      return send(res, 200, { message });
+    }
+    if (req.method === "POST" && path === "/api/git/fetch") {
+      const id = repoOf(await readBody(req));
+      return withGitLock(id, res, () => send(res, 200, fetchFor(id)));
+    }
+    if (req.method === "POST" && path === "/api/git/pull") {
+      const id = repoOf(await readBody(req));
+      return withGitLock(id, res, () => send(res, 200, pullRepo(id)));
+    }
+    if (req.method === "POST" && path === "/api/git/push") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, pushFor(id, { setUpstream: !!body.setUpstream })));
+    }
+    if (req.method === "POST" && path === "/api/git/branch") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, createBranchFor(id, body.name, { checkout: body.checkout !== false, ref: body.ref || null })));
+    }
+    if (req.method === "POST" && path === "/api/git/branch/rename") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, renameBranchFor(id, body.oldName, body.newName)));
+    }
+    if (req.method === "POST" && path === "/api/git/branch/delete") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, deleteBranchFor(id, body.name, { force: !!body.force })));
+    }
+    if (req.method === "POST" && path === "/api/git/checkout") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, checkoutBranchFor(id, body.name)));
+    }
+    if (req.method === "POST" && path === "/api/git/checkout-commit") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, checkoutCommitFor(id, body.hash)));
+    }
+    if (req.method === "POST" && path === "/api/git/merge") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, mergeFor(id, body.name)));
+    }
+    if (req.method === "POST" && path === "/api/git/cherry-pick") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, cherryPickFor(id, body.hash)));
+    }
+    if (req.method === "POST" && path === "/api/git/revert") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, revertCommitFor(id, body.hash)));
+    }
+    if (req.method === "POST" && path === "/api/git/reset") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, resetToFor(id, body.hash, body.mode)));
+    }
+    if (req.method === "POST" && path === "/api/git/tag") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, createTagFor(id, body.name, { ref: body.ref || "HEAD", message: body.message || "" })));
+    }
+    if (req.method === "POST" && path === "/api/git/tag/delete") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, deleteTagFor(id, body.name)));
+    }
+    if (req.method === "POST" && path === "/api/git/stash") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, stashSaveFor(id, { message: body.message, includeUntracked: body.includeUntracked !== false })));
+    }
+    if (req.method === "POST" && path === "/api/git/stash/pop") {
+      const id = repoOf(await readBody(req));
+      return withGitLock(id, res, () => send(res, 200, stashPopFor(id)));
+    }
+    if (req.method === "POST" && path === "/api/git/config") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      const results = {};
+      if ("userName" in body) results.userName = setGitConfigFor(id, "user.name", body.userName);
+      if ("userEmail" in body) results.userEmail = setGitConfigFor(id, "user.email", body.userEmail);
+      if ("autocrlf" in body) results.autocrlf = setGitConfigFor(id, "core.autocrlf", body.autocrlf);
+      if ("pullRebase" in body) results.pullRebase = setGitConfigFor(id, "pull.rebase", body.pullRebase);
+      return send(res, 200, { ok: Object.values(results).every((r) => r.ok), results, config: getGitConfigFor(id) });
+    }
+    if (req.method === "POST" && path === "/api/git/remote") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, setRemoteFor(id, body.name, body.url, { add: !!body.add })));
+    }
+    if (req.method === "POST" && path === "/api/git/remote/delete") {
+      const body = await readBody(req);
+      const id = repoOf(body);
+      return withGitLock(id, res, () => send(res, 200, removeRemoteFor(id, body.name)));
     }
 
     // GET /api/issues?repo= — liste filtrée (scopée repo).
