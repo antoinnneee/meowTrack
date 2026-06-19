@@ -180,6 +180,18 @@ matérialisé) ; catalogue fermé, cap 20 actions/tour. Les modifications sont *
 **actions destructives** (suppression de nœud, abandon) qui passent en **confirmation humaine**. L'auto-
 suppression du nœud racine du chat est interdite (passer par le chat du parent).
 
+### Chat « top level » (vue objectifs) — créer en discutant
+
+En plus du chat par nœud, la **vue objectifs** (graphe/grille) embarque un **chat scopé sur tout le dépôt**
+(dock en bas à droite, repliable). Idéal pour **brainstormer puis créer des objectifs RACINES tout en
+discutant** : `add_node` **sans `parentId` crée un nouvel objectif racine** (avec `parentId`/`tmpKey` : un
+sous-jalon). Le même catalogue d'actions s'applique (`add_node`, `update_node`, `set_node_fields`,
+`delete_node`, `move_node`, `reorder_children`), mais la garde devient l'**appartenance au repo** (et non un
+sous-arbre) : `applyForestActions` vérifie `node.repoId === repo` pour toute cible, cap 20 actions/tour et
+quota global par repo. Mêmes garde-fous que le chat par nœud : auto-apply sauf **actions destructives** (→
+confirmation humaine), streaming live, fail-closed sur réponse douteuse. Les messages sont stockés dans
+`forest_messages` (scopés `repo_id`) et diffusés sur le canal SSE `forest:<repoId>` déjà existant.
+
 ### Chat en STREAMING (réflexion repliable)
 
 L'appel passe par `claude -p --output-format stream-json` (`spawn` sans shell, kill + timeout). On voit
@@ -218,7 +230,10 @@ identifie chaque participant.
 | `POST` | `/api/nodes/:ref/chat` | message (lance le tour IA streaming, `202`, résultat via SSE) |
 | `POST` | `/api/nodes/:ref/chat/confirm` | confirmer une proposition destructive |
 | `GET` | `/api/nodes/:ref/stream` | flux SSE du nœud (chat + stream + état du sous-arbre) |
-| `GET` | `/api/nodes/stream` | flux SSE de la forêt (graphe/grille) |
+| `GET` | `/api/nodes/stream` | flux SSE de la forêt (graphe/grille **+ chat « top level »**) |
+| `GET/DELETE` | `/api/forest/messages` | historique du chat « top level » du repo / le vider |
+| `POST` | `/api/forest/chat` | message « top level » (tour IA streaming, `202`, résultat via SSE forêt) |
+| `POST` | `/api/forest/chat/confirm` | confirmer une proposition destructive du chat « top level » |
 
 La concurrence repose sur `nodes.version` (entier monotone bumpé sur le nœud **et** ses ancêtres à chaque
 mutation) ; le front réconcilie par version. `node_messages.id` est l'ordre total du chat. La hiérarchie

@@ -147,6 +147,24 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_node_messages_node ON node_messages(node_id, id);
 
+  -- Chat « top level » d'un repo : discussion globale avec l'IA pour créer/gérer
+  -- les objectifs racines (pas d'ancrage à un nœud précis ; scope = repo entier).
+  CREATE TABLE IF NOT EXISTS forest_messages (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    repo_id      INTEGER NOT NULL,
+    role         TEXT NOT NULL,                        -- user|assistant
+    author       TEXT NOT NULL DEFAULT 'anon',
+    model        TEXT,                                 -- sonnet|opus|haiku | null
+    body         TEXT NOT NULL DEFAULT '',             -- réponse finale (SANS bloc d'actions)
+    reasoning    TEXT NOT NULL DEFAULT '',             -- réflexion streamée (repliable)
+    state        TEXT NOT NULL DEFAULT 'complete',     -- pending|streaming|complete|error
+    actions      TEXT NOT NULL DEFAULT '[]',           -- JSON audit (appliquées/proposées)
+    client_nonce TEXT,
+    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    FOREIGN KEY(repo_id) REFERENCES repos(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_forest_messages_repo ON forest_messages(repo_id, id);
+
   -- Réglages globaux de l'instance (clé/valeur), ex. github_client_id éditable via l'UI.
   CREATE TABLE IF NOT EXISTS app_settings (
     key   TEXT PRIMARY KEY,
@@ -315,6 +333,7 @@ export const CHAT_MODELS = ["sonnet", "opus", "haiku"];
 export const MESSAGE_STATES = ["pending", "streaming", "complete", "error"];
 const MAX_DEPTH = 32; // profondeur max d'un arbre (anti-DoS récursion)
 const MAX_NODES_PER_SUBTREE = 500; // garde-fou volume par sous-arbre
+const MAX_NODES_PER_REPO = 2000; // garde-fou volume par repo (chat « top level »)
 const MAX_ACTIONS = 20; // actions IA max appliquées par tour
 const MAX_NOTES = 50000; // taille max du corps markdown d'UNE note (~50 Ko)
 const MAX_NOTE_COUNT = 50; // nombre max de notes par nœud
@@ -1149,30 +1168,34 @@ export function createNode(repoId, parentRefOrId, input = {}) {
     return getNode(id);
   }
   // Racine.
+  const id = db.transaction(() => _insertRoot(repoId, input))();
+  return getNode(id);
+}
+
+// Insère un nœud RACINE (parent_id NULL, root_id=lui-même, path "/id/"). Non
+// transactionnel (le caller enveloppe) — pendant de _insertChild pour les racines.
+function _insertRoot(repoId, input = {}) {
   if (repoId == null) throw new Error("repoId requis pour un nœud racine");
   const title = String(input.title || "").trim().slice(0, 200);
   if (!title) throw new Error("Titre requis");
   const status = NODE_STATUS_SET.has(input.status) ? input.status : "active";
   const color = NODE_COLOR_SET.has(input.color) ? input.color : "accent";
   const emoji = clampEmoji(input.emoji);
-  const description = clampStr(input.description || "", 4000);
+  const description = clampStr(input.description != null ? input.description : input.detail || "", 4000);
   const notes = normalizeNotesInput(input.notes != null ? input.notes : "");
-  const targetDate = validDateOrNull(input.targetDate);
+  const targetDate = validDateOrNull(input.targetDate != null ? input.targetDate : input.dueDate);
   const ref = nextRef(repoId, "node");
-  const id = db.transaction(() => {
-    const nextPos = db.prepare("SELECT COALESCE(MAX(position), -1) + 1 AS p FROM nodes WHERE parent_id IS NULL AND repo_id = ?").get(repoId).p;
-    const position = Number.isFinite(input.position) ? input.position : nextPos;
-    const res = db
-      .prepare(
-        `INSERT INTO nodes(repo_id, ref, parent_id, root_id, depth, path, title, description, notes, status, color, emoji, target_date, progress, position)
-         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-      )
-      .run(repoId, ref, null, 0, 0, "", title, description, notes, status, color, emoji, targetDate, status === "done" ? 100 : 0, position);
-    const newId = Number(res.lastInsertRowid);
-    db.prepare("UPDATE nodes SET root_id = ?, path = ?, done_at = ? WHERE id = ?").run(newId, "/" + newId + "/", status === "done" ? nowIso() : null, newId);
-    return newId;
-  })();
-  return getNode(id);
+  const nextPos = db.prepare("SELECT COALESCE(MAX(position), -1) + 1 AS p FROM nodes WHERE parent_id IS NULL AND repo_id = ?").get(repoId).p;
+  const position = Number.isFinite(input.position) ? input.position : nextPos;
+  const res = db
+    .prepare(
+      `INSERT INTO nodes(repo_id, ref, parent_id, root_id, depth, path, title, description, notes, status, color, emoji, target_date, progress, position)
+       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    )
+    .run(repoId, ref, null, 0, 0, "", title, description, notes, status, color, emoji, targetDate, status === "done" ? 100 : 0, position);
+  const newId = Number(res.lastInsertRowid);
+  db.prepare("UPDATE nodes SET root_id = ?, path = ?, done_at = ? WHERE id = ?").run(newId, "/" + newId + "/", status === "done" ? nowIso() : null, newId);
+  return newId;
 }
 
 export function updateNode(refOrId, fields = {}, expectedVersion) {
@@ -1428,6 +1451,234 @@ export function applyNodeActions(scopeNodeId, actions = []) {
             _reorderChildrenRows(pid, ids);
             applied.push({ op, parentId: pid });
             touched.add(pid);
+            break;
+          }
+          default:
+            rejected.push({ op: op || "?", reason: "op_inconnu" });
+        }
+      } catch (e) {
+        rejected.push({ op: op || "?", reason: e.message || String(e) });
+      }
+    }
+    for (const id of touched) {
+      affected.add(id);
+      for (const r of recomputeAncestorProgress(id, { bumpSelf: true })) {
+        affected.add(r.id);
+        roots.add(r.root_id);
+      }
+    }
+  });
+  tx();
+  return { applied, rejected, affectedNodeIds: [...affected], roots: [...roots] };
+}
+
+// ── Chat « top level » (par repo / forêt) ────────────────────────────────────
+// Même surface que le chat par nœud, mais scopé sur le repo (forest_messages).
+function rowToForestMessage(r) {
+  if (!r) return null;
+  let actions = [];
+  try {
+    actions = JSON.parse(r.actions || "[]");
+  } catch {
+    actions = [];
+  }
+  return {
+    id: r.id,
+    repoId: r.repo_id,
+    role: r.role,
+    author: r.author,
+    model: r.model,
+    body: r.body,
+    reasoning: r.reasoning,
+    state: r.state,
+    actions,
+    clientNonce: r.client_nonce,
+    createdAt: r.created_at,
+  };
+}
+
+export function clearForestMessages(repoId) {
+  if (repoId == null) throw new Error("repoId requis");
+  return db.prepare("DELETE FROM forest_messages WHERE repo_id = ?").run(repoId).changes;
+}
+
+export function listForestMessages(repoId, { afterId = 0, limit = 500 } = {}) {
+  if (repoId == null) throw new Error("repoId requis");
+  return db
+    .prepare("SELECT * FROM forest_messages WHERE repo_id = ? AND id > ? ORDER BY id LIMIT ?")
+    .all(repoId, afterId, Math.max(1, Math.min(1000, limit)))
+    .map(rowToForestMessage);
+}
+
+export function getForestMessage(messageId) {
+  return rowToForestMessage(db.prepare("SELECT * FROM forest_messages WHERE id = ?").get(messageId));
+}
+
+export function addForestMessage(repoId, { role, author, model, body, reasoning, state, actions, clientNonce } = {}) {
+  if (repoId == null) throw new Error("repoId requis");
+  const r = role === "assistant" ? "assistant" : "user";
+  const st = MSG_STATE_SET.has(state) ? state : "complete";
+  const nonce = clientNonce ? String(clientNonce).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 80) || null : null;
+  const res = db
+    .prepare(
+      "INSERT INTO forest_messages(repo_id, role, author, model, body, reasoning, state, actions, client_nonce) VALUES(?,?,?,?,?,?,?,?,?)"
+    )
+    .run(
+      repoId,
+      r,
+      String(author || "anon").slice(0, 60) || "anon",
+      model || null,
+      clampStr(body || "", 16384),
+      clampStr(reasoning || "", 65536),
+      st,
+      JSON.stringify(actions || []),
+      nonce
+    );
+  return getForestMessage(Number(res.lastInsertRowid));
+}
+
+export function updateForestMessage(messageId, { body, reasoning, state, actions } = {}) {
+  const sets = [];
+  const vals = [];
+  if (body != null) {
+    sets.push("body = ?");
+    vals.push(clampStr(body, 16384));
+  }
+  if (reasoning != null) {
+    sets.push("reasoning = ?");
+    vals.push(clampStr(reasoning, 65536));
+  }
+  if (state != null) {
+    if (!MSG_STATE_SET.has(state)) throw new Error(`État de message invalide : ${state}`);
+    sets.push("state = ?");
+    vals.push(state);
+  }
+  if (actions != null) {
+    sets.push("actions = ?");
+    vals.push(JSON.stringify(actions));
+  }
+  if (sets.length) db.prepare(`UPDATE forest_messages SET ${sets.join(", ")} WHERE id = ?`).run(...vals, messageId);
+  return getForestMessage(messageId);
+}
+
+// ── Application des actions IA « top level » (scope = repo entier) ─────────────
+// Pendant de applyNodeActions, mais la garde est l'appartenance au repo (et non un
+// sous-arbre) : add_node sans parentId crée un OBJECTIF RACINE. Tout id cible doit
+// appartenir au repo ; cap global par repo. Reste fail-closed et transactionnel.
+export function applyForestActions(repoId, actions = []) {
+  if (repoId == null) throw new Error("repoId requis");
+  const applied = [];
+  const rejected = [];
+  const list = Array.isArray(actions) ? actions.slice(0, MAX_ACTIONS) : [];
+  const touched = new Set();
+  const affected = new Set();
+  const roots = new Set();
+
+  const inRepo = (id) => {
+    if (id == null) return false;
+    const n = findNodeRow(id);
+    return !!n && n.repo_id === repoId;
+  };
+
+  const tx = db.transaction(() => {
+    const tmpMap = new Map();
+    const resolve = (x) => {
+      if (x == null) return null;
+      const s = String(x);
+      if (tmpMap.has(s)) return tmpMap.get(s);
+      const n = Number(x);
+      return Number.isFinite(n) ? n : null;
+    };
+    const repoCount = () => db.prepare("SELECT COUNT(*) c FROM nodes WHERE repo_id = ?").get(repoId).c;
+    for (const a of list) {
+      const op = a && a.op;
+      try {
+        switch (op) {
+          case "set_node_fields":
+          case "update_node": {
+            const id = resolve(a.id);
+            if (!inRepo(id)) {
+              rejected.push({ op, reason: "hors_repo" });
+              break;
+            }
+            const n = _setNodeFields(id, a);
+            if (n) {
+              applied.push({ op, id });
+              touched.add(id);
+            } else rejected.push({ op, id, reason: "aucun_champ" });
+            break;
+          }
+          case "add_node": {
+            if (repoCount() >= MAX_NODES_PER_REPO) {
+              rejected.push({ op, reason: "quota_repo" });
+              break;
+            }
+            let newId;
+            let parentId = null;
+            if (a.parentId == null) {
+              newId = _insertRoot(repoId, a); // objectif racine
+            } else {
+              parentId = resolve(a.parentId);
+              if (!inRepo(parentId)) {
+                rejected.push({ op, reason: "parent_hors_repo" });
+                break;
+              }
+              newId = _insertChild(parentId, a);
+              touched.add(parentId);
+            }
+            if (a.tmpKey != null) tmpMap.set(String(a.tmpKey), newId);
+            applied.push({ op, id: newId, parentId, title: String(a.title || "").slice(0, 200) });
+            touched.add(newId);
+            break;
+          }
+          case "delete_node": {
+            const id = resolve(a.id);
+            if (!inRepo(id)) {
+              rejected.push({ op, reason: "hors_repo" });
+              break;
+            }
+            const node = findNodeRow(id);
+            const parentId = node ? node.parent_id : null;
+            const ch = db.prepare("DELETE FROM nodes WHERE id = ?").run(id).changes;
+            if (ch) {
+              applied.push({ op, id });
+              if (parentId != null) touched.add(parentId);
+            } else rejected.push({ op, id, reason: "introuvable" });
+            break;
+          }
+          case "move_node": {
+            const id = resolve(a.id);
+            const newParent = a.parentId == null ? null : resolve(a.parentId); // null = devient racine
+            if (!inRepo(id)) {
+              rejected.push({ op, reason: "source_hors_repo" });
+              break;
+            }
+            if (newParent != null && !inRepo(newParent)) {
+              rejected.push({ op, reason: "cible_hors_repo" });
+              break;
+            }
+            if (newParent != null && (id === newParent || isInSubtree(id, newParent))) {
+              rejected.push({ op, reason: "cycle" });
+              break;
+            }
+            const oldParent = findNodeRow(id)?.parent_id ?? null;
+            _reparentSubtree(id, newParent, Number.isFinite(a.position) ? a.position : null);
+            applied.push({ op, id, parentId: newParent });
+            touched.add(id);
+            if (oldParent != null) touched.add(oldParent);
+            if (newParent != null) touched.add(newParent);
+            break;
+          }
+          case "reorder_children": {
+            const pid = a.parentId == null ? null : resolve(a.parentId); // null = racines du repo
+            if (pid != null && !inRepo(pid)) {
+              rejected.push({ op, reason: "parent_hors_repo" });
+              break;
+            }
+            const ids = (a.order || []).map(resolve).filter((x) => x != null && inRepo(x));
+            _reorderChildrenRows(pid, ids, repoId);
+            applied.push({ op, parentId: pid });
+            if (pid != null) touched.add(pid);
             break;
           }
           default:

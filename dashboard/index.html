@@ -85,6 +85,29 @@
       <div class="goal-cards" id="goalCards"></div>
     </main>
 
+    <!-- Vue Good Vibes : chat « top level » (créer/gérer les objectifs en discutant) -->
+    <aside class="forest-chat" id="forestChat" hidden>
+      <div class="chat-head">
+        <button id="forestChatToggle" class="ghost forest-chat-toggle" title="Réduire / agrandir la discussion">💬 Discuter des objectifs</button>
+        <div class="chat-head-actions">
+          <select id="forestModelSel" class="model-select" title="Modèle Claude">
+            <option value="sonnet">Sonnet</option>
+            <option value="opus">Opus</option>
+            <option value="haiku">Haiku</option>
+          </select>
+          <button id="forestChatClearBtn" class="ghost" title="Vider l'historique de la discussion">🗑</button>
+        </div>
+      </div>
+      <div class="chat-feed" id="forestChatFeed"></div>
+      <div class="typing-row" id="forestTypingRow" hidden></div>
+      <div class="chat-input">
+        <div class="ta-wrap chat-ta-wrap">
+          <textarea id="forestChatInput" rows="2" placeholder="Décris une ambition, demande à créer des objectifs… · Entrée pour envoyer"></textarea>
+        </div>
+        <button id="forestChatSend" class="primary">Envoyer</button>
+      </div>
+    </aside>
+
     <!-- Vue Good Vibes : détail d'un nœud (arbre des sous-nœuds + chat streaming) -->
     <main class="view goal-view" id="nodeView" hidden>
       <div class="gd-head">

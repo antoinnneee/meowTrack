@@ -293,6 +293,26 @@ body:not(.view-repo) .repo-only { display: none; }
 .chat-input textarea { flex: 1; resize: none; }
 .chat-ta-wrap { flex: 1; }
 .chat-ta-wrap textarea { width: 100%; }
+
+/* Chat « top level » : dock flottant en bas à droite de la vue objectifs. */
+.forest-chat {
+  position: fixed; right: 18px; bottom: 18px; z-index: 50;
+  width: min(380px, calc(100vw - 36px)); height: min(70vh, 560px);
+  display: flex; flex-direction: column; min-height: 0;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45); overflow: hidden;
+}
+.forest-chat[hidden] { display: none; }
+.forest-chat .chat-head { cursor: default; }
+.forest-chat-toggle { font-size: 14px; font-weight: 600; }
+/* Réduit : on ne garde que l'en-tête (clic sur le titre pour replier/déplier). */
+.forest-chat.collapsed { height: auto; }
+.forest-chat.collapsed .chat-feed,
+.forest-chat.collapsed .typing-row,
+.forest-chat.collapsed .chat-input { display: none; }
+@media (max-width: 640px) {
+  .forest-chat { right: 8px; bottom: 8px; width: calc(100vw - 16px); height: min(60vh, 480px); }
+}
 /* Menu de mentions du chat : s'ouvre vers le HAUT (le champ est en bas de l'écran). */
 .mention-menu.up { top: auto; bottom: 100%; margin: 0 0 4px; }
 

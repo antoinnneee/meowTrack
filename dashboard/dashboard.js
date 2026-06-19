@@ -702,6 +702,33 @@ const vibes = {
   },
 };
 
+// ── Contexte de chat actif (nœud vs « top level » / forêt) ───────────────────
+// Le rendu, le streaming et l'envoi sont mutualisés : un seul chat est actif à la
+// fois (les vues sont exclusives, le flux SSE est unique). `vibes.chat` pointe vers
+// la config courante : sélecteurs DOM + constructeur d'URL d'API.
+const NODE_CHAT_CTX = {
+  kind: "node",
+  feedSel: "#chatFeed",
+  inputSel: "#chatInput",
+  typingSel: "#typingRow",
+  emptyHtml: '<div class="empty">Discute de ce nœud : décris-le, demande des sous-jalons…</div>',
+  url: (sub) => `/api/nodes/${encodeURIComponent(vibes.current)}${sub || ""}`,
+  ready: () => !!vibes.current,
+};
+const FOREST_CHAT_CTX = {
+  kind: "forest",
+  feedSel: "#forestChatFeed",
+  inputSel: "#forestChatInput",
+  typingSel: "#forestTypingRow",
+  emptyHtml: '<div class="empty">Discute de tes objectifs au plus haut niveau : décris une ambition, demande à créer des objectifs racines…</div>',
+  url: (sub) => `/api/forest${sub || ""}`,
+  ready: () => true,
+};
+vibes.chat = NODE_CHAT_CTX;
+function chatFeedEl() {
+  return $(vibes.chat.feedSel);
+}
+
 // Respecte la préférence système : pas de particules ni de bursts si réduit.
 const REDUCED = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
@@ -930,6 +957,7 @@ function switchView(v) {
     $("#vibesView").hidden = true;
     $("#graphView").hidden = true;
     $("#nodeView").hidden = true;
+    setForestChatVisible(false);
     closeStream();
   }
   const want = v === "track" ? "" : "#" + v;
@@ -938,14 +966,25 @@ function switchView(v) {
   else if (v === "repo") openRepoView();
 }
 
+// Affiche/masque le panneau de chat « top level » (vue objectifs, hors détail nœud).
+function setForestChatVisible(on) {
+  const el = $("#forestChat");
+  if (el) el.hidden = !on;
+}
+
 async function openVibes() {
   $("#nodeView").hidden = true;
   $("#vibesBar").hidden = false;
   vibes.current = null;
   vibes.currentNode = null;
+  vibes.chat = FOREST_CHAT_CTX; // chat actif = forêt
+  const fm = $("#forestModelSel");
+  if (fm) fm.value = vibes.model;
   applyLayoutToggle();
+  setForestChatVisible(true);
   await loadForest();
   subscribeForest();
+  loadForestChat();
 }
 
 function setVibesLayout(l) {
@@ -1516,6 +1555,8 @@ async function openNode(ref) {
     vibes.current = ref;
     vibes.currentNode = node;
     vibes.currentVersion = node.version;
+    vibes.chat = NODE_CHAT_CTX; // chat actif = ce nœud
+    setForestChatVisible(false);
     $("#vibesBar").hidden = true;
     $("#vibesView").hidden = true;
     $("#graphView").hidden = true;
@@ -1811,11 +1852,14 @@ function backToForest() {
   closeStream();
   vibes.current = null;
   vibes.currentNode = null;
+  vibes.chat = FOREST_CHAT_CTX; // chat actif = forêt
   $("#nodeView").hidden = true;
   $("#vibesBar").hidden = false;
   applyLayoutToggle();
+  setForestChatVisible(true);
   loadForest();
   subscribeForest();
+  loadForestChat();
 }
 
 // ── Chat streaming ───────────────────────────────────────────────────────────
@@ -1917,7 +1961,7 @@ function messageEl(m) {
   return div;
 }
 function appendMessage(m) {
-  const feed = $("#chatFeed");
+  const feed = chatFeedEl();
   if (!feed) return;
   const emptyEl = feed.querySelector(".empty");
   if (emptyEl) emptyEl.remove();
@@ -1967,11 +2011,12 @@ function onStreamDelta(d) {
   scrollFeed();
 }
 function renderChat(messages) {
-  const feed = $("#chatFeed");
+  const feed = chatFeedEl();
+  if (!feed) return;
   feed.innerHTML = "";
   vibes.seen.clear();
   vibes.streams.clear();
-  if (!messages.length) feed.innerHTML = `<div class="empty">Discute de ce nœud : décris-le, demande des sous-jalons…</div>`;
+  if (!messages.length) feed.innerHTML = vibes.chat.emptyHtml;
   for (const m of messages) appendMessage(m);
   scrollFeed(true);
 }
@@ -1982,47 +2027,58 @@ function isFeedAtBottom(feed) {
 // Ne défile en bas que si on « suit » (utilisateur en bas). `force` réactive le suivi
 // (envoi d'un message, ouverture d'un nœud) puis défile.
 function scrollFeed(force) {
-  const feed = $("#chatFeed");
+  const feed = chatFeedEl();
   if (!feed) return;
   if (force) vibes.stickToBottom = true;
   if (vibes.stickToBottom) feed.scrollTop = feed.scrollHeight;
 }
 async function sendChat() {
-  const ta = $("#chatInput");
+  const ctx = vibes.chat;
+  const ta = $(ctx.inputSel);
+  if (!ta) return;
   const text = ta.value.trim();
-  if (!text || !vibes.current) return;
+  if (!text || !ctx.ready()) return;
   const nonce = crypto.randomUUID ? crypto.randomUUID() : "n" + Date.now() + Math.floor(Math.random() * 1e6);
   vibes.stickToBottom = true; // envoyer un message réactive le suivi du bas
   appendMessage({ id: 0, role: "user", author: vibes.user, body: text, state: "complete", clientNonce: nonce });
   ta.value = "";
   try {
-    await api.send("POST", nodeUrl("/chat"), { author: vibes.user, model: vibes.model, body: text, clientNonce: nonce });
+    await api.send("POST", ctx.url("/chat"), { author: vibes.user, model: vibes.model, body: text, clientNonce: nonce });
   } catch (e) {
-    if (/ai_busy/.test(e.message)) toast("Claude répond déjà sur ce nœud — attends la fin du tour.");
+    if (/ai_busy/.test(e.message)) toast(ctx.kind === "forest" ? "Claude répond déjà au niveau objectifs — attends la fin du tour." : "Claude répond déjà sur ce nœud — attends la fin du tour.");
     else if (/ai_overloaded/.test(e.message)) toast("Trop de discussions IA en cours, réessaie dans un instant.");
     else toast("Échec : " + e.message);
-    const feed = $("#chatFeed");
-    feed?.querySelector(`[data-nonce="${cssId(nonce)}"]`)?.remove();
+    chatFeedEl()?.querySelector(`[data-nonce="${cssId(nonce)}"]`)?.remove();
     ta.value = text;
   }
 }
 async function confirmActions(messageId) {
   try {
-    await api.send("POST", nodeUrl("/chat/confirm"), { messageId });
+    await api.send("POST", vibes.chat.url("/chat/confirm"), { messageId });
   } catch (e) {
     toast(e.message);
   }
 }
 async function clearChatHistory() {
-  if (!vibes.current) return;
-  if (!confirm("Vider tout l'historique de la discussion de ce nœud ? (irréversible)")) return;
+  const ctx = vibes.chat;
+  if (!ctx.ready()) return;
+  const what = ctx.kind === "forest" ? "de la discussion des objectifs" : "de la discussion de ce nœud";
+  if (!confirm(`Vider tout l'historique ${what} ? (irréversible)`)) return;
   try {
-    await api.send("DELETE", nodeUrl("/messages"));
+    await api.send("DELETE", ctx.url("/messages"));
     renderChat([]); // vidage local immédiat (l'événement chat:cleared confirmera aux autres)
     toast("Historique vidé.");
   } catch (e) {
     if (/ai_busy/.test(e.message)) toast("Claude répond en ce moment — réessaie après le tour.");
     else toast("Échec : " + e.message);
+  }
+}
+// Charge l'historique du chat « top level » (forêt) et le rend.
+async function loadForestChat() {
+  try {
+    renderChat(await api.get("/api/forest/messages"));
+  } catch {
+    renderChat([]);
   }
 }
 
@@ -2041,12 +2097,24 @@ function closeStream() {
   }
   setLive(false);
 }
+// Affiche/masque la ligne « Claude travaille… » du chat ACTIF (nœud ou forêt).
+function applyAiTurnEvent(d) {
+  const row = $(vibes.chat.typingSel);
+  if (!row) return;
+  row.hidden = d.state !== "start";
+  if (d.state === "start") row.textContent = `✨ ${d.actor ? d.actor + " — " : ""}Claude travaille…`;
+}
 function subscribeForest() {
   closeStream();
   const es = new EventSource(streamUrl("/api/nodes/stream"));
   vibes.es = es;
-  es.onopen = () => { setLive(true); if (vibes.wasDown) loadForest(); vibes.wasDown = false; };
+  es.onopen = () => { setLive(true); if (vibes.wasDown) { loadForest(); loadForestChat(); } vibes.wasDown = false; };
   es.onerror = () => { setLive(false); vibes.wasDown = true; };
+  // Chat « top level » : mêmes events que la room d'un nœud, sur le canal forêt.
+  es.addEventListener("message", (e) => appendMessage(JSON.parse(e.data)));
+  es.addEventListener("ai:stream", (e) => onStreamDelta(JSON.parse(e.data)));
+  es.addEventListener("ai:turn", (e) => applyAiTurnEvent(JSON.parse(e.data)));
+  es.addEventListener("chat:cleared", () => renderChat([]));
   const applyNode = (raw, kind) => {
     if (!raw) return;
     const ex = vibes.byId.get(raw.id);
@@ -2086,7 +2154,7 @@ function subscribeNode(ref) {
   es.onerror = () => { setLive(false); vibes.wasDown = true; };
   es.addEventListener("message", (e) => appendMessage(JSON.parse(e.data)));
   es.addEventListener("ai:stream", (e) => onStreamDelta(JSON.parse(e.data)));
-  es.addEventListener("ai:turn", (e) => { const d = JSON.parse(e.data); $("#typingRow").hidden = d.state !== "start"; if (d.state === "start") $("#typingRow").textContent = `✨ ${d.actor ? d.actor + " — " : ""}Claude travaille…`; });
+  es.addEventListener("ai:turn", (e) => applyAiTurnEvent(JSON.parse(e.data)));
   es.addEventListener("node:updated", (e) => applyNodeUpdate(JSON.parse(e.data)));
   es.addEventListener("subtree:dirty", () => scheduleSubtreeRefetch());
   es.addEventListener("chat:cleared", () => renderChat([])); // un autre client a vidé l'historique
@@ -2199,6 +2267,16 @@ function initVibes() {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
   });
   $("#modelSel").addEventListener("change", (e) => (vibes.model = e.target.value));
+  // Chat « top level » (vue objectifs) — même rendu/flux, contexte forêt.
+  $("#forestChatSend").addEventListener("click", sendChat);
+  $("#forestChatClearBtn").addEventListener("click", clearChatHistory);
+  $("#forestChatToggle").addEventListener("click", () => $("#forestChat").classList.toggle("collapsed"));
+  $("#forestChatFeed").addEventListener("scroll", () => { vibes.stickToBottom = isFeedAtBottom($("#forestChatFeed")); });
+  const forestChatInput = $("#forestChatInput");
+  forestChatInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
+  });
+  $("#forestModelSel").addEventListener("change", (e) => (vibes.model = e.target.value));
   const closeNodeModal = () => { $("#nodeBackdrop").hidden = true; vibes.graph.pendingCreatePos = null; };
   $("#nodeCancelBtn").addEventListener("click", closeNodeModal);
   $("#nodeSaveBtn").addEventListener("click", saveNode);
