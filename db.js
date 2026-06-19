@@ -1126,7 +1126,11 @@ function _reparentSubtree(id, newParentId, position) {
       : db.prepare("SELECT COALESCE(MAX(position), -1) + 1 AS p FROM nodes WHERE parent_id = ?").get(newParentId).p;
   db.prepare("UPDATE nodes SET parent_id = ?, position = ? WHERE id = ?").run(newParentId, pos, id);
   const rows = db.prepare("SELECT id, depth, path FROM nodes WHERE path LIKE ?").all(oldPath + "%");
-  const upd = db.prepare("UPDATE nodes SET depth = ?, root_id = ?, path = ? WHERE id = ?");
+  // Reparenter = changement structurel : on PURGE les positions manuelles (pos_x/pos_y)
+  // du nœud et de tout son sous-arbre. Sinon le sous-arbre resterait figé à ses anciennes
+  // coordonnées absolues (ancien emplacement) ; remis à NULL, il reflue en auto-layout
+  // sous son nouveau parent.
+  const upd = db.prepare("UPDATE nodes SET depth = ?, root_id = ?, path = ?, pos_x = NULL, pos_y = NULL WHERE id = ?");
   for (const r of rows) upd.run(r.depth + depthDelta, newRoot, newPath + r.path.slice(oldPath.length), r.id);
 }
 
