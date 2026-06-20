@@ -603,28 +603,58 @@ function nodeGroup(n, p) {
   g.appendChild(inner);
   return g;
 }
-// Positions des nœuds fantômes (chat « top level ») dans le graphe. Les racines
-// (sans parent) prolongent la rangée du haut après les vraies racines ; les sous-
-// jalons fantômes se posent sous leur parent (réel via parentId, ou fantôme via
-// parentKey — l'IA écrit le parent avant l'enfant, donc gpos le connaît déjà).
+// Positions des nœuds fantômes (chat « top level ») dans le graphe. Même principe
+// que placeSubtree : allocation de slots-feuilles via un curseur GLOBAL (post-ordre),
+// pour qu'aucun fantôme ne se superpose à un autre — y compris les enfants de parents
+// réels adjacents (le bug : deux parents distants de G_NODE_GAP qui se partagent
+// chacun des enfants finissaient par les empiler au même x). Les racines fantômes
+// (sans parent) prolongent la rangée du haut ; les sous-jalons fantômes se posent sous
+// leur parent (réel via parentId, ou fantôme via parentKey, ordre indifférent).
 function computeGhostPositions(pos) {
   const gpos = new Map();
+  const ghosts = vibes._ghostNodes;
+  const byKey = new Map(ghosts.map((g) => [g.key, g]));
+  // Enfants fantômes indexés par parent ('k:<key>' fantôme | 'n:<id>' réel), + ref parent
+  // de chaque fantôme. Ordre-indépendant (ne suppose plus parent-écrit-avant-enfant).
+  const kidsOf = new Map();
+  const parentRef = new Map();
+  for (const gh of ghosts) {
+    let ref = null;
+    if (gh.parentKey != null && byKey.has(gh.parentKey)) ref = "k:" + gh.parentKey;
+    else if (gh.parentId != null && pos.has(gh.parentId)) ref = "n:" + gh.parentId;
+    parentRef.set(gh.key, ref);
+    if (ref) { if (!kidsOf.has(ref)) kidsOf.set(ref, []); kidsOf.get(ref).push(gh); }
+  }
+  // Pose un sous-arbre fantôme en post-ordre : feuilles à la suite du curseur, parent
+  // centré sur l'intervalle de ses enfants (identique à placeSubtree, mais sur fantômes).
+  const place = (gh, y, cur) => {
+    const kids = kidsOf.get("k:" + gh.key) || [];
+    if (!kids.length) { gpos.set(gh.key, { x: cur.x, y }); cur.x += G_NODE_GAP; return; }
+    for (const k of kids) place(k, y + G_LEVEL_GAP, cur);
+    const first = gpos.get(kids[0].key).x, last = gpos.get(kids[kids.length - 1].key).x;
+    gpos.set(gh.key, { x: (first + last) / 2, y });
+  };
+  // Têtes des arbres fantômes : soit racines (prolongent la rangée du haut), soit
+  // accrochées sous un nœud réel. Triées par x d'ancrage pour rester de gauche à droite.
   let maxRootX = -Infinity;
   for (const r of rootsOf()) { const p = pos.get(r.id); if (p) maxRootX = Math.max(maxRootX, p.x); }
   if (maxRootX === -Infinity) maxRootX = -G_NODE_GAP; // aucune racine réelle → démarre à 0
-  const childIdx = new Map(); // parent → nb d'enfants fantômes déjà posés
+  const tops = [];
   let rootI = 0;
-  for (const gh of vibes._ghostNodes) {
-    let parentPos = null, pkey = null;
-    if (gh.parentKey && gpos.has(gh.parentKey)) { parentPos = gpos.get(gh.parentKey); pkey = "k:" + gh.parentKey; }
-    else if (gh.parentId != null && pos.has(gh.parentId)) { parentPos = pos.get(gh.parentId); pkey = "n:" + gh.parentId; }
-    if (parentPos) {
-      const c = childIdx.get(pkey) || 0; childIdx.set(pkey, c + 1);
-      gpos.set(gh.key, { x: parentPos.x + c * G_NODE_GAP, y: parentPos.y + G_LEVEL_GAP });
-    } else {
-      gpos.set(gh.key, { x: maxRootX + ++rootI * G_NODE_GAP, y: 0 }); // racine fantôme
+  for (const gh of ghosts) {
+    const ref = parentRef.get(gh.key);
+    if (ref == null) tops.push({ gh, anchorX: maxRootX + ++rootI * G_NODE_GAP, y: 0 });
+    else if (ref[0] === "n") {
+      const pp = pos.get(gh.parentId);
+      tops.push({ gh, anchorX: pp.x, y: pp.y + G_LEVEL_GAP });
     }
+    // ref 'k:' → enfant d'un fantôme, posé récursivement par sa tête, pas une tête.
   }
+  tops.sort((a, b) => a.anchorX - b.anchorX);
+  // Curseur global : chaque tête démarre au max(curseur, son ancrage) → les groupes se
+  // suivent sans jamais se chevaucher, tout en restant alignés sous/après leur parent.
+  const cur = { x: -Infinity };
+  for (const t of tops) { cur.x = Math.max(cur.x, t.anchorX); place(t.gh, t.y, cur); }
   return gpos;
 }
 function ghostNodeGroup(gh, p) {
