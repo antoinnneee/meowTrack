@@ -463,10 +463,29 @@ body:not(.view-repo) .repo-only { display: none; }
 .action-chip { animation: chipPop .35s ease-out both; }
 @keyframes chipPop { 0% { opacity: 0; transform: scale(.6) translateY(4px); } 100% { opacity: 1; transform: scale(1) translateY(0); } }
 
+/* — Suppression : le nœud (et son sous-arbre) se flétrit avant le refetch — */
+/* Graphe : le disque se recroqueville en tournant + fond, l'arête s'efface. */
+.g-node.despawn { pointer-events: none; }
+.g-node.despawn .g-inner { animation: nodeDespawn .42s cubic-bezier(.55, 0, .67, .35) both; }
+@keyframes nodeDespawn {
+  0% { transform: scale(1) rotate(0); opacity: 1; }
+  35% { transform: scale(1.12) rotate(-6deg); opacity: 1; }
+  100% { transform: scale(0) rotate(28deg); opacity: 0; }
+}
+.g-edge.despawn { animation: edgeFade .34s ease-in both; }
+@keyframes edgeFade { from { opacity: 1; } to { opacity: 0; } }
+/* Grille : la carte rétrécit et part vers le haut. */
+.goal-card.despawn { pointer-events: none; animation: cardDespawn .42s cubic-bezier(.55, 0, .67, .35) both; }
+@keyframes cardDespawn { 0% { opacity: 1; transform: none; } 100% { opacity: 0; transform: translateY(-14px) scale(.82); } }
+/* Arbre : la ligne (et ses enfants imbriqués) glisse et se replie. */
+.tnode.despawn { pointer-events: none; animation: rowDespawn .42s ease-in both; transform-origin: top left; }
+@keyframes rowDespawn { 0% { opacity: 1; transform: none; } 100% { opacity: 0; transform: translateX(20px) scale(.92); } }
+
 @media (prefers-reduced-motion: reduce) {
   .g-node.spawn .g-inner, .g-node.pulse .g-inner, .g-node.spawn .g-disc, .g-node.pulse .g-disc,
   .g-node.celebrate .g-disc, .g-halo, .g-rays, .g-edge.spawn,
   .goal-card.spawn, .goal-card.pulse, .goal-card.celebrate,
+  .g-node.despawn .g-inner, .g-edge.despawn, .goal-card.despawn, .tnode.despawn,
   .trow.fx-new, .trow.fx-changed, .trow.fx-done, .trow.fx-new .tdot, .trow.fx-done .tdot,
   .action-chip, .nd-notes.fx-note { animation: none !important; }
 }
