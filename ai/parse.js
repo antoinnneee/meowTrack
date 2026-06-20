@@ -80,15 +80,25 @@ export function actionStatusLabel(ops) {
     reorder_children: "Réorganisation",
     add_link: "Lien de prérequis",
     remove_link: "Retrait de prérequis",
+    add_issue: "Création",
+    update_issue: "Mise à jour",
+    delete_issue: "Suppression",
+    reorder_issues: "Réorganisation",
   };
-  // Les actions de lien se comptent en « liens » ; les autres en « nœuds ».
-  const unit = (name) => (name === "Lien de prérequis" || name === "Retrait de prérequis" ? "lien" : "nœud");
-  const byName = new Map();
+  // Unité comptée selon le domaine de l'op : « lien », « entrée » (suivi) ou « nœud ».
+  const LINK_OPS = new Set(["add_link", "remove_link"]);
+  const ISSUE_OPS = new Set(["add_issue", "update_issue", "delete_issue", "reorder_issues"]);
+  const unit = (op) => (LINK_OPS.has(op) ? "lien" : ISSUE_OPS.has(op) ? "entrée" : "nœud");
+  // Regroupe par (libellé, unité) pour ne pas mélanger « 2 nœuds » et « 1 entrée ».
+  const byKey = new Map();
   for (const op of ops) {
     const name = names[op] || "Action";
-    byName.set(name, (byName.get(name) || 0) + 1);
+    const u = unit(op);
+    const cur = byKey.get(name + "|" + u) || { name, u, n: 0 };
+    cur.n++;
+    byKey.set(name + "|" + u, cur);
   }
-  const parts = [...byName].map(([name, n]) => `${name} de ${n} ${unit(name)}${n > 1 ? "s" : ""}`);
+  const parts = [...byKey.values()].map(({ name, u, n }) => `${name} de ${n} ${u}${n > 1 ? "s" : ""}`);
   return "⚙️ " + parts.join(" · ") + " en cours…";
 }
 
@@ -200,21 +210,26 @@ export function parseAiTurn(stdout) {
 }
 
 // Détecte si un tour contient une action destructive (→ proposition + confirmation
-// humaine au lieu d'auto-apply). delete_node = destructif ; status abandoned aussi.
+// humaine au lieu d'auto-apply). delete_node / delete_issue = destructifs ; statut
+// abandoned aussi.
 export function describeDestructive(actions, scopeNode, subtreeById) {
   const reasons = [];
   let dels = 0;
   let descTotal = 0;
+  let issueDels = 0;
   for (const a of actions || []) {
     if (!a) continue;
     if (a.op === "delete_node") {
       dels++;
       const sub = subtreeById && subtreeById.get(Number(a.id));
       descTotal += sub ? sub : 0;
+    } else if (a.op === "delete_issue") {
+      issueDels++;
     } else if ((a.op === "set_node_fields" || a.op === "update_node") && a.status === "abandoned") {
       reasons.push("abandon d'un nœud");
     }
   }
   if (dels) reasons.push(`${dels} suppression${dels > 1 ? "s" : ""} de nœud${dels > 1 ? "s" : ""}${descTotal ? ` (+${descTotal} sous-nœud${descTotal > 1 ? "s" : ""})` : ""}`);
+  if (issueDels) reasons.push(`${issueDels} suppression${issueDels > 1 ? "s" : ""} d'entrée${issueDels > 1 ? "s" : ""} de suivi`);
   return reasons;
 }
