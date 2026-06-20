@@ -593,11 +593,13 @@ body:not(.view-repo) .repo-only { display: none; }
 
 /* Arêtes de PRÉREQUIS : pointillé orangé distinct de la hiérarchie (pleine).
    Les tirets s'écoulent VERS le prérequis (sens du lien « from dépend de to »),
-   ce qui lève l'ambiguïté de direction en complément de la pointe de flèche. */
+   ce qui lève l'ambiguïté de direction en complément de la pointe de flèche.
+   Chaque lien = une HITBOX large transparente (facile à viser) + le trait visible. */
 .g-reqs { pointer-events: none; }
-.g-req { fill: none; stroke: #ffa94d; stroke-width: 2.5; stroke-dasharray: 6 5; opacity: .7; pointer-events: stroke; cursor: pointer; animation: reqFlow 1s linear infinite; }
-.g-req:hover { opacity: 1; stroke-width: 3.5; }
-.g-req.blocked { stroke: var(--bug); opacity: .85; }
+.g-req-hit { fill: none; stroke: transparent; stroke-width: 18; pointer-events: stroke; cursor: pointer; }
+.g-req { fill: none; stroke: #ffa94d; stroke-width: 2.5; stroke-dasharray: 6 5; opacity: .7; pointer-events: none; animation: reqFlow 1s linear infinite; }
+.g-req-edge:hover .g-req { opacity: 1; stroke-width: 3.5; }
+.g-req.blocked, .g-req-edge.blocked .g-req { stroke: var(--bug); opacity: .85; }
 .g-req-arrow { fill: #ffa94d; }
 .g-req-arrow-blocked { fill: var(--bug); }
 @keyframes reqFlow { to { stroke-dashoffset: -22; } }
