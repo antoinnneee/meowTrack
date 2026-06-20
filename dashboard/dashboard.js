@@ -1091,17 +1091,32 @@ function computeGraphLayout() {
   // puis recentré SOUS sa racine. Une cascade large déborde sous la rangée, mais sans
   // chevauchement de nœuds (profondeurs = lignes différentes).
   let rowX = 0;
+  const tidy = new Map(); // layout auto « idéal » (relatif à la hiérarchie)
   for (const root of rootsOf()) {
     const local = new Map();
     placeSubtree(root, local, { x: 0 });
     const shift = rowX - local.get(root.id).x; // recale la racine sur la rangée
-    for (const [id, p] of local) pos.set(id, { x: p.x + shift, y: p.y });
+    for (const [id, p] of local) tidy.set(id, { x: p.x + shift, y: p.y });
     rowX += G_NODE_GAP;
   }
-  // Positions manuelles (drag & drop persistées) : écrasent l'auto-layout.
-  for (const n of vibes.forest) {
-    if (n.posX != null && n.posY != null) pos.set(n.id, { x: n.posX, y: n.posY });
-  }
+  // Positions finales : on part du tidy-layout, mais chaque nœud ÉPINGLÉ (drag & drop
+  // persisté) « entraîne » tout son sous-arbre auto en le décalant du même delta. Ainsi
+  // un nouvel enfant (pos NULL = auto) d'un parent déplacé apparaît À CÔTÉ de ce parent,
+  // pas à l'emplacement tidy global. Un descendant lui-même épinglé redéfinit le delta
+  // pour son propre sous-arbre.
+  const place = (node, dx, dy) => {
+    const t = tidy.get(node.id) || { x: 0, y: 0 };
+    let x, y;
+    if (node.posX != null && node.posY != null) {
+      x = node.posX; y = node.posY;
+      dx = x - t.x; dy = y - t.y; // nouveau delta hérité par le sous-arbre
+    } else {
+      x = t.x + dx; y = t.y + dy;
+    }
+    pos.set(node.id, { x, y });
+    for (const k of childrenOf(node.id)) place(k, dx, dy);
+  };
+  for (const root of rootsOf()) place(root, 0, 0);
   return pos;
 }
 // Post-ordre : pose d'abord les feuilles à la suite, puis centre chaque parent sur
@@ -1367,8 +1382,13 @@ async function persistPositions(ids) {
   const positions = [];
   for (const id of ids) {
     const p = vibes.graph.posMap.get(id);
+    if (!p) continue;
+    // posMap fait foi : un nœud fraîchement créé via le menu fond n'est pas encore
+    // dans byId (repeuplé par loadForest) — la maj de byId est donc « best-effort »,
+    // mais la position part TOUJOURS au serveur. Exiger byId ici perdait la position.
     const n = vibes.byId.get(id);
-    if (p && n) { n.posX = p.x; n.posY = p.y; positions.push({ id, x: p.x, y: p.y }); }
+    if (n) { n.posX = p.x; n.posY = p.y; }
+    positions.push({ id, x: p.x, y: p.y });
   }
   if (!positions.length) return;
   try { await api.send("POST", "/api/nodes/positions", { positions }); }
@@ -2389,7 +2409,9 @@ async function saveNode() {
       if (at) {
         n.posX = at.x; n.posY = at.y;
         vibes.graph.posMap.set(n.id, { x: at.x, y: at.y });
-        persistPositions([n.id]);
+        // Attendre la persistance AVANT loadForest, sinon le rechargement récupère le
+        // nœud avec posX/posY encore NULL (course) → il atterrit en auto-layout, pas au clic.
+        await persistPositions([n.id]);
       }
       if (vibes.current) scheduleSubtreeRefetch();
       else if (at) loadForest(); // créé via le menu fond → rester sur le graphe pour le voir apparaître
