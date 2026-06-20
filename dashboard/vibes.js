@@ -2094,7 +2094,9 @@ async function saveNode() {
       if (!vibes.current) loadForest();
     } else {
       if (vibes._parentId != null) payload.parentId = vibes._parentId;
+      console.log("[vibes] createNode POST /api/nodes", payload);
       const n = await api.send("POST", "/api/nodes", payload);
+      console.log("[vibes] createNode OK", n);
       $("#nodeBackdrop").hidden = true;
       vibes.graph.spawned.add(n.id); // anime aussi la naissance pour le créateur local
       // Création via le menu contextuel du fond → épingle le nœud à l'endroit cliqué.
@@ -2112,6 +2114,7 @@ async function saveNode() {
       else { vibes.layout === "graph" ? openNode(n.ref) : loadForest(); }
     }
   } catch (e) {
+    console.error("[vibes] saveNode échec", e);
     if (/version_conflict/.test(e.message)) toast("Nœud modifié entre-temps — rouvre-le.");
     else toast("Échec : " + e.message);
   }

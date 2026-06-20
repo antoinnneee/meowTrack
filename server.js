@@ -81,6 +81,10 @@ const server = createServer(async (req, res) => {
 
     send(res, 404, { error: "not_found", path });
   } catch (e) {
+    // Log côté serveur AVANT de répondre : le 400 « nu » masquait jusqu'ici toute
+    // erreur (stack incluse). Indispensable pour diagnostiquer p.ex. la création de nœud.
+    console.error(`[meowtrack] ⚠️  ${req.method} ${path} → ${e.message || e}`);
+    if (e && e.stack) console.error(e.stack);
     send(res, 400, { error: e.message || String(e) });
   }
 });

@@ -381,19 +381,25 @@ export function createNode(repoId, parentRefOrId, input = {}) {
   return withRepo(repoId, () => {
     // Id numérique du dépôt courant (repoId peut être null = défaut, ou un slug).
     const rid = resolveRepoId(repoId);
+    console.error(`[meowtrack] createNode: repoId=${repoId ?? "(défaut)"} → rid=${rid} parent=${parentRefOrId ?? "(racine)"}`);
     if (parentRefOrId != null) {
       // L'enfant hérite du repo de son parent (repoId ignoré si incohérent).
       const parent = findNodeRow(parentRefOrId, rid);
-      if (!parent) throw new Error(`Parent introuvable : ${parentRefOrId}`);
+      if (!parent) {
+        console.error(`[meowtrack] createNode: parent introuvable (${parentRefOrId}) dans repo ${rid}`);
+        throw new Error(`Parent introuvable : ${parentRefOrId}`);
+      }
       let id;
       db.transaction(() => {
         id = _insertChild(parent.id, input);
         recomputeAncestorProgress(id, { bumpSelf: false });
       })();
+      console.error(`[meowtrack] createNode: enfant inséré id=${id} sous parent id=${parent.id}`);
       return getNode(id);
     }
     // Racine.
     const id = db.transaction(() => _insertRoot(rid, input))();
+    console.error(`[meowtrack] createNode: racine insérée id=${id} dans repo ${rid}`);
     return getNode(id);
   });
 }

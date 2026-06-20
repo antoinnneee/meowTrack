@@ -82,7 +82,12 @@ export async function handle(ctx) {
   if (method === "POST" && path === "/api/nodes") {
     const body = await readBody(req);
     const id = repoOf(q, body);
-    const n = createNode(id, body.parentId != null ? body.parentId : null, body);
+    const parentId = body.parentId != null ? body.parentId : null;
+    console.error(
+      `[meowtrack] POST /api/nodes repo=${id ?? "(défaut)"} parentId=${parentId ?? "(racine)"} title=${JSON.stringify(String(body.title || "").slice(0, 60))}`
+    );
+    const n = createNode(id, parentId, body);
+    console.error(`[meowtrack]   → nœud créé NODE-${n.ref} (id=${n.id}, repo=${n.repoId}, parent=${n.parentId ?? "(racine)"})`);
     broadcast(forestKey(n.repoId), "node:created", n);
     if (n.parentId != null) {
       broadcast(nodeKey(n.repoId, n.parentId), "node:created", n);
