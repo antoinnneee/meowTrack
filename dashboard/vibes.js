@@ -1263,6 +1263,20 @@ async function openNode(refOrId) {
     toast("Erreur : " + e.message);
   }
 }
+
+// Pont depuis la vue Suivi : bascule sur Vibes et ouvre directement le nœud. On NE
+// touche PAS au hash (sinon le handler `hashchange` rappellerait switchView → forêt,
+// écrasant le détail) ; on réplique donc à la main le basculement de vue de switchView.
+export async function openNodeInVibes(refOrId) {
+  vibes.view = "vibes";
+  document.body.classList.remove("view-track", "view-vibes", "view-repo", "issue-open");
+  document.body.classList.add("view-vibes");
+  document.querySelectorAll(".nav-tabs .tab").forEach((t) => t.classList.toggle("active", t.dataset.view === "vibes"));
+  $("#trackView").hidden = true;
+  $("#repoView").hidden = true;
+  await openNode(refOrId);
+}
+
 function renderNodeHeader(n) {
   $("#ndEmoji").textContent = n.emoji || "🎯";
   $("#ndTitle").textContent = n.title;

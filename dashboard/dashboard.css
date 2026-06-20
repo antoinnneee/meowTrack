@@ -115,6 +115,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .badge.status-done { color: var(--feature); border-color: var(--feature); }
 .badge.tag { background: var(--surface-2); }
 .badge.refcount { color: var(--accent-2); border-color: var(--accent-2); }
+.badge.nodecount { color: var(--feature); border-color: var(--feature); }
 
 /* Détail */
 .detail-pane .empty, .issue-list .empty { color: var(--text-dim); padding: 24px; text-align: center; }
@@ -145,6 +146,30 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .comment-list li time { display: block; font-size: 11px; color: var(--text-dim); margin-top: 4px; }
 .add-comment { display: flex; gap: 8px; margin-top: 10px; }
 .add-comment input { flex: 1; }
+
+/* Jalons liés (nœuds Vibes référencés depuis une entrée de suivi) */
+.node-link-list { list-style: none; margin: 0; padding: 0; }
+.node-link {
+  display: flex; align-items: center; gap: 6px;
+  border: 1px solid var(--border); border-left: 3px solid var(--accent);
+  border-radius: 8px; margin-bottom: 6px; background: var(--surface);
+}
+.node-link.color-feature { border-left-color: var(--feature); }
+.node-link.color-task { border-left-color: var(--task); }
+.node-link.color-bug { border-left-color: var(--bug); }
+.node-link.color-high { border-left-color: var(--high); }
+.node-link .nl-open {
+  flex: 1; display: flex; align-items: center; gap: 8px;
+  background: none; border: none; color: var(--text); cursor: pointer;
+  padding: 8px 10px; text-align: left; font-size: 13px;
+}
+.node-link .nl-open:hover .nl-title { text-decoration: underline; }
+.node-link .nl-emoji { font-size: 15px; }
+.node-link .nl-title { flex: 1; word-break: break-word; }
+.node-link .nl-prog { color: var(--feature); font-family: ui-monospace, monospace; font-size: 12px; }
+.node-link .nl-remove { margin-right: 6px; padding: 2px 6px; }
+.add-node-link { margin-top: 8px; }
+.add-node-link select { width: 100%; color: var(--text); }
 
 .status-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
 .status-buttons button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
