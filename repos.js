@@ -66,7 +66,7 @@ import {
   clearCredential,
   credentialStatus,
 } from "./repo.js";
-import { getRepoRow, listRepoRows, createRepo, checkpointTracker, closeTrackerDb } from "./db.js";
+import { getRepoRow, listRepoRows, createRepo, checkpointTracker, closeTrackerDb, getSetting, setSetting } from "./db.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -133,7 +133,7 @@ export function removeTrackerStoreFor(repoId, repoRow = null) {
   const dir = join(trackingRoot(), slug);
   // Si c'est un worktree git, le désenregistrer proprement (sinon entrée fantôme
   // dans .git/worktrees du dépôt). Best-effort.
-  if (TRACKING_GIT && existsSync(join(dir, ".git")) && repoRow) {
+  if (trackingGit() && existsSync(join(dir, ".git")) && repoRow) {
     try {
       const root = rootForRepo(repoRow);
       gitT(root, ["worktree", "remove", "--force", dir]);
@@ -156,11 +156,34 @@ export function removeTrackerStoreFor(repoId, repoRow = null) {
 // ne contient que tracker.db, et le worktree dédié évite tout changement de branche
 // du checkout principal. Tout est best-effort : un échec git ne casse jamais l'app.
 // ═══════════════════════════════════════════════════════════════════════════
-const TRACKING_GIT = process.env.MEOWTRACK_TRACKING_GIT === "1"; // worktree + commit local
-const TRACKING_PUSH = process.env.MEOWTRACK_TRACKING_PUSH === "1"; // publication vers le remote
-const TRACKING_BRANCH = (process.env.MEOWTRACK_TRACKING_BRANCH || "tracking").trim() || "tracking";
-const TRACKING_REMOTE = (process.env.MEOWTRACK_TRACKING_REMOTE || "origin").trim() || "origin";
-const TRACKING_INTERVAL_MS = Math.max(1000, Number(process.env.MEOWTRACK_TRACKING_INTERVAL_MS) || 5000);
+// Configuration EFFECTIVE, lue DYNAMIQUEMENT (donc modifiable à chaud depuis l'UI) :
+// réglage persisté (app_settings) > variable d'environnement > défaut.
+function _trkFlag(key, envName) {
+  const s = getSetting(key, "");
+  if (s === "1") return true;
+  if (s === "0") return false;
+  return process.env[envName] === "1";
+}
+function _trkStr(key, envName, def) {
+  const s = getSetting(key, "");
+  return s || (process.env[envName] || "").trim() || def;
+}
+function trackingGit() {
+  return _trkFlag("tracking_git", "MEOWTRACK_TRACKING_GIT");
+}
+function trackingPush() {
+  return _trkFlag("tracking_push", "MEOWTRACK_TRACKING_PUSH");
+}
+function trackingBranch() {
+  return _trkStr("tracking_branch", "MEOWTRACK_TRACKING_BRANCH", "tracking");
+}
+function trackingRemote() {
+  return _trkStr("tracking_remote", "MEOWTRACK_TRACKING_REMOTE", "origin");
+}
+function trackingIntervalMs() {
+  const s = getSetting("tracking_interval_ms", "") || process.env.MEOWTRACK_TRACKING_INTERVAL_MS || "";
+  return Math.max(1000, Number(s) || 5000);
+}
 // Identité de commit dédiée (n'altère pas la config git de l'utilisateur).
 const TRACK_ENV = {
   ...process.env,
@@ -172,7 +195,7 @@ const TRACK_ENV = {
 };
 
 export function trackingGitEnabled() {
-  return TRACKING_GIT;
+  return trackingGit();
 }
 
 // git sans shell, capture stdout+stderr → {ok, out}. `input` (optionnel) → stdin.
@@ -197,15 +220,17 @@ function gitT(cwd, args, input) {
 //   3. sinon, branche ORPHAN créée par plumbing (arbre vide → commit sans parent →
 //      branche). Ne touche JAMAIS l'index ni le working tree du checkout principal.
 function ensureTrackingBranch(root) {
-  if (gitT(root, ["rev-parse", "--verify", "--quiet", `refs/heads/${TRACKING_BRANCH}`]).ok) return true;
-  if (gitT(root, ["rev-parse", "--verify", "--quiet", `refs/remotes/${TRACKING_REMOTE}/${TRACKING_BRANCH}`]).ok) {
-    return gitT(root, ["branch", TRACKING_BRANCH, `${TRACKING_REMOTE}/${TRACKING_BRANCH}`]).ok;
+  const B = trackingBranch();
+  const R = trackingRemote();
+  if (gitT(root, ["rev-parse", "--verify", "--quiet", `refs/heads/${B}`]).ok) return true;
+  if (gitT(root, ["rev-parse", "--verify", "--quiet", `refs/remotes/${R}/${B}`]).ok) {
+    return gitT(root, ["branch", B, `${R}/${B}`]).ok;
   }
   const tree = gitT(root, ["mktree"], "").out; // stdin vide → hash de l'arbre vide
   if (!tree) return false;
   const commit = gitT(root, ["commit-tree", tree, "-m", "Init tracking meowtrack"]).out; // sans parent → orphan
   if (!commit) return false;
-  return gitT(root, ["branch", TRACKING_BRANCH, commit]).ok;
+  return gitT(root, ["branch", trackingBranch(), commit]).ok;
 }
 
 // Garantit que le magasin tracker d'un dépôt est un worktree de la branche orphan
@@ -214,7 +239,7 @@ function ensureTrackingBranch(root) {
 // Renvoie { mode: 'worktree'|'plain', dir, root }.
 export function ensureTrackingStore(repoId) {
   const dir = trackerStoreDirFor(repoId);
-  if (!TRACKING_GIT) {
+  if (!trackingGit()) {
     mkdirSync(dir, { recursive: true });
     return { mode: "plain", dir, root: null };
   }
@@ -258,7 +283,7 @@ export function ensureTrackingStore(repoId) {
   };
   gitT(root, ["worktree", "prune"]); // purge les registrations fantômes (dir supprimé)
   if (!ensureTrackingBranch(root)) return fallbackPlain();
-  if (!gitT(root, ["worktree", "add", dir, TRACKING_BRANCH]).ok) return fallbackPlain();
+  if (!gitT(root, ["worktree", "add", dir, trackingBranch()]).ok) return fallbackPlain();
 
   try { writeFileSync(join(dir, ".gitignore"), "tracker.db-wal\ntracker.db-shm\n"); } catch { /* ignore */ }
   if (stashed) { try { renameSync(stash, dbFile); } catch { /* ignore */ } } // notre base prime
@@ -267,8 +292,8 @@ export function ensureTrackingStore(repoId) {
 
 // Commit (et push opt-in) de l'état COURANT du tracker d'un dépôt. Checkpoint WAL
 // d'abord (fichier complet), puis add + commit si changements. Best-effort.
-export function commitTrackingStore(repoId, { push = TRACKING_PUSH } = {}) {
-  if (!TRACKING_GIT) return { skipped: "disabled" };
+export function commitTrackingStore(repoId, { push = trackingPush() } = {}) {
+  if (!trackingGit()) return { skipped: "disabled" };
   let store;
   try {
     store = ensureTrackingStore(repoId);
@@ -281,20 +306,20 @@ export function commitTrackingStore(repoId, { push = TRACKING_PUSH } = {}) {
   if (!gitT(store.dir, ["status", "--porcelain"]).out) return { nochange: true };
   const c = gitT(store.dir, ["commit", "-m", `tracking ${new Date().toISOString()}`]);
   let pushed = null;
-  if (c.ok && push) pushed = gitT(store.dir, ["push", TRACKING_REMOTE, `HEAD:${TRACKING_BRANCH}`]).ok;
+  if (c.ok && push) pushed = gitT(store.dir, ["push", trackingRemote(), `HEAD:${trackingBranch()}`]).ok;
   return { committed: c.ok, pushed, output: c.out };
 }
 
 // Boot : prépare le worktree de CHAQUE dépôt (restore le tracker.db de la branche
 // `tracking` sur une machine neuve) et, si push activé, tente un pull ff-only.
 export function syncAllTrackingStores() {
-  if (!TRACKING_GIT) return [];
+  if (!trackingGit()) return [];
   const out = [];
   for (const repo of listRepoRows()) {
     try {
       const store = ensureTrackingStore(repo.id);
-      if (store.mode === "worktree" && TRACKING_PUSH) {
-        gitT(store.dir, ["pull", "--ff-only", TRACKING_REMOTE, TRACKING_BRANCH]);
+      if (store.mode === "worktree" && trackingPush()) {
+        gitT(store.dir, ["pull", "--ff-only", trackingRemote(), trackingBranch()]);
       }
       out.push({ slug: repo.slug, mode: store.mode });
     } catch (e) {
@@ -304,22 +329,22 @@ export function syncAllTrackingStores() {
   return out;
 }
 
-// Committer périodique : toutes les TRACKING_INTERVAL_MS, commit chaque tracker qui
-// a changé (le « débounce » est porté par l'intervalle + le no-op si rien à committer
-// — pas besoin d'instrumenter chaque mutation). unref → ne bloque pas l'arrêt.
+// Committer périodique : à chaque intervalle, commit chaque tracker qui a changé (le
+// « débounce » est porté par l'intervalle + le no-op si rien à committer — pas besoin
+// d'instrumenter chaque mutation). unref → ne bloque pas l'arrêt.
 let _committer = null;
 export function startTrackingCommitter() {
-  if (!TRACKING_GIT || _committer) return;
+  if (!trackingGit() || _committer) return;
   _committer = setInterval(() => {
     for (const repo of listRepoRows()) {
       try { commitTrackingStore(repo.id); } catch { /* ignore */ }
     }
-  }, TRACKING_INTERVAL_MS);
+  }, trackingIntervalMs());
   if (_committer.unref) _committer.unref();
 }
 // Flush final (à l'arrêt) : un dernier commit (+ push opt-in) de chaque tracker.
 export function flushTrackingCommits() {
-  if (!TRACKING_GIT) return;
+  if (!trackingGit()) return;
   for (const repo of listRepoRows()) {
     try { commitTrackingStore(repo.id); } catch { /* ignore */ }
   }
@@ -327,6 +352,48 @@ export function flushTrackingCommits() {
 export function stopTrackingCommitter() {
   if (_committer) { clearInterval(_committer); _committer = null; }
   flushTrackingCommits();
+}
+
+// État du magasin d'un dépôt SANS effet de bord (pour l'affichage UI).
+function trackingStoreMode(repoId) {
+  if (!trackingGit()) return "off";
+  let dir;
+  try { dir = trackerStoreDirFor(repoId); } catch { return "?"; }
+  if (existsSync(join(dir, ".git"))) return "worktree";
+  return existsSync(dir) ? "plain" : "absent";
+}
+
+// Config EFFECTIVE + origine (env) + état par dépôt — pour la page de configuration.
+export function getTrackingConfig() {
+  return {
+    git: trackingGit(),
+    push: trackingPush(),
+    branch: trackingBranch(),
+    remote: trackingRemote(),
+    intervalMs: trackingIntervalMs(),
+    // Valeurs forcées par l'environnement (informatif : un réglage UI les surcharge).
+    env: {
+      git: process.env.MEOWTRACK_TRACKING_GIT === "1",
+      push: process.env.MEOWTRACK_TRACKING_PUSH === "1",
+    },
+    stores: listRepoRows().map((r) => ({ slug: r.slug, name: r.name, mode: trackingStoreMode(r.id) })),
+  };
+}
+
+// Persiste la config (app_settings) puis réconcilie l'état runtime : (re)prépare les
+// worktrees + relance le committer si activé, l'arrête sinon. Renvoie la config à jour.
+export function setTrackingConfig(patch = {}) {
+  if ("git" in patch) setSetting("tracking_git", patch.git ? "1" : "0");
+  if ("push" in patch) setSetting("tracking_push", patch.push ? "1" : "0");
+  if ("branch" in patch && String(patch.branch || "").trim()) setSetting("tracking_branch", String(patch.branch).trim());
+  if ("remote" in patch && String(patch.remote || "").trim()) setSetting("tracking_remote", String(patch.remote).trim());
+  if ("intervalMs" in patch && Number(patch.intervalMs)) setSetting("tracking_interval_ms", String(Math.max(1000, Number(patch.intervalMs))));
+  if (_committer) { clearInterval(_committer); _committer = null; }
+  if (trackingGit()) {
+    syncAllTrackingStores();
+    startTrackingCommitter();
+  }
+  return getTrackingConfig();
 }
 
 // ── Cache d'index de chemins, par (repo, branche) ────────────────────────────

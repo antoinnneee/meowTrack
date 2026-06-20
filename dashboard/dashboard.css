@@ -675,6 +675,8 @@ button.xs { padding: 3px 8px; font-size: 11px; }
 #ghClientIdHint { margin: 0 0 10px; font-size: 11px; color: var(--text-dim); }
 .gh-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .gh-status { flex: 1; font-size: 13px; }
+.cfg-check { display: flex; align-items: center; gap: 8px; font-size: 13px; margin: 6px 0; cursor: pointer; }
+.cfg-check input { width: auto; margin: 0; }
 .gh-status code { font-size: 12px; background: var(--bg); padding: 1px 5px; border-radius: 4px; }
 .gh-device { margin-top: 10px; padding: 10px; border: 1px dashed var(--border); border-radius: 8px; }
 .gh-device p { margin: 0 0 8px; font-size: 13px; }

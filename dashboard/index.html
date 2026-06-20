@@ -428,6 +428,26 @@
           </div>
         </div>
 
+        <div class="refs-block" id="cfgTracking">
+          <div class="refs-head"><span>Versionnement du suivi</span><span class="hint">Sauvegarde la base de suivi dans une branche « tracking » dédiée de chaque dépôt.</span></div>
+          <label class="cfg-check"><input type="checkbox" id="trkGit" /> Activer le versionnement git (commit local automatique)</label>
+          <label class="cfg-check"><input type="checkbox" id="trkPush" /> Pousser vers le remote (publication)</label>
+          <div class="form-row">
+            <label>Branche
+              <input id="trkBranch" type="text" placeholder="tracking" autocomplete="off" spellcheck="false" />
+            </label>
+            <label>Remote
+              <input id="trkRemote" type="text" placeholder="origin" autocomplete="off" spellcheck="false" />
+            </label>
+          </div>
+          <p class="hint" id="trkEnvHint" hidden></p>
+          <div class="gh-row">
+            <span class="gh-status" id="trkStatus">…</span>
+            <button id="trkApply" class="ghost">Appliquer</button>
+            <button id="trkCommitNow" class="ghost">Sauvegarder maintenant</button>
+          </div>
+        </div>
+
         <div class="refs-block">
           <div class="refs-head"><span>Remotes</span><span class="hint">Origines distantes (fetch/push).</span></div>
           <ul id="cfgRemotes" class="ref-list"></ul>

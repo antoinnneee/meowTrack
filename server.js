@@ -84,6 +84,9 @@ import {
   syncAllTrackingStores,
   startTrackingCommitter,
   stopTrackingCommitter,
+  flushTrackingCommits,
+  getTrackingConfig,
+  setTrackingConfig,
   // Gestionnaire de repos (git)
   statusFor,
   logGraphFor,
@@ -1681,6 +1684,18 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && path === "/api/git/config") {
       return send(res, 200, getGitConfigFor(repoOf()));
     }
+    // ── Versionnement du tracking (global, instance) : config + commit manuel ──
+    if (req.method === "GET" && path === "/api/tracking/config") {
+      return send(res, 200, getTrackingConfig());
+    }
+    if (req.method === "POST" && path === "/api/tracking/config") {
+      const body = await readBody(req);
+      return send(res, 200, setTrackingConfig(body));
+    }
+    if (req.method === "POST" && path === "/api/tracking/commit") {
+      flushTrackingCommits(); // commit (+ push opt-in) immédiat de tous les trackers
+      return send(res, 200, getTrackingConfig());
+    }
     // ── Auth GitHub (device flow) ──
     // État : OAuth App configurée ? credential github.com présent ? (jamais le token)
     // `clientId` (non secret) sert à pré-remplir le champ de l'UI.
@@ -2177,16 +2192,18 @@ if (process.env.MEOWTRACK_NO_LISTEN !== "1") {
       else console.error(`[meowtrack]   ${s.slug} : ${s.mode}.`);
     }
     startTrackingCommitter();
-    let _flushed = false;
-    const flush = () => {
-      if (_flushed) return;
-      _flushed = true;
-      try { stopTrackingCommitter(); } catch { /* ignore */ }
-    };
-    process.on("SIGINT", () => { flush(); process.exit(0); });
-    process.on("SIGTERM", () => { flush(); process.exit(0); });
-    process.on("exit", flush);
   }
+  // Commit final à l'arrêt — enregistré INCONDITIONNELLEMENT (no-op si désactivé) pour
+  // couvrir une activation faite à chaud via l'UI après le démarrage.
+  let _flushed = false;
+  const flush = () => {
+    if (_flushed) return;
+    _flushed = true;
+    try { stopTrackingCommitter(); } catch { /* ignore */ }
+  };
+  process.on("SIGINT", () => { flush(); process.exit(0); });
+  process.on("SIGTERM", () => { flush(); process.exit(0); });
+  process.on("exit", flush);
 
   server.listen(PORT, HOST, () => {
     console.error(`[meowtrack] Dashboard prêt → http://${HOST}:${PORT}`);
