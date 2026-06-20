@@ -63,6 +63,7 @@ export const vibes = {
     linking: null,          // id source pendant « tirer un lien »
     linkKind: "child",      // type de lien en cours de tracé : 'child' (reparente) | 'requires' (prérequis)
     edgeDel: null,          // { childId, parentId } de l'arête dont la poubelle est affichée
+    reqDel: null,           // { fromId, toId } du prérequis dont la poubelle est affichée
     pendingCreatePos: null, // position graphe où créer le prochain nœud (menu fond)
     suppressClick: false,   // ignore le prochain click (après un drag)
   },
@@ -736,47 +737,59 @@ function graphCenter(pos) {
   for (const p of pos.values()) { sx += p.x; sy += p.y; n++; }
   return n ? { x: sx / n, y: sy / n } : { x: 0, y: 0 };
 }
+// Géométrie partagée d'une arête de prérequis : normale unitaire (côté de courbure),
+// amplitude et milieu de la corde. center : si fourni, la courbe se bombe du côté OPPOSÉ
+// au centre du graphe (vers l'extérieur) — le sens de courbure suit les positions des
+// nœuds et ne traverse plus l'arbre. Sans center, repli sur un côté perpendiculaire fixe.
+function reqGeom(a, b, center) {
+  const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const len = Math.hypot(dx, dy) || 1;
+  let nx = -dy / len, ny = dx / len;
+  if (center && (nx * (mx - center.x) + ny * (my - center.y)) < 0) { nx = -nx; ny = -ny; }
+  return { nx, ny, off: Math.min(60, len * 0.18), mx, my };
+}
+// Sommet visuel de la courbe (point à t=0.5) : sert à poser le bouton « supprimer ».
+function reqApex(a, b, center) {
+  const g = reqGeom(a, b, center);
+  return { x: g.mx + g.nx * g.off / 2, y: g.my + g.ny * g.off / 2 };
+}
 // Arête de PRÉREQUIS : « from dépend de to ». Courbe pointillée distincte (jamais
 // confondue avec la hiérarchie pleine), flèche pointant vers le prérequis (to).
 // L'arc s'écarte du segment droit pour rester lisible même entre nœuds éloignés.
 // ra/rb rognent les extrémités sur le périmètre des nœuds (le long de la tangente de
 // la courbe quadratique) pour que la flèche se pose VISIBLEMENT sur le bord du prérequis
 // au lieu d'être cachée sous son disque (les nœuds sont peints par-dessus les arêtes).
-// center : si fourni, la courbe se bombe du côté OPPOSÉ au centre du graphe (vers
-// l'extérieur) — le sens de courbure suit donc les positions des nœuds et ne traverse
-// plus l'arbre. Sans center, repli sur un côté perpendiculaire fixe.
 function reqEdgeD(a, b, ra = 0, rb = 0, center = null) {
-  const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-  const dx = b.x - a.x, dy = b.y - a.y;
-  const len = Math.hypot(dx, dy) || 1;
-  const off = Math.min(60, len * 0.18); // amplitude liée à la distance
-  // Normale unitaire à l'arête ; côté choisi selon la position du centre.
-  let nx = -dy / len, ny = dx / len;
-  if (center && (nx * (mx - center.x) + ny * (my - center.y)) < 0) { nx = -nx; ny = -ny; }
+  const { nx, ny, off, mx, my } = reqGeom(a, b, center);
   const cx = mx + nx * off, cy = my + ny * off;
   let ax = a.x, ay = a.y, bx = b.x, by = b.y;
   if (ra) { const tx = cx - a.x, ty = cy - a.y, tl = Math.hypot(tx, ty) || 1; ax = a.x + (tx / tl) * ra; ay = a.y + (ty / tl) * ra; }
   if (rb) { const tx = b.x - cx, ty = b.y - cy, tl = Math.hypot(tx, ty) || 1; bx = b.x - (tx / tl) * rb; by = b.y - (ty / tl) * rb; }
   return `M ${ax} ${ay} Q ${cx} ${cy} ${bx} ${by}`;
 }
+// Une arête de prérequis = un groupe : une HITBOX large transparente (facile à viser à la
+// souris) + le trait pointillé visible (sans capture d'événements). data-from/to et le
+// tooltip portés par le groupe ; le clic est géré au niveau du groupe (.g-req-edge).
 function reqEdgePath(a, b, link, blocked, center) {
   const ra = nodeOuterR(link.fromId) + 2;       // démarre juste hors du nœud source
   const rb = nodeOuterR(link.toId) + 9;         // laisse la place à la pointe de flèche
-  const path = svgEl("path", {
-    d: reqEdgeD(a, b, ra, rb, center),
-    class: "g-req" + (blocked ? " blocked" : ""),
+  const d = reqEdgeD(a, b, ra, rb, center);
+  const g = svgEl("g", {
+    class: "g-req-edge" + (blocked ? " blocked" : ""),
     "data-from": String(link.fromId),
     "data-to": String(link.toId),
-    "marker-end": blocked ? "url(#reqArrowBlocked)" : "url(#reqArrow)",
   });
+  g.appendChild(svgEl("path", { d, class: "g-req-hit" }));
+  g.appendChild(svgEl("path", { d, class: "g-req" + (blocked ? " blocked" : ""), "marker-end": blocked ? "url(#reqArrowBlocked)" : "url(#reqArrow)" }));
   // Tooltip natif au survol : lève l'ambiguïté du sens (la flèche pointe vers le prérequis).
   const from = vibes.byId.get(link.fromId), to = vibes.byId.get(link.toId);
   if (from && to) {
     const ttl = svgEl("title", {});
-    ttl.textContent = `« ${from.title} » dépend de « ${to.title} »`;
-    path.appendChild(ttl);
+    ttl.textContent = `« ${from.title} » dépend de « ${to.title} » — clic pour retirer`;
+    g.appendChild(ttl);
   }
-  return path;
+  return g;
 }
 // <defs> du graphe : marqueurs de flèche pour les arêtes de prérequis (définis une fois,
 // une variante normale + une bloquée pour que la pointe reprenne la couleur de l'arête).
@@ -801,7 +814,8 @@ function renderGraph() {
   const pos = layout.pos;
   const gpos = layout.gpos;
   vibes.graph.posMap = pos;     // réutilisé par le drag live et le recalcul des arêtes
-  vibes.graph.edgeDel = null;   // l'overlay poubelle (re)disparaît au rendu
+  vibes.graph.edgeDel = null;   // les overlays poubelle (re)disparaissent au rendu
+  vibes.graph.reqDel = null;
   while (svg.firstChild) svg.removeChild(svg.firstChild);
   svg.appendChild(graphDefs());
   const gEdges = svgEl("g", { class: "g-edges" });
@@ -926,12 +940,15 @@ function liveUpdateGraphPositions() {
     if (pp && pc) ed.setAttribute("d", edgeD(pp, pc));
   });
   const center = graphCenter(pos);
-  svg.querySelectorAll(".g-req").forEach((ed) => {
-    const from = Number(ed.dataset.from), to = Number(ed.dataset.to);
+  svg.querySelectorAll(".g-req-edge").forEach((g) => {
+    const from = Number(g.dataset.from), to = Number(g.dataset.to);
     const pf = pos.get(from), pt = pos.get(to);
-    if (pf && pt) ed.setAttribute("d", reqEdgeD(pf, pt, nodeOuterR(from) + 2, nodeOuterR(to) + 9, center));
+    if (!pf || !pt) return;
+    const d = reqEdgeD(pf, pt, nodeOuterR(from) + 2, nodeOuterR(to) + 9, center);
+    g.querySelectorAll("path").forEach((p) => p.setAttribute("d", d));
   });
   if (vibes.graph.edgeDel) positionEdgeDel();
+  if (vibes.graph.reqDel) positionReqDel();
 }
 // Persiste les positions manuelles d'un ensemble d'ids (depuis posMap) + maj locale.
 async function persistPositions(ids) {
@@ -1074,6 +1091,41 @@ async function deleteEdge(childId) {
   }
 }
 
+// ── Poubelle de suppression d'un PRÉREQUIS (clic simple sur le lien) ──────────
+// Un simple clic sur l'arête (hitbox large) pose un bouton 🗑 au sommet de la courbe ;
+// le clic suivant retire le lien. Plus besoin de viser un trait fin au double-clic.
+function hideReqDel() {
+  const el = document.getElementById("gReqDel");
+  if (el) el.remove();
+  vibes.graph.reqDel = null;
+}
+function positionReqDel() {
+  const el = document.getElementById("gReqDel");
+  const d = vibes.graph.reqDel;
+  if (!el || !d) return;
+  const pf = vibes.graph.posMap.get(d.fromId), pt = vibes.graph.posMap.get(d.toId);
+  if (!pf || !pt) return;
+  const ap = reqApex(pf, pt, graphCenter(vibes.graph.posMap));
+  el.setAttribute("transform", `translate(${ap.x},${ap.y})`);
+}
+function showReqDel(fromId, toId) {
+  // Re-clic sur le même lien → on referme (toggle).
+  if (vibes.graph.reqDel && vibes.graph.reqDel.fromId === fromId && vibes.graph.reqDel.toId === toId) {
+    hideReqDel();
+    return;
+  }
+  hideReqDel();
+  vibes.graph.reqDel = { fromId, toId };
+  const g = svgEl("g", { id: "gReqDel", class: "g-edge-del g-req-del" });
+  g.appendChild(svgEl("circle", { r: 13 }));
+  const t = svgEl("text", { "text-anchor": "middle", dy: "0.35em", "font-size": "14" });
+  t.textContent = "🗑";
+  g.appendChild(t);
+  g.addEventListener("click", (e) => { e.stopPropagation(); hideReqDel(); deleteReqLink(fromId, toId); });
+  $("#graphSvg").appendChild(g);
+  positionReqDel();
+}
+
 const NODE_DRAG_THRESHOLD = 4; // px avant de basculer click → drag
 function wireGraph() {
   const svg = $("#graphSvg");
@@ -1096,9 +1148,11 @@ function wireGraph() {
   svg.addEventListener("mousedown", (e) => {
     if (e.button !== 0) return; // gauche uniquement (le clic droit → contextmenu)
     if (vibes.graph.linking) return; // en mode lien : la sélection se fait au click
-    if (e.target.closest("#gEdgeDel")) return; // clic sur la poubelle : géré par son handler
+    if (e.target.closest("#gEdgeDel") || e.target.closest("#gReqDel")) return; // poubelle : géré par son handler
+    if (e.target.closest(".g-req-edge")) return; // clic sur un lien de prérequis : géré au click (poubelle)
     hideCtxMenu();
     hideEdgeDel();
+    hideReqDel();
     const gNode = e.target.closest(".g-node");
     if (gNode) {
       const id = Number(gNode.dataset.id);
@@ -1153,7 +1207,7 @@ function wireGraph() {
     vibes.graph.drag = null;
   });
 
-  // click : ouvre un nœud (sauf juste après un drag) ou finalise un lien.
+  // click : ouvre un nœud, finalise un lien, ou pose la poubelle sur un prérequis.
   svg.addEventListener("click", (e) => {
     if (vibes.graph.suppressClick) { vibes.graph.suppressClick = false; return; }
     const gNode = e.target.closest(".g-node");
@@ -1162,13 +1216,13 @@ function wireGraph() {
       else cancelLinkMode();
       return;
     }
-    if (gNode) openNode(gNode.dataset.ref);
+    if (gNode) { openNode(gNode.dataset.ref); return; }
+    const req = e.target.closest(".g-req-edge");
+    if (req) { showReqDel(Number(req.dataset.from), Number(req.dataset.to)); return; }
   });
 
-  // double-clic sur une arête → affiche la poubelle de suppression de lien.
+  // double-clic sur une arête de hiérarchie → poubelle de détachement.
   svg.addEventListener("dblclick", (e) => {
-    const req = e.target.closest(".g-req");
-    if (req) { e.preventDefault(); deleteReqLink(Number(req.dataset.from), Number(req.dataset.to)); return; }
     const edge = e.target.closest(".g-edge");
     if (edge) { e.preventDefault(); showEdgeDel(Number(edge.dataset.cid), Number(edge.dataset.pid)); }
   });
@@ -1189,7 +1243,7 @@ function wireGraph() {
       ]);
       return;
     }
-    const req = e.target.closest(".g-req");
+    const req = e.target.closest(".g-req-edge");
     if (req) {
       showCtxMenu(e.clientX, e.clientY, [
         { label: "🗑 Retirer le prérequis", danger: true, onClick: () => deleteReqLink(Number(req.dataset.from), Number(req.dataset.to)) },
