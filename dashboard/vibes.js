@@ -722,32 +722,60 @@ function ghostNodeGroup(gh, p) {
 function ghostEdge(p, c) {
   return svgEl("path", { d: edgeD(p, c), class: "g-edge g-ghost-edge" });
 }
+// Rayon visuel externe d'un nœud du graphe (disque + anneau de progression), aligné
+// sur nodeGroup. Sert à rogner les arêtes de prérequis sur le bord des nœuds.
+function nodeOuterR(id) {
+  const n = vibes.byId.get(id);
+  if (!n) return 24;
+  return (n.depth === 0 ? 26 : Math.max(12, 24 - n.depth * 3)) + 5;
+}
 // Arête de PRÉREQUIS : « from dépend de to ». Courbe pointillée distincte (jamais
 // confondue avec la hiérarchie pleine), flèche pointant vers le prérequis (to).
 // L'arc s'écarte du segment droit pour rester lisible même entre nœuds éloignés.
-function reqEdgeD(a, b) {
+// ra/rb rognent les extrémités sur le périmètre des nœuds (le long de la tangente de
+// la courbe quadratique) pour que la flèche se pose VISIBLEMENT sur le bord du prérequis
+// au lieu d'être cachée sous son disque (les nœuds sont peints par-dessus les arêtes).
+function reqEdgeD(a, b, ra = 0, rb = 0) {
   const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
   const dx = b.x - a.x, dy = b.y - a.y;
   const len = Math.hypot(dx, dy) || 1;
   const off = Math.min(60, len * 0.18); // déport perpendiculaire
   const cx = mx - (dy / len) * off, cy = my + (dx / len) * off;
-  return `M ${a.x} ${a.y} Q ${cx} ${cy} ${b.x} ${b.y}`;
+  let ax = a.x, ay = a.y, bx = b.x, by = b.y;
+  if (ra) { const tx = cx - a.x, ty = cy - a.y, tl = Math.hypot(tx, ty) || 1; ax = a.x + (tx / tl) * ra; ay = a.y + (ty / tl) * ra; }
+  if (rb) { const tx = b.x - cx, ty = b.y - cy, tl = Math.hypot(tx, ty) || 1; bx = b.x - (tx / tl) * rb; by = b.y - (ty / tl) * rb; }
+  return `M ${ax} ${ay} Q ${cx} ${cy} ${bx} ${by}`;
 }
 function reqEdgePath(a, b, link, blocked) {
-  return svgEl("path", {
-    d: reqEdgeD(a, b),
+  const ra = nodeOuterR(link.fromId) + 2;       // démarre juste hors du nœud source
+  const rb = nodeOuterR(link.toId) + 9;         // laisse la place à la pointe de flèche
+  const path = svgEl("path", {
+    d: reqEdgeD(a, b, ra, rb),
     class: "g-req" + (blocked ? " blocked" : ""),
     "data-from": String(link.fromId),
     "data-to": String(link.toId),
-    "marker-end": "url(#reqArrow)",
+    "marker-end": blocked ? "url(#reqArrowBlocked)" : "url(#reqArrow)",
   });
+  // Tooltip natif au survol : lève l'ambiguïté du sens (la flèche pointe vers le prérequis).
+  const from = vibes.byId.get(link.fromId), to = vibes.byId.get(link.toId);
+  if (from && to) {
+    const ttl = svgEl("title", {});
+    ttl.textContent = `« ${from.title} » dépend de « ${to.title} »`;
+    path.appendChild(ttl);
+  }
+  return path;
 }
-// <defs> du graphe : marqueur de flèche pour les arêtes de prérequis (défini une fois).
+// <defs> du graphe : marqueurs de flèche pour les arêtes de prérequis (définis une fois,
+// une variante normale + une bloquée pour que la pointe reprenne la couleur de l'arête).
+function reqArrowMarker(id, cls) {
+  const m = svgEl("marker", { id, viewBox: "0 0 10 10", refX: "8", refY: "5", markerWidth: "9", markerHeight: "9", orient: "auto-start-reverse" });
+  m.appendChild(svgEl("path", { d: "M 0 0 L 10 5 L 0 10 z", class: cls }));
+  return m;
+}
 function graphDefs() {
   const defs = svgEl("defs", {});
-  const m = svgEl("marker", { id: "reqArrow", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse" });
-  m.appendChild(svgEl("path", { d: "M 0 0 L 10 5 L 0 10 z", class: "g-req-arrow" }));
-  defs.appendChild(m);
+  defs.appendChild(reqArrowMarker("reqArrow", "g-req-arrow"));
+  defs.appendChild(reqArrowMarker("reqArrowBlocked", "g-req-arrow-blocked"));
   return defs;
 }
 function renderGraph() {
@@ -883,8 +911,9 @@ function liveUpdateGraphPositions() {
     if (pp && pc) ed.setAttribute("d", edgeD(pp, pc));
   });
   svg.querySelectorAll(".g-req").forEach((ed) => {
-    const pf = pos.get(Number(ed.dataset.from)), pt = pos.get(Number(ed.dataset.to));
-    if (pf && pt) ed.setAttribute("d", reqEdgeD(pf, pt));
+    const from = Number(ed.dataset.from), to = Number(ed.dataset.to);
+    const pf = pos.get(from), pt = pos.get(to);
+    if (pf && pt) ed.setAttribute("d", reqEdgeD(pf, pt, nodeOuterR(from) + 2, nodeOuterR(to) + 9));
   });
   if (vibes.graph.edgeDel) positionEdgeDel();
 }
