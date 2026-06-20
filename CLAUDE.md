@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Meowtrack is a local, single-machine issue tracker for the Meownopoly project. It ships **two front doors over one SQLite database**: an MCP server (stdio) for use from Claude Code, and an HTTP dashboard (vanilla-JS SPA) for manual use. File/folder references on issues are anchored to **cloned git repos** and validated against them. The codebase, README, and comments are in **French** — match that when editing.
+Meowtrack is a local, single-machine issue tracker for the Meownopoly project. It ships **two front doors over a per-machine registry DB plus one tracking database per repo**: an MCP server (stdio) for use from Claude Code, and an HTTP dashboard (vanilla-JS SPA) for manual use. File/folder references on issues are anchored to **cloned git repos** and validated against them. The codebase, README, and comments are in **French** — match that when editing.
 
 ## Commands
 
@@ -19,7 +19,9 @@ The MCP server and dashboard share the DB and run **simultaneously** (SQLite WAL
 
 ## Architecture
 
-**One data layer, two transports.** `db.js` (~1600 lines, `better-sqlite3`, synchronous) owns the schema, all queries, and the WAL-mode connection. Both `mcp.js` (MCP tools) and `server.js` (HTTP routes) are thin transport adapters that call into `db.js` — put data logic in `db.js`, not in the transports.
+**One data layer, two transports.** `db.js` (~1750 lines, `better-sqlite3`, synchronous) owns the schema and all queries. It holds **a central registry connection** (`meowtrack.db` — only the `repos` registry + `app_settings`, per-machine) and **a lazy pool of per-repo `tracker.db` connections** (issues/refs/comments/nodes/messages, one SQLite file per repo under `.trackers/<slug>/`). Tracking queries go through an ambient `db` proxy routed by `withRepo(repoId, …)` — set once at each public entrypoint, so the query bodies stay repo-agnostic; `null` → default repo. An existing single-file DB is split into per-repo trackers on first boot (`splitLegacyToTrackers`, data-preserving). Both `mcp.js` (MCP tools) and `server.js` (HTTP routes) are thin transport adapters that call into `db.js` — put data logic in `db.js`, not in the transports.
+
+**Optional git-versioned tracking (`MEOWTRACK_TRACKING_GIT=1`, off by default).** Each repo's `tracker.db` can be versioned in an **orphan `tracking` branch** checked out in a dedicated worktree (`.trackers/<slug>/`) — no shared history with code, code branches never touched (Option B). A periodic committer (in `repos.js`) checkpoints the WAL and commits changes; a final commit runs on exit; push is opt-in (`MEOWTRACK_TRACKING_PUSH=1`). On boot, the worktree restores `tracker.db` from the branch (cross-machine sync). All best-effort: git failures never break the app, and fall back to a plain `.trackers/<slug>/` dir.
 
 **Two domains live in the same DB:**
 - **Issues** (`BUG-1`, `FEAT-2`…): bug/feature/task/chore tracker with file/folder *references*, comments, tags, captured branch/commit. Exposed via MCP tools (`meowtrack_create/list/get/update/...`) and `/api/issues`.
@@ -52,5 +54,5 @@ Chat read access to source (`MEOWTRACK_AI_REPO_ACCESS=1`, default) is sandboxed:
 
 - Config via `dotenv` (`.env`, see `.env.example`). Key vars: `MEOWTRACK_HOST` (`127.0.0.1`; `0.0.0.0` to expose), `MEOWTRACK_PORT` (`7702`), `MEOWTRACK_TOKEN` (when set, `/api/*` requires `Authorization: Bearer` — **mandatory in deployment**), `MEOWTRACK_DB`, `MEOWTRACK_REPO_URL`/`MEOWTRACK_REPO` (default-repo bootstrap only).
 - `MEOWTRACK_NO_LISTEN=1` imports `server.js` (handlers, `parseAiTurn`) **without** starting the HTTP listener — used by the test.
-- The DB (`meowtrack.db*`) is **gitignored and per-machine**; `node_modules/`, `.env`, `.deployEnv`, and the DB are never copied by `deploy.sh` (prod data/config preserved).
+- The registry DB (`meowtrack.db*`) and the per-repo trackers (`.trackers/`) are **gitignored and per-machine**; `node_modules/`, `.env`, `.deployEnv`, and the DBs are never copied by `deploy.sh` (prod data/config preserved). When `MEOWTRACK_TRACKING_GIT=1`, each `.trackers/<slug>/` is a git worktree whose `tracker.db` is versioned in that repo's own `tracking` branch (not in the meowtrack code repo).
 - The README documents the full data model, every endpoint, and the deploy flow in detail — consult it before changing schema, routes, or deployment.

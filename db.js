@@ -99,6 +99,25 @@ export function closeTrackerDb(repoId) {
     _pool.delete(repoId);
   }
 }
+// Rapatrie le WAL dans le fichier principal tracker.db (checkpoint TRUNCATE) avant
+// un commit git : garantit que le fichier versionné reflète TOUT l'état committé
+// (sinon des frames récentes resteraient dans le -wal, non capturées). No-op si la
+// connexion n'est pas (encore) ouverte. `repoId` peut être un id ou un slug.
+export function checkpointTracker(repoId) {
+  let id;
+  try {
+    id = resolveRepoId(repoId);
+  } catch {
+    return;
+  }
+  const conn = _pool.get(id);
+  if (!conn) return;
+  try {
+    conn.pragma("wal_checkpoint(TRUNCATE)");
+  } catch {
+    /* ignore (checkpoint best-effort) */
+  }
+}
 
 // Fixe la connexion ambiante sur le dépôt voulu pendant l'exécution de `fn`.
 // repoId null → si déjà dans une portée on HÉRITE (sous-appel même dépôt), sinon

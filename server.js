@@ -79,6 +79,11 @@ import {
   ensureAllRepos,
   invalidateRepo,
   importReposFromDir,
+  // Versionnement git du tracker.db par dépôt (branche orphan « tracking »)
+  trackingGitEnabled,
+  syncAllTrackingStores,
+  startTrackingCommitter,
+  stopTrackingCommitter,
   // Gestionnaire de repos (git)
   statusFor,
   logGraphFor,
@@ -2160,6 +2165,27 @@ if (process.env.MEOWTRACK_NO_LISTEN !== "1") {
     if (r.skipped) console.error(`[meowtrack]   ${r.slug} : clone local (pas d'URL) — ${r.branch || "?"}.`);
     else if (r.ok) console.error(`[meowtrack]   ${r.slug} : ${r.cloned ? "cloné" : "à jour"} (${r.branch || "?"} @ ${r.commit || "?"}).`);
     else console.error(`[meowtrack]   ⚠️  ${r.slug} : sync échouée — ${r.output || "erreur inconnue"}`);
+  }
+
+  // Versionnement git des tracker.db (opt-in MEOWTRACK_TRACKING_GIT=1) : prépare les
+  // worktrees de la branche orphan « tracking » (restore inter-machines), démarre le
+  // committer périodique, et fait un flush+commit final à l'arrêt.
+  if (trackingGitEnabled()) {
+    console.error("[meowtrack] Versionnement tracking (branche orphan) : préparation des worktrees…");
+    for (const s of syncAllTrackingStores()) {
+      if (s.error) console.error(`[meowtrack]   ⚠️  ${s.slug} : ${s.error}`);
+      else console.error(`[meowtrack]   ${s.slug} : ${s.mode}.`);
+    }
+    startTrackingCommitter();
+    let _flushed = false;
+    const flush = () => {
+      if (_flushed) return;
+      _flushed = true;
+      try { stopTrackingCommitter(); } catch { /* ignore */ }
+    };
+    process.on("SIGINT", () => { flush(); process.exit(0); });
+    process.on("SIGTERM", () => { flush(); process.exit(0); });
+    process.on("exit", flush);
   }
 
   server.listen(PORT, HOST, () => {
