@@ -65,6 +65,22 @@ check("blob géant → malformed", r.actions.length === 0 && r.malformed === tru
 r = parseAiTurn('Exemple :\n```json\n{"foo":1}\n```');
 check("fence sans actions → ignoré", r.actions.length === 0 && r.malformed === false);
 
+// 8b. note markdown multi-ligne (vrais \n bruts) + fence ``` imbriqué dans le body :
+// reproduit le bug réel (malformed=true → 0 nœud créé via le chat IA). Le parseur doit
+// tolérer les sauts de ligne bruts dans les chaînes et ne pas se tronquer sur un ``` interne.
+r = parseAiTurn(
+  "Je crée la racine.\n<<<MEOWTRACK_ACTIONS>>>\n```json\n" +
+    '{"actions":[{"op":"add_node","title":"Réseau","tmpKey":"root","notes":[' +
+    '{"title":"Archi","body":"## Stack\n\n```\n[A] <-> [B]\n```\n\n- point 1\n- point 2"}' +
+    ']}],"note":"racine créée"}\n```'
+);
+check("note multi-ligne + fence imbriqué: 1 action", r.actions.length === 1 && r.actions[0].op === "add_node");
+check("note multi-ligne + fence imbriqué: non malformed", r.malformed === false);
+check(
+  "note multi-ligne + fence imbriqué: body markdown préservé",
+  Array.isArray(r.actions[0].notes) && /## Stack/.test(r.actions[0].notes[0].body) && /\n/.test(r.actions[0].notes[0].body)
+);
+
 // 9. pipeline complet parse → applyNodeActions (tmpKey, add_node, reorder_children)
 const g = db.createNode(null, null, { title: "Pipeline" }); // repo défaut, nœud racine
 const ai =
