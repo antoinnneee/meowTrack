@@ -1708,7 +1708,7 @@ function renderNotes(n) {
   view.innerHTML = notes
     .map((note, i) => {
       const title = (note.title || "").trim() || `Note ${i + 1}`;
-      const isOpen = open.size ? open.has(i) : true; // tout déplié par défaut
+      const isOpen = open.size ? open.has(i) : false; // tout replié par défaut
       return `<details class="note-item"${isOpen ? " open" : ""} data-i="${i}">
         <summary class="note-summary"><span class="note-title">${esc(title)}</span></summary>
         <div class="note-body markdown-body">${renderMarkdown(note.body) || '<span class="hint">(vide)</span>'}</div>
