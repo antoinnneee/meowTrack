@@ -695,6 +695,7 @@ const vibes = {
   graph: {
     view: { x: 0, y: 0, w: 1000, h: 700 }, drag: null, userView: false,
     spawned: new Set(), pulsed: new Set(), celebrated: new Set(), fxFired: new Set(),
+    despawning: new Set(), // ids en cours d'anim de suppression (encore dans les données, flétris au rendu)
     posMap: new Map(),      // id → {x,y} résolu au dernier rendu (drag live + arêtes)
     nodeDrag: null,         // déplacement d'un nœud (et de son sous-arbre) en cours
     linking: null,          // id source pendant « tirer un lien »
@@ -827,7 +828,7 @@ function sparkleEl(el, opts = {}) {
 // Classe d'effet à appliquer à une carte/nœud selon les sets transitoires.
 function nodeFxClass(id) {
   const g = vibes.graph;
-  return (g.spawned.has(id) ? " spawn" : "") + (g.pulsed.has(id) ? " pulse" : "") + (g.celebrated.has(id) ? " celebrate" : "");
+  return (g.spawned.has(id) ? " spawn" : "") + (g.pulsed.has(id) ? " pulse" : "") + (g.celebrated.has(id) ? " celebrate" : "") + (g.despawning.has(id) ? " despawn" : "");
 }
 
 // ── Rendu Markdown minimal et SÛR (sans dépendance) ───────────────────────────
@@ -1039,6 +1040,31 @@ function renderForestSoon() {
   });
 }
 
+// Animation de suppression : le nœud (et son sous-arbre, encore dans les données
+// jusqu'au refetch) est marqué « despawning » puis flétri AU RENDU dans toutes les
+// vues — graphe, grille, arbre détail. On passe par un set (et non le DOM direct)
+// pour survivre aux re-rendus déclenchés entre-temps (maj de progression des
+// ancêtres). Après l'anim : on purge le set et on rejoue `then` (le refetch qui
+// retire vraiment les nœuds). Mouvement réduit → `then` direct, sans anim.
+function animateNodeRemoval(rootId, then) {
+  const run = typeof then === "function" ? then : () => {};
+  if (REDUCED) return run();
+  const ids = subtreeIds(rootId);
+  for (const id of ids) vibes.graph.despawning.add(id);
+  // Re-rendu immédiat de la vue active pour appliquer la classe « despawn ».
+  if (vibes.current && vibes.currentNode) renderTree(vibes.currentNode);
+  else renderForestViews();
+  // Petit « pouf » sur le disque du nœud racine dans le graphe.
+  if (!$("#graphView").hidden) {
+    const disc = $("#graphSvg")?.querySelector(`.g-node[data-id="${cssId(rootId)}"] .g-disc`);
+    if (disc) sparkleEl(disc, { count: 7, dist: 34, size: 16, emojis: ["💨", "✨", "·"] });
+  }
+  setTimeout(() => {
+    for (const id of ids) vibes.graph.despawning.delete(id);
+    run();
+  }, 440);
+}
+
 // ── Grille (racines) ─────────────────────────────────────────────────────────
 function nodeCardHtml(n) {
   return `<div class="goal-card status-${esc(n.status)}${nodeFxClass(n.id)}" data-ref="${esc(n.ref)}" data-id="${n.id}" style="--gc:var(--${esc(n.color || "accent")})">
@@ -1172,7 +1198,7 @@ function edgeD(p, c) {
 function edgePath(p, c, node) {
   return svgEl("path", {
     d: edgeD(p, c),
-    class: "g-edge" + (vibes.graph.spawned.has(node.id) ? " spawn" : ""),
+    class: "g-edge" + (vibes.graph.spawned.has(node.id) ? " spawn" : "") + (vibes.graph.despawning.has(node.id) ? " despawn" : ""),
     "data-cid": String(node.id),
     "data-pid": String(node.parentId), // pour la maj live des arêtes pendant le drag
     stroke: cascadeColorOf(node),
@@ -1192,7 +1218,8 @@ function nodeGroup(n, p) {
   const spawn = vibes.graph.spawned.has(n.id);
   const pulse = vibes.graph.pulsed.has(n.id);
   const celebrate = vibes.graph.celebrated.has(n.id);
-  const fxCls = (spawn ? " spawn" : "") + (pulse ? " pulse" : "") + (celebrate ? " celebrate" : "");
+  const despawn = vibes.graph.despawning.has(n.id);
+  const fxCls = (spawn ? " spawn" : "") + (pulse ? " pulse" : "") + (celebrate ? " celebrate" : "") + (despawn ? " despawn" : "");
   const g = svgEl("g", { transform: `translate(${p.x},${p.y})`, class: "g-node status-" + n.status + fxCls, "data-ref": n.ref, "data-id": String(n.id) });
   // Tooltip natif : le label étant tronqué, le survol révèle le titre complet.
   const ttl = svgEl("title", {});
@@ -1846,7 +1873,8 @@ function treeHtml(n, depth, fx) {
   const f = fx.get(n.id);
   const fxCls = f ? " " + f.cls : "";
   const si = f ? f.si : 0;
-  return `<li class="tnode" data-ref="${esc(n.ref)}" data-id="${n.id}" style="--d:${depth}">
+  const liCls = "tnode" + (vibes.graph.despawning.has(n.id) ? " despawn" : "");
+  return `<li class="${liCls}" data-ref="${esc(n.ref)}" data-id="${n.id}" style="--d:${depth}">
     <div class="trow ms-${esc(n.status)}${fxCls}" style="--si:${si}">
       <span class="tdot" style="background:var(--${esc(n.color || "accent")})"></span>
       <span class="temoji">${esc(n.emoji || "🎯")}</span>
@@ -1984,6 +2012,7 @@ function scheduleSubtreeRefetch() {
   clearTimeout(vibes.dirtyTimer);
   vibes.dirtyTimer = setTimeout(async () => {
     if (!vibes.current) return;
+    if (vibes.graph.despawning.size) return; // anim de suppression en cours : le refetch final est rejoué après
     try {
       const node = await api.get(nodeUrl("?tree=true"));
       vibes.currentNode = node;
@@ -2313,7 +2342,12 @@ function subscribeForest() {
   };
   es.addEventListener("node:created", (e) => applyNode(JSON.parse(e.data), "created"));
   es.addEventListener("node:updated", (e) => applyNode(JSON.parse(e.data), "updated"));
-  es.addEventListener("node:deleted", () => loadForest());
+  es.addEventListener("node:deleted", (e) => {
+    let id = null;
+    try { id = JSON.parse(e.data).id; } catch {}
+    if (id != null && vibes.byId.has(id)) animateNodeRemoval(id, loadForest);
+    else loadForest();
+  });
   es.addEventListener("node:reparented", () => loadForest());
   es.addEventListener("nodes:reordered", () => loadForest());
   // Positions manuelles déplacées ailleurs : maj locale + re-rendu (sauf si on drague).
@@ -2347,7 +2381,7 @@ function subscribeNode(ref) {
   es.addEventListener("node:deleted", (e) => {
     const d = JSON.parse(e.data);
     if (vibes.currentNode && d.id === vibes.currentNode.id) { toast("Ce nœud a été supprimé."); backToForest(); }
-    else scheduleSubtreeRefetch();
+    else animateNodeRemoval(d.id, scheduleSubtreeRefetch); // flétrit la ligne d'arbre avant le refetch
   });
 }
 
