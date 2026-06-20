@@ -35,6 +35,7 @@ import {
   diffFile,
   stagedDiff,
   commitDetail,
+  fileContent,
   getGitConfig,
   setGitConfig,
   stage,
@@ -454,6 +455,16 @@ export function inspectPathFor(repoId, relPath, branch = null) {
 }
 export function searchPathsFor(repoId, query = "", limit = 30, branch = null) {
   return searchPaths(getIndex(repoId, branch), query, limit);
+}
+// Arbre complet (fichiers + dossiers) d'un dépôt pour l'explorateur de fichiers.
+// `branch` nul → working tree (ls-files) ; sinon arbre de la branche. Index caché.
+export function listTreeFor(repoId, branch = null) {
+  const idx = getIndex(repoId, branch);
+  const ctx = branchContext(rootForRepo(repoId), branch);
+  return { files: idx.files, dirs: idx.dirs, branch: ctx.branch, commit: ctx.commit };
+}
+export function fileContentFor(repoId, relPath, branch = null) {
+  return fileContent(rootForRepo(repoId), relPath, branch);
 }
 // Ensemble effectif des branches masquées d'un dépôt : liste explicite (UI) +
 // branche de suivi (orphan tracking.db), toujours cachée des sélecteurs de code.

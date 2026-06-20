@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Meowtrack — suivi bugs & tâches</title>
     <link rel="stylesheet" href="dashboard.css" />
+    <link rel="stylesheet" href="hljs-theme.css" />
   </head>
   <body>
     <header class="topbar">
@@ -322,6 +323,7 @@
         <button class="ghost" id="rgMerge" title="Fusionner une branche dans la branche courante">⑂ Merge</button>
         <button class="ghost" id="rgStash" title="Remiser les modifications (git stash push -u)">📦 Stash</button>
         <button class="ghost" id="rgStashPop" title="Restaurer la dernière remise (git stash pop)">📤 Pop</button>
+        <button class="ghost" id="rgFiles" title="Explorer les fichiers du dépôt (coloration syntaxique)">📂 Fichiers</button>
         <button class="ghost" id="rgReflog" title="Reflog (positions récentes de HEAD — filet de sécurité)">🕔 Reflog</button>
         <button class="ghost" id="rgConfig" title="Configuration git du dépôt">⚙ Config</button>
         <button class="ghost" id="rgRefresh" title="Rafraîchir">↻</button>
@@ -381,6 +383,31 @@
         </div>
         <div class="diff-meta" id="diffMeta" hidden></div>
         <pre class="diff-body" id="diffBody"></pre>
+      </div>
+    </div>
+
+    <!-- Modale explorateur de fichiers (vue Repo) : arbre + contenu colorisé -->
+    <div class="modal-backdrop" id="filesBackdrop" hidden>
+      <div class="modal files-modal" role="dialog" aria-modal="true">
+        <div class="diff-head">
+          <h2 id="filesTitle">📂 Fichiers</h2>
+          <span class="files-branch" id="filesBranch"></span>
+          <span class="repo-toolbar-sp"></span>
+          <button id="filesClose" class="ghost">✕</button>
+        </div>
+        <div class="files-body">
+          <aside class="files-sidebar">
+            <input id="filesFilter" type="search" placeholder="Filtrer les fichiers…" autocomplete="off" spellcheck="false" />
+            <div class="files-tree" id="filesTree"></div>
+          </aside>
+          <section class="files-view">
+            <div class="files-path" id="filesPath"><span class="hint">Sélectionne un fichier à gauche.</span></div>
+            <div class="files-scroll" id="filesScroll">
+              <pre class="files-gutter" id="filesGutter" aria-hidden="true"></pre>
+              <pre class="files-code"><code id="filesCode" class="hljs"></code></pre>
+            </div>
+          </section>
+        </div>
       </div>
     </div>
 
@@ -493,6 +520,8 @@
       </div>
     </div>
 
+    <!-- Coloration syntaxique (vendorisée, hors-ligne) : expose le global window.hljs -->
+    <script src="highlight.js"></script>
     <script type="module" src="dashboard.js"></script>
   </body>
 </html>

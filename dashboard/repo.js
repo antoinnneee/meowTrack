@@ -780,6 +780,150 @@ async function openCommitDetail(hash) {
   }
 }
 
+// ── Explorateur de fichiers (arbre + contenu colorisé via highlight.js) ────────
+const filesState = { all: [], current: null };
+
+// Extension → langage highlight.js (alias) pour les cas où le nom ne suffit pas.
+// Repli sur l'auto-détection de hljs si l'extension est inconnue.
+const EXT_LANG = {
+  js: "javascript", jsx: "javascript", mjs: "javascript", cjs: "javascript",
+  ts: "typescript", tsx: "typescript",
+  py: "python", rb: "ruby", go: "go", rs: "rust", java: "java", kt: "kotlin",
+  c: "c", h: "c", cc: "cpp", cpp: "cpp", cxx: "cpp", hpp: "cpp", hh: "cpp",
+  cs: "csharp", php: "php", swift: "swift", scala: "scala", lua: "lua",
+  sh: "bash", bash: "bash", zsh: "bash", ps1: "powershell",
+  json: "json", yml: "yaml", yaml: "yaml", toml: "ini", ini: "ini",
+  xml: "xml", html: "xml", htm: "xml", svg: "xml", vue: "xml",
+  css: "css", scss: "scss", sass: "scss", less: "less",
+  md: "markdown", markdown: "markdown", sql: "sql", graphql: "graphql",
+  dockerfile: "dockerfile", makefile: "makefile", diff: "diff", patch: "diff",
+};
+function langForPath(path) {
+  const base = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
+  if (base === "dockerfile") return "dockerfile";
+  if (base === "makefile") return "makefile";
+  const ext = base.includes(".") ? base.slice(base.lastIndexOf(".") + 1) : "";
+  return EXT_LANG[ext] || null;
+}
+
+// Construit un arbre imbriqué { dirs:Map, files:[] } à partir d'une liste plate.
+function buildFileTree(files) {
+  const root = { dirs: new Map(), files: [] };
+  for (const f of files) {
+    const parts = f.split("/");
+    let node = root;
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (!node.dirs.has(parts[i])) node.dirs.set(parts[i], { dirs: new Map(), files: [] });
+      node = node.dirs.get(parts[i]);
+    }
+    node.files.push({ name: parts[parts.length - 1], path: f });
+  }
+  return root;
+}
+// Rendu récursif de l'arbre en HTML (esc partout). `open` force l'expansion (filtre).
+function renderTreeNode(node, prefix, depth, open) {
+  let html = "";
+  for (const [name, child] of [...node.dirs.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const dirPath = prefix ? prefix + "/" + name : name;
+    const expanded = open || depth === 0;
+    html += `<div class="ftree-dir${expanded ? " open" : ""}" data-dir="${esc(dirPath)}">`;
+    html += `<div class="ftree-row ftree-dirrow"><span class="ftree-caret">▸</span><span class="ftree-label">${esc(name)}</span></div>`;
+    html += `<div class="ftree-children"${expanded ? "" : " hidden"}>${renderTreeNode(child, dirPath, depth + 1, open)}</div>`;
+    html += `</div>`;
+  }
+  for (const f of [...node.files].sort((a, b) => a.name.localeCompare(b.name))) {
+    html += `<div class="ftree-row ftree-file" data-file="${esc(f.path)}" title="${esc(f.path)}"><span class="ftree-label">${esc(f.name)}</span></div>`;
+  }
+  return html;
+}
+function renderFileTree(files, open) {
+  const el = $("#filesTree");
+  if (!files.length) {
+    el.innerHTML = `<div class="empty">Aucun fichier.</div>`;
+    return;
+  }
+  el.innerHTML = renderTreeNode(buildFileTree(files), "", 0, !!open);
+  // Conserve la sélection courante visible après un re-rendu (filtre).
+  if (filesState.current) {
+    const sel = el.querySelector(`[data-file="${CSS.escape(filesState.current)}"]`);
+    if (sel) sel.classList.add("active");
+  }
+}
+
+async function openFilesModal() {
+  $("#filesBackdrop").hidden = false;
+  $("#filesTree").innerHTML = `<div class="empty">Chargement…</div>`;
+  $("#filesFilter").value = "";
+  try {
+    const tree = await api.get("/api/git/tree");
+    filesState.all = tree.files || [];
+    $("#filesBranch").textContent = tree.branch ? `⎇ ${tree.branch}${tree.commit ? " · " + tree.commit : ""}` : "";
+    renderFileTree(filesState.all, false);
+  } catch (e) {
+    $("#filesTree").innerHTML = `<div class="empty">Erreur : ${esc(e.message)}</div>`;
+  }
+}
+function closeFilesModal() {
+  $("#filesBackdrop").hidden = true;
+}
+function filterFileTree() {
+  const q = $("#filesFilter").value.trim().toLowerCase();
+  if (!q) return renderFileTree(filesState.all, false);
+  const matches = filesState.all.filter((f) => f.toLowerCase().includes(q));
+  renderFileTree(matches, true);
+}
+
+// Affiche le contenu colorisé d'un fichier + la gouttière de numéros de ligne.
+function showFileContent(path, content) {
+  const code = $("#filesCode");
+  const lang = langForPath(path);
+  let out = null;
+  try {
+    out =
+      lang && window.hljs && window.hljs.getLanguage(lang)
+        ? window.hljs.highlight(content, { language: lang, ignoreIllegals: true })
+        : window.hljs
+        ? window.hljs.highlightAuto(content)
+        : null;
+  } catch {
+    out = null;
+  }
+  if (out) {
+    code.innerHTML = out.value; // hljs échappe son HTML → sûr
+    code.className = "hljs" + (out.language ? " language-" + out.language : "");
+  } else {
+    code.textContent = content;
+    code.className = "hljs";
+  }
+  const lines = content.split("\n").length;
+  let gutter = "";
+  for (let i = 1; i <= lines; i++) gutter += i + "\n";
+  $("#filesGutter").textContent = gutter;
+  $("#filesScroll").scrollTop = 0;
+}
+async function loadFileInExplorer(path) {
+  filesState.current = path;
+  $("#filesTree").querySelectorAll(".ftree-file.active").forEach((el) => el.classList.remove("active"));
+  const node = $("#filesTree").querySelector(`[data-file="${CSS.escape(path)}"]`);
+  if (node) node.classList.add("active");
+  $("#filesPath").textContent = path;
+  $("#filesCode").textContent = "Chargement…";
+  $("#filesGutter").textContent = "";
+  try {
+    const r = await api.get("/api/git/file?path=" + encodeURIComponent(path));
+    if (r.ok === false) {
+      $("#filesCode").className = "hljs";
+      $("#filesCode").textContent = r.binary ? "🖼 Fichier binaire — aperçu non disponible." : r.error || "Lecture impossible.";
+      $("#filesGutter").textContent = "";
+      return;
+    }
+    showFileContent(path, r.content || "");
+  } catch (e) {
+    $("#filesCode").className = "hljs";
+    $("#filesCode").textContent = "Erreur : " + e.message;
+  }
+}
+
 // ── Message de commit par l'IA ────────────────────────────────────────────────
 async function aiCommitMessage() {
   const btn = $("#wcAiMsg");
@@ -1097,11 +1241,34 @@ export function initRepo() {
     doGit(() => api.send("POST", "/api/git/stash", { message, includeUntracked: true }));
   });
   $("#rgStashPop").addEventListener("click", () => doGit(() => api.send("POST", "/api/git/stash/pop", {}), { confirmMsg: "Restaurer la dernière remise (stash pop) ?" }));
+  $("#rgFiles").addEventListener("click", openFilesModal);
   $("#rgReflog").addEventListener("click", openReflog);
   $("#rgConfig").addEventListener("click", openConfigModal);
   $("#rgRefresh").addEventListener("click", () => refreshRepo());
   $("#rgAbort").addEventListener("click", () => doGit(() => api.send("POST", "/api/git/abort", {}), { confirmMsg: "Interrompre l'opération en cours et revenir à l'état précédent ?" }));
   $("#rgContinue").addEventListener("click", () => doGit(() => api.send("POST", "/api/git/continue", {})));
+
+  // Modale explorateur de fichiers
+  $("#filesClose").addEventListener("click", closeFilesModal);
+  $("#filesBackdrop").addEventListener("mousedown", (e) => {
+    if (e.target === $("#filesBackdrop")) closeFilesModal();
+  });
+  $("#filesFilter").addEventListener("input", filterFileTree);
+  // Délégation : clic sur un dossier (replier/déplier) ou un fichier (afficher).
+  $("#filesTree").addEventListener("click", (e) => {
+    const file = e.target.closest(".ftree-file");
+    if (file) {
+      loadFileInExplorer(file.dataset.file);
+      return;
+    }
+    const dirRow = e.target.closest(".ftree-dirrow");
+    if (dirRow) {
+      const dir = dirRow.closest(".ftree-dir");
+      const open = dir.classList.toggle("open");
+      const children = dir.querySelector(":scope > .ftree-children");
+      if (children) children.hidden = !open;
+    }
+  });
 
   // Working tree : boutons globaux
   $("#wcStageAll").addEventListener("click", () => doGit(() => api.send("POST", "/api/git/stage", { all: true })));

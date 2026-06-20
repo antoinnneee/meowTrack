@@ -188,6 +188,13 @@ Chaque entrée est rattachée à une **branche git** (champ `branch`, sélection
 
 **Masquer une branche.** Chaque repo garde une liste de branches masquées (colonne `hidden_branches`, tableau JSON, par dépôt). Une branche masquée disparaît de **tous les sélecteurs** (sélecteur de la topbar, modale, autocomplete `@` — soit `GET /api/branches`), mais le dépôt git n'est pas touché. Dans le **gestionnaire de repo** (sidebar), clic droit sur une branche locale/distante → **Masquer des sélecteurs** / **Afficher dans les sélecteurs** ; les branches masquées y restent listées, grisées et barrées, avec une pastille 🚫. Routes : `POST /api/git/branch/hide` et `POST /api/git/branch/unhide` (corps `{ name }`, scopé `?repo=`). La **branche de suivi** (`tracking`, cf. [Versionnement du suivi](#versionnement-du-suivi-tracking-git)) est **masquée par défaut** des sélecteurs et non démasquable depuis l'UI — elle n'a pas à polluer les sélecteurs de branches de code.
 
+### Explorateur de fichiers (vue Repo)
+
+Le bouton **📂 Fichiers** de la barre d'outils de l'onglet **🔀 Repo** ouvre une modale d'exploration des fichiers du dépôt : arborescence repliable à gauche (avec filtre), contenu du fichier à droite **avec coloration syntaxique** (highlight.js vendorisé dans `dashboard/`, fonctionne hors-ligne) et numéros de ligne. La lecture est **strictement en lecture seule** et bornée (refus du binaire et des fichiers > 2 Mo). Deux endpoints, non verrouillés, scopés `?repo=` :
+
+- `GET /api/git/tree?repo=…&branch=…` — arbre complet `{ files[], dirs[], branch, commit }` (branche omise → working tree via `git ls-files` ; branche fournie → arbre `git ls-tree` sans checkout).
+- `GET /api/git/file?repo=…&path=…&branch=…` — contenu d'un fichier `{ ok, path, branch, ref, size, content }` (branche omise → fichier du working tree lu sur disque ; branche fournie → `git show <ref>:<chemin>`, préfère `origin/<branch>`). Mêmes gardes que le reste du gestionnaire git : `normalizePath` (anti path-traversal, rejet du préfixe `:`), `isValidRef` (anti option-injection), `GIT_LITERAL_PATHSPECS`.
+
 ### Amélioration IA de la description
 
 Le bouton **✨ Améliorer (IA)** de la modale (`POST /api/improve-description`) réécrit la description courante via `claude -p --model sonnet` (CLI headless, exécuté côté serveur, sans shell). Les `@chemin` sont préservés. Nécessite le CLI Claude installé + authentifié sur le serveur (`MEOWTRACK_CLAUDE_BIN`).

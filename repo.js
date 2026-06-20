@@ -11,7 +11,7 @@
 // sauf clone/fetch/pull explicites (cloneInto / pull).
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 
 // Env de TOUTES les invocations git : GIT_LITERAL_PATHSPECS=1 neutralise la « magie »
@@ -503,6 +503,55 @@ export function commitDetail(root, hash) {
       return { added: add, deleted: del, path: p.join("\t") };
     });
   return { ok: true, hash: H, author: an, email: ae, dateIso: ci, date: cr, parents: P.trim() ? P.trim().split(/\s+/) : [], subject, body, files };
+}
+
+// Contenu d'un fichier pour l'explorateur de fichiers. `branch` nul → fichier du
+// working tree (lecture disque, reflète le checkout courant) ; `branch` fourni →
+// blob de l'arbre de cette branche SANS checkout (git show <ref>:<chemin>, préfère
+// origin/<branch>). Lecture seule, bornée en taille, refuse le binaire. Réutilise
+// normalizePath (anti path-traversal) + isValidRef (anti option-injection). La
+// construction `<ref>:<chemin>` est sûre : normalizePath rejette tout chemin
+// commençant par « : » et GIT_LITERAL_PATHSPECS neutralise la magie de pathspec.
+export function fileContent(root, relPath, branch = null, { maxBytes = 2 * 1024 * 1024 } = {}) {
+  if (!isGitClone(root)) return { ok: false, error: "Pas un clone git" };
+  const rel = normalizePath(root, relPath);
+  if (!rel) return { ok: false, error: "Chemin invalide" };
+  let buf;
+  let size;
+  let ref = null;
+  if (branch) {
+    if (!isValidRef(branch)) return { ok: false, error: "Branche invalide" };
+    ref = git(["rev-parse", "--verify", "--quiet", `origin/${branch}`], root) ? `origin/${branch}` : branch;
+    const spec = `${ref}:${rel}`;
+    const sizeRaw = git(["cat-file", "-s", spec], root);
+    size = sizeRaw == null ? -1 : Number(sizeRaw);
+    if (size < 0 || Number.isNaN(size)) return { ok: false, error: "Fichier introuvable dans cette branche" };
+    if (size > maxBytes) return { ok: false, error: `Fichier trop volumineux (${size} octets)`, size, tooLarge: true };
+    try {
+      buf = execFileSync("git", ["show", spec], { cwd: root, env: GIT_ENV, maxBuffer: 64 * 1024 * 1024 });
+    } catch {
+      return { ok: false, error: "Lecture impossible" };
+    }
+  } else {
+    const abs = join(root, rel);
+    let st;
+    try {
+      st = statSync(abs);
+    } catch {
+      return { ok: false, error: "Fichier introuvable" };
+    }
+    if (st.isDirectory()) return { ok: false, error: "C'est un dossier" };
+    size = st.size;
+    if (size > maxBytes) return { ok: false, error: `Fichier trop volumineux (${size} octets)`, size, tooLarge: true };
+    try {
+      buf = readFileSync(abs);
+    } catch {
+      return { ok: false, error: "Lecture impossible" };
+    }
+  }
+  // Détection binaire : octet NUL dans le premier bloc → on refuse l'affichage texte.
+  if (buf.subarray(0, 8000).includes(0)) return { ok: false, error: "Fichier binaire", size, binary: true };
+  return { ok: true, path: rel, branch: branch || null, ref, size, content: buf.toString("utf8") };
 }
 
 // Reflog (HEAD@{n}) : journal des positions de HEAD — filet de sécurité après un
