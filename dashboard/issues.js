@@ -11,7 +11,7 @@ const TYPE_ICON = { bug: "🐞", feature: "✨", task: "✅", chore: "🧹" };
 const STATUS_LABEL = { open: "Ouvert", in_progress: "En cours", done: "Fait", wontfix: "Abandonné" };
 const PRIO_LABEL = { critical: "Critique", high: "Haute", medium: "Moyenne", low: "Basse" };
 
-export let state = { issues: [], selected: null, editing: null, refs: [], branch: "", branches: [], serverBranch: null, repos: [], nodes: null };
+export let state = { issues: [], selected: null, editing: null, refs: [], branch: "", branches: [], serverBranch: null, repos: [], nodes: null, linkNodeAfterCreate: null };
 
 // Jalons (nœuds Vibes) du repo actif, pour le sélecteur d'import dans le détail.
 // Chargés à la demande et mémorisés ; invalidés au changement de repo.
@@ -405,6 +405,7 @@ async function deleteIssue(ref) {
 // ── Modale création / édition ────────────────────────────────────────────────
 function openModal(issue) {
   state.editing = issue || null;
+  state.linkNodeAfterCreate = null; // armé seulement par createIssueFromNode()
   state.refs = issue ? issue.references.map((r) => ({ path: r.path, lineStart: r.lineStart, lineEnd: r.lineEnd })) : [];
   $("#modalTitle").textContent = issue ? `Éditer ${issue.ref}` : "Nouvelle entrée";
   $("#mType").value = issue?.type || "bug";
@@ -515,16 +516,50 @@ async function saveIssue() {
     alert("Titre requis.");
     return;
   }
+  // Création depuis un jalon (vue Vibes) : on liera l'entrée au nœud puis on
+  // basculera sur la vue Suivi pour la montrer.
+  const fromNode = !state.editing && state.linkNodeAfterCreate != null;
+  const nodeToLink = state.linkNodeAfterCreate;
   try {
     const saved = state.editing
       ? await api.send("PATCH", "/api/issues/" + encodeURIComponent(state.editing.ref), payload)
       : await api.send("POST", "/api/issues", payload);
+    if (fromNode) {
+      try {
+        await api.send("POST", `/api/issues/${encodeURIComponent(saved.ref)}/nodes`, { nodeRef: nodeToLink });
+      } catch (e) {
+        alert("Entrée créée mais liaison au jalon échouée : " + e.message);
+      }
+    }
+    state.linkNodeAfterCreate = null;
     closeModal();
     await Promise.all([loadList(), loadMeta()]);
+    if (fromNode && location.hash !== "") location.hash = ""; // → vue Suivi (switchView via hashchange)
     await selectIssue(saved.ref);
   } catch (e) {
     alert("Échec : " + e.message);
   }
+}
+
+// ── Ponts depuis la vue Vibes (jalon → suivi) ────────────────────────────────
+// Ouvre la modale de création d'entrée pré-remplie depuis un jalon ; l'entrée sera
+// automatiquement liée au nœud à l'enregistrement (cf. saveIssue).
+export function createIssueFromNode(node) {
+  if (!node) return;
+  openModal(null);
+  state.linkNodeAfterCreate = node.id;
+  $("#modalTitle").textContent = `Nouveau suivi — jalon ${node.ref}`;
+  $("#mType").value = "task";
+  $("#mTitle").value = node.title || "";
+  $("#mDesc").value = `Suivi rattaché au jalon ${node.ref} — ${node.title || ""}`;
+  $("#mTitle").focus();
+  $("#mTitle").select();
+}
+
+// Bascule sur la vue Suivi puis ouvre une entrée (depuis un suivi listé sur un jalon).
+export async function openIssueInTrack(ref) {
+  if (location.hash !== "") location.hash = ""; // → switchView('track') via hashchange
+  await selectIssue(ref);
 }
 
 // ── Autocomplete partagé (@ description, chat IA, …) ──────────────────────────

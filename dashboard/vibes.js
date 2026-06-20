@@ -3,7 +3,7 @@
 // gestionnaire de dépôts) et les ponts openVibes / initVibes.
 
 import { $, esc, api, getToken, injectRepo } from "./core.js";
-import { state, handleMentionInput, menuKeydown, hideMenu } from "./issues.js";
+import { state, handleMentionInput, menuKeydown, hideMenu, createIssueFromNode, openIssueInTrack } from "./issues.js";
 import { openRepoView, initRepo } from "./repo.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1347,6 +1347,34 @@ function renderNodeHeader(n) {
   if (blk) blk.hidden = !isNodeBlocked(n);
   renderNotes(n);
   renderLinks(n);
+  renderNodeIssues(n);
+}
+
+// ── Suivis liés (vue détail) : entrées de suivi rattachées à ce jalon ─────────
+// Données fournies par getNode(withIssues). Chaque puce ouvre l'entrée dans Suivi.
+const ISSUE_TYPE_ICON = { bug: "🐞", feature: "✨", task: "✅", chore: "🧹" };
+const ISSUE_STATUS_LABEL = { open: "Ouvert", in_progress: "En cours", done: "Fait", wontfix: "Abandonné" };
+function renderNodeIssues(n) {
+  const view = $("#ndIssuesView");
+  if (!view) return;
+  const issues = Array.isArray(n.issues) ? n.issues : [];
+  if (!issues.length) {
+    view.innerHTML = '<span class="hint">Aucun suivi lié. Clique « ＋ Suivi » pour créer une entrée rattachée à ce jalon.</span>';
+    return;
+  }
+  view.innerHTML = `<div class="nd-issue-chips">${issues
+    .map(
+      (i) => `<button class="issue-chip status-${esc(i.status)}" data-ref="${esc(i.ref)}" title="${esc(i.title)}">
+        <span class="ic-type">${ISSUE_TYPE_ICON[i.type] || "•"}</span>
+        <span class="ic-code">${esc(i.ref)}</span>
+        <span class="ic-title">${esc(i.title)}</span>
+        <span class="ic-status">${ISSUE_STATUS_LABEL[i.status] || esc(i.status)}</span>
+      </button>`
+    )
+    .join("")}</div>`;
+  view.querySelectorAll(".issue-chip[data-ref]").forEach((b) =>
+    b.addEventListener("click", () => openIssueInTrack(b.dataset.ref))
+  );
 }
 
 // ── Liens de prérequis (vue détail) ──────────────────────────────────────────
@@ -2245,6 +2273,8 @@ export function initVibes() {
   $("#ndEdit").addEventListener("click", () => openNodeModal(vibes.currentNode, null));
   $("#ndDel").addEventListener("click", deleteCurrentNode);
   $("#ndAddChild").addEventListener("click", () => openNodeModal(null, vibes.currentNode ? vibes.currentNode.id : null));
+  // Crée une entrée de suivi pré-remplie et auto-liée à ce jalon (puis bascule sur Suivi).
+  $("#ndAddIssue").addEventListener("click", () => { if (vibes.currentNode) createIssueFromNode(vibes.currentNode); });
   // Notes markdown : éditeur multi-notes (chaque éditeur gère son @ / aperçu).
   $("#ndNotesEditBtn").addEventListener("click", openNotesEditor);
   $("#ndNotesCancelBtn").addEventListener("click", closeNotesEditor);

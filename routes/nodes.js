@@ -162,7 +162,7 @@ export async function handle(ctx) {
       send(
         res,
         node ? 200 : 404,
-        node ? getNode(node.id, { repoId: id, withTree: q.get("tree") !== "false", withMessages: q.get("messages") === "true", withLinks: true }) : { error: "not_found", ref }
+        node ? getNode(node.id, { repoId: id, withTree: q.get("tree") !== "false", withMessages: q.get("messages") === "true", withLinks: true, withIssues: true }) : { error: "not_found", ref }
       );
       return true;
     }
