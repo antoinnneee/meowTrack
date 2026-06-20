@@ -13,6 +13,12 @@ import { send } from "./http-util.js";
 export function forestKey(repoId) {
   return `forest:${repoId}`;
 }
+// Clé du canal « gestionnaire git » d'un repo : working tree / branches / historique.
+// Le serveur y diffuse `git:changed` après chaque mutation git ET sur changement de
+// fichier détecté (git-watch.js) → la vue se rafraîchit sans bouton (et multi-onglets).
+export function gitKey(repoId) {
+  return `git:${repoId}`;
+}
 // Clé de la room d'un nœud. NAMESPACÉE PAR REPO : avec une base SQLite par dépôt,
 // les ids de nœuds ne sont plus globalement uniques (chaque base repart à 1) → sans
 // le repoId, deux dépôts partageant un même id se mélangeraient sur la même room.
