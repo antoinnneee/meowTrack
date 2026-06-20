@@ -58,7 +58,24 @@ Dans le formulaire de description, taper **`@`** déclenche un autocomplete des 
 
 ## Serveur MCP
 
-Enregistré dans le `.mcp.json` racine (`meowtrack` → `node meowtrack/mcp.js`). Après `npm install`, redémarrer Claude Code pour qu'il charge le serveur.
+Deux façons d'exposer le **même** jeu d'outils (déclarés une seule fois dans `mcp-tools.js`) :
+
+- **stdio (local)** — `meowtrack` → `node meowtrack/mcp.js`, qui relaie vers l'API HTTP du serveur (`MEOWTRACK_SERVER_URL`). Après `npm install`, redémarrer Claude Code.
+- **HTTP distant (`type: http`)** — le serveur déployé expose directement l'endpoint MCP Streamable HTTP sur **`POST /mcp`** (même port que le dashboard, ex. `http://pattounecorp.ovh:7702/mcp`). Aucun process local à lancer :
+
+  ```json
+  {
+    "mcpServers": {
+      "meowtrack": {
+        "type": "http",
+        "url": "http://pattounecorp.ovh:7702/mcp",
+        "headers": { "Authorization": "Bearer <MEOWTRACK_TOKEN>" }
+      }
+    }
+  }
+  ```
+
+  L'endpoint `/mcp` est protégé par le **même** `MEOWTRACK_TOKEN` que `/api/*` (en-tête `Authorization: Bearer` ou `X-Meowtrack-Token` ; omettre `headers` si le serveur tourne sans token). Mode *stateless* : un serveur MCP éphémère par requête, les outils tapent l'API REST en loopback (seule source de vérité). Nécessite un redéploiement du serveur (`deploy.sh`) pour que `/mcp` soit disponible.
 
 Tools exposés :
 

@@ -82,6 +82,7 @@ ssh -o "ControlPath=$SSH_MUX_SOCKET" "$REMOTE_USER@$REMOTE_HOST" "mkdir -p '$REM
 FILES=(
     "server.js"
     "mcp.js"
+    "mcp-tools.js"
     "db.js"
     "repo.js"
     "repos.js"
