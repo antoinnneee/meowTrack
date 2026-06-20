@@ -291,6 +291,8 @@ body:not(.view-repo) .repo-only { display: none; }
 .action-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 7px; align-items: center; }
 .action-chip { font-size: 10.5px; padding: 2px 7px; border-radius: 10px; border: 1px solid var(--accent); color: var(--accent); }
 .action-chip.danger { border-color: var(--bug); color: var(--bug); }
+.action-chip.clickable { cursor: pointer; transition: background .12s, color .12s; }
+.action-chip.clickable:hover, .action-chip.clickable:focus-visible { background: var(--accent); color: var(--bg); outline: none; }
 .confirm-actions { font-size: 11px; padding: 3px 8px; border-color: var(--bug); color: var(--bug); }
 .typing-row { padding: 4px 18px; font-size: 11px; color: var(--text-dim); font-style: italic; }
 .typing-row[hidden] { display: none; }
