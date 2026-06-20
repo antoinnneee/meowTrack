@@ -113,6 +113,8 @@ DASHBOARD_FILES=(
     "dashboard/issues.js"
     "dashboard/vibes.js"
     "dashboard/repo.js"
+    "dashboard/highlight.js"
+    "dashboard/hljs-theme.css"
 )
 
 COPY_ERRORS=0
