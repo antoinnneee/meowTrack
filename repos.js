@@ -548,26 +548,19 @@ export function ensureAllRepos() {
 export function statusFor(repoId) {
   return status(rootForRepo(repoId));
 }
-// Graphe d'historique filtré : on n'inclut que les refs *visibles* (toutes les
-// branches sauf les cachées + branche de suivi), plus les tags. Sélection positive
-// → les commits exclusifs à une branche cachée disparaissent du graphe ET de la
-// liste de commits ; les commits partagés avec une branche visible restent.
+// Graphe d'historique filtré : les branches cachées (liste explicite + branche de
+// suivi) sont exclues via `--exclude=<glob> … --all`. Leurs refs locales ET
+// distantes sont retirées, donc les commits qui leur sont exclusifs disparaissent
+// du graphe ET de la liste de commits ; les commits partagés avec une branche
+// visible restent. On nettoie aussi leurs pastilles sur ces commits partagés.
 export function logGraphFor(repoId, opts) {
   const root = rootForRepo(repoId);
   const hidden = hiddenBranchSet(repoId);
-  const { local, remote } = branchesDetailed(root);
-  const refs = [];
-  for (const b of local) {
-    if (!hidden.has(b.name)) refs.push("refs/heads/" + b.name);
+  const excludeRefs = [];
+  for (const name of hidden) {
+    excludeRefs.push(`--exclude=refs/heads/${name}`, `--exclude=refs/remotes/*/${name}`);
   }
-  for (const b of remote) {
-    const short = b.name.includes("/") ? b.name.slice(b.name.indexOf("/") + 1) : b.name;
-    if (!hidden.has(short)) refs.push("refs/remotes/" + b.name);
-  }
-  refs.push("--tags"); // les tags restent toujours visibles
-  const out = logGraph(root, { ...opts, refs });
-  // Retire aussi les *pastilles* de branches cachées sur les commits partagés
-  // (une branche cachée pointant un commit visible ne doit pas afficher son label).
+  const out = logGraph(root, { ...opts, excludeRefs });
   for (const c of out.commits) {
     c.refs = c.refs.filter((r) => {
       if (r.kind !== "local" && r.kind !== "remote") return true; // tags / HEAD : gardés
