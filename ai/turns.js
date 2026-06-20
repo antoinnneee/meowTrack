@@ -166,6 +166,10 @@ async function runNodeTurn(repoId, nodeId, scopeSnapshot, descendants, history, 
 
     const raw = result || answer;
     const { text, actions, note, malformed } = parseAiTurn(raw);
+    console.error(
+      `[meowtrack] runNodeTurn node=${nodeId}: parse → ${(actions || []).length} action(s), malformed=${!!malformed}` +
+        (actions && actions.length ? ` ops=[${actions.map((a) => a && a.op).join(",")}]` : "")
+    );
     // index des tailles de sous-arbre pour l'affichage des suppressions
     const subById = new Map((descendants || []).map((n) => [n.id, 0]));
     const destructive = describeDestructive(actions, scopeSnapshot, subById);
@@ -183,6 +187,10 @@ async function runNodeTurn(repoId, nodeId, scopeSnapshot, descendants, history, 
     }
 
     const applied = applyNodeActions(nodeId, actions, repoId);
+    console.error(
+      `[meowtrack] runNodeTurn node=${nodeId}: ${applied.applied.length} appliquée(s), ${applied.rejected.length} rejetée(s)` +
+        (applied.rejected.length ? ` → rejets: ${JSON.stringify(applied.rejected)}` : "")
+    );
     const summary = applied.applied.length ? [{ applied: true, ops: applied.applied, note }] : [];
     const body = baseText || (applied.applied.length ? note || "Modifications appliquées." : "");
     const msg = updateNodeMessage(pendingId, { body, reasoning, state: "complete", actions: summary }, repoId);
@@ -378,6 +386,10 @@ async function runForestTurn(repoId, forestSnapshot, history, userText, author, 
 
     const raw = result || answer;
     const { text, actions, note, malformed } = parseAiTurn(raw);
+    console.error(
+      `[meowtrack] runForestTurn repo=${repoId}: parse → ${(actions || []).length} action(s), malformed=${!!malformed}` +
+        (actions && actions.length ? ` ops=[${actions.map((a) => a && a.op).join(",")}]` : "")
+    );
     const subById = new Map((forestSnapshot || []).map((n) => [n.id, 0]));
     const destructive = describeDestructive(actions, null, subById);
     const baseText = text || (malformed ? "(réponse de l'IA illisible — aucune action appliquée)" : "");
@@ -394,6 +406,10 @@ async function runForestTurn(repoId, forestSnapshot, history, userText, author, 
     }
 
     const applied = applyForestActions(repoId, actions);
+    console.error(
+      `[meowtrack] runForestTurn repo=${repoId}: ${applied.applied.length} appliquée(s), ${applied.rejected.length} rejetée(s)` +
+        (applied.rejected.length ? ` → rejets: ${JSON.stringify(applied.rejected)}` : "")
+    );
     const summary = applied.applied.length ? [{ applied: true, ops: applied.applied, note }] : [];
     const body = baseText || (applied.applied.length ? note || "Modifications appliquées." : "");
     const msg = updateForestMessage(pendingId, { body, reasoning, state: "complete", actions: summary }, repoId);

@@ -765,6 +765,8 @@ export function applyNodeActions(scopeNodeId, actions = [], repoId = null) {
     }
   });
   tx();
+  if (rejected.length)
+    console.error(`[meowtrack] applyActions: ${applied.length} appliquée(s), ${rejected.length} rejetée(s) → ${JSON.stringify(rejected)}`);
   return { applied, rejected, affectedNodeIds: [...affected], roots: [...roots], linksChanged };
   });
 }
@@ -936,6 +938,8 @@ export function applyForestActions(repoIdParam, actions = []) {
     }
   });
   tx();
+  if (rejected.length)
+    console.error(`[meowtrack] applyActions: ${applied.length} appliquée(s), ${rejected.length} rejetée(s) → ${JSON.stringify(rejected)}`);
   return { applied, rejected, affectedNodeIds: [...affected], roots: [...roots], linksChanged };
   });
 }
