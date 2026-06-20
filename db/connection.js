@@ -143,7 +143,7 @@ export const TRACKING_SCHEMA = `
     PRIMARY KEY (repo_id, prefix)
   );
 
-  -- ── Good Vibes v2 : arbre de NŒUDS récursif (objectifs = jalons = sous-jalons) ─
+  -- ── Vibes v2 : arbre de NŒUDS récursif (objectifs = jalons = sous-jalons) ─
   -- v1 (goals/milestones) jamais déployée → on remplace sans migration.
   DROP TABLE IF EXISTS goal_messages;
   DROP TABLE IF EXISTS milestones;

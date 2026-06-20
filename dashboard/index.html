@@ -11,12 +11,12 @@
       <div class="brand">🐾 Meowtrack</div>
       <nav class="nav-tabs">
         <button class="tab active" data-view="track">🐞 Suivi</button>
-        <button class="tab" data-view="vibes">🌱 Good Vibes</button>
+        <button class="tab" data-view="vibes">🌱 Vibes</button>
         <button class="tab" data-view="repo">🔀 Repo</button>
       </nav>
       <div class="meta" id="meta"></div>
       <span class="live-dot" id="liveDot" title="Synchronisation temps réel"></span>
-      <select id="repoSel" class="branch-select" title="Repo actif : toutes les vues (entrées, Good Vibes) sont scopées sur ce dépôt"></select>
+      <select id="repoSel" class="branch-select" title="Repo actif : toutes les vues (entrées, Vibes) sont scopées sur ce dépôt"></select>
       <button id="addRepoBtn" class="ghost" title="Ajouter un dépôt git à suivre">＋ repo</button>
       <button id="importReposBtn" class="ghost" title="Importer tous les dépôts git d'un dossier">📁 dossier</button>
       <select id="branchSel" class="branch-select track-only" title="Branche de contexte : autocomplete @ + branche par défaut des nouvelles entrées"></select>
@@ -63,16 +63,16 @@
       </section>
     </main>
 
-    <!-- Vue Good Vibes : barre (toggle graphe/grille) -->
+    <!-- Vue Vibes : barre (toggle graphe/grille) -->
     <div class="vibes-bar" id="vibesBar" hidden>
-      <h2>🌱 Good Vibes <span class="vibes-summary" id="vibesSummary"></span></h2>
+      <h2>🌱 Vibes <span class="vibes-summary" id="vibesSummary"></span></h2>
       <div class="seg-toggle" role="tablist" title="Mode d'affichage">
         <button class="seg" data-layout="graph">🕸️ Graphe</button>
         <button class="seg" data-layout="grid">▦ Grille</button>
       </div>
     </div>
 
-    <!-- Vue Good Vibes : graphe organique -->
+    <!-- Vue Vibes : graphe organique -->
     <main class="view graph-view" id="graphView" hidden>
       <svg id="graphSvg" class="graph-svg" preserveAspectRatio="xMidYMid meet"></svg>
       <div class="graph-controls">
@@ -80,12 +80,12 @@
       </div>
     </main>
 
-    <!-- Vue Good Vibes : grille des objectifs racines -->
+    <!-- Vue Vibes : grille des objectifs racines -->
     <main class="view vibes-view-grid" id="vibesView" hidden>
       <div class="goal-cards" id="goalCards"></div>
     </main>
 
-    <!-- Vue Good Vibes : chat « top level » (créer/gérer les objectifs en discutant) -->
+    <!-- Vue Vibes : chat « top level » (créer/gérer les objectifs en discutant) -->
     <aside class="forest-chat collapsed" id="forestChat" hidden>
       <div class="chat-head">
         <button id="forestChatToggle" class="ghost forest-chat-toggle" title="Réduire / agrandir la discussion">💬 Discuter des objectifs</button>
@@ -108,7 +108,7 @@
       </div>
     </aside>
 
-    <!-- Vue Good Vibes : détail d'un nœud (arbre des sous-nœuds + chat streaming) -->
+    <!-- Vue Vibes : détail d'un nœud (arbre des sous-nœuds + chat streaming) -->
     <main class="view goal-view" id="nodeView" hidden>
       <div class="gd-head">
         <button id="ndBack" class="ghost" title="Retour">←</button>

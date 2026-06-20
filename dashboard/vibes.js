@@ -1,4 +1,4 @@
-// vibes.js — bloc « Good Vibes » : arbre de nœuds, graphe SVG organique, vue détail
+// vibes.js — bloc « Vibes » : arbre de nœuds, graphe SVG organique, vue détail
 // + chat IA streaming (SSE). Exporte aussi toast / showCtxMenu (réutilisés par le
 // gestionnaire de dépôts) et les ponts openVibes / initVibes.
 
@@ -7,7 +7,7 @@ import { state, handleMentionInput, menuKeydown, hideMenu } from "./issues.js";
 import { openRepoView, initRepo } from "./repo.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
-// Good Vibes v2 — arbre de NŒUDS récursif, graphe organique, chat IA streaming.
+// Vibes v2 — arbre de NŒUDS récursif, graphe organique, chat IA streaming.
 // Réutilise les helpers du Suivi ($/esc/api/getToken). N'altère PAS init().
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -23,7 +23,8 @@ const CASCADE_NEUTRAL = "#868e96";
 
 export const vibes = {
   view: "track",
-  layout: localStorage.getItem("meowtrack_layout") || "graph", // graph | grid
+  // graph | grid — grille par défaut sur petit écran (le graphe se manipule à la souris).
+  layout: localStorage.getItem("meowtrack_layout") || (typeof window !== "undefined" && window.innerWidth <= 768 ? "grid" : "graph"),
   es: null,
   current: null, // ref du nœud ouvert (détail)
   currentNode: null,

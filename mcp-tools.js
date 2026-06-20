@@ -375,7 +375,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   );
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // Good Vibes — arbre de NŒUDS récursif (objectifs / jalons / sous-jalons), scopé repo.
+  // Vibes — arbre de NŒUDS récursif (objectifs / jalons / sous-jalons), scopé repo.
   // ═══════════════════════════════════════════════════════════════════════════
   const nodeRefSchema = z.union([z.string(), z.number()]).describe("Code (ex. 'NODE-1') ou id numérique du nœud.");
   const notesSchema = z
@@ -388,7 +388,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
     {
       title: "Créer un nœud (objectif / jalon)",
       description:
-        "Crée un nœud Good Vibes dans un repo. Sans `parentId` → objectif racine. Avec `parentId` → sous-jalon " +
+        "Crée un nœud Vibes dans un repo. Sans `parentId` → objectif racine. Avec `parentId` → sous-jalon " +
         "(qui hérite du repo du parent). La progression est dérivée automatiquement (ne pas la fixer). Retourne le nœud créé (code NODE-N, numéroté par repo).",
       inputSchema: {
         repo: repoParam,

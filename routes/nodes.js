@@ -1,4 +1,4 @@
-// routes/nodes.js — Good Vibes v2 : arbre de nœuds (CRUD + positions + sous-arbre),
+// routes/nodes.js — Vibes v2 : arbre de nœuds (CRUD + positions + sous-arbre),
 // chat « top level » (forêt) et flux SSE temps réel. L'ordre des routes est
 // SIGNIFIANT : /stream et /positions passent AVANT les routes paramétrées /:ref.
 
