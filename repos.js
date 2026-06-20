@@ -243,6 +243,15 @@ export function ensureTrackingStore(repoId) {
     mkdirSync(dir, { recursive: true });
     return { mode: "plain", dir, root: null };
   }
+  // GARDE-FOU : un repo SANS url ni local_path est le repli « dev in-repo » dont la
+  // racine est le dépôt MEOWTRACK lui-même (topLevel). On ne versionne JAMAIS le
+  // checkout de meowtrack (sinon on y crée une branche orphan « tracking »). Mode plain.
+  const row = getRepoRow(repoId);
+  const hasClone = row && (String(row.url || "").trim() || String(row.local_path || "").trim());
+  if (!hasClone) {
+    mkdirSync(dir, { recursive: true });
+    return { mode: "plain", dir, root: null, reason: "self_repo" };
+  }
   let root;
   try {
     root = rootForRepo(repoId);
