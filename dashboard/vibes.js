@@ -729,28 +729,41 @@ function nodeOuterR(id) {
   if (!n) return 24;
   return (n.depth === 0 ? 26 : Math.max(12, 24 - n.depth * 3)) + 5;
 }
+// Centre (barycentre) des positions du graphe — sert à orienter la courbure des
+// prérequis vers l'EXTÉRIEUR de l'arbre. Recalculé à chaque rendu / drag.
+function graphCenter(pos) {
+  let sx = 0, sy = 0, n = 0;
+  for (const p of pos.values()) { sx += p.x; sy += p.y; n++; }
+  return n ? { x: sx / n, y: sy / n } : { x: 0, y: 0 };
+}
 // Arête de PRÉREQUIS : « from dépend de to ». Courbe pointillée distincte (jamais
 // confondue avec la hiérarchie pleine), flèche pointant vers le prérequis (to).
 // L'arc s'écarte du segment droit pour rester lisible même entre nœuds éloignés.
 // ra/rb rognent les extrémités sur le périmètre des nœuds (le long de la tangente de
 // la courbe quadratique) pour que la flèche se pose VISIBLEMENT sur le bord du prérequis
 // au lieu d'être cachée sous son disque (les nœuds sont peints par-dessus les arêtes).
-function reqEdgeD(a, b, ra = 0, rb = 0) {
+// center : si fourni, la courbe se bombe du côté OPPOSÉ au centre du graphe (vers
+// l'extérieur) — le sens de courbure suit donc les positions des nœuds et ne traverse
+// plus l'arbre. Sans center, repli sur un côté perpendiculaire fixe.
+function reqEdgeD(a, b, ra = 0, rb = 0, center = null) {
   const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
   const dx = b.x - a.x, dy = b.y - a.y;
   const len = Math.hypot(dx, dy) || 1;
-  const off = Math.min(60, len * 0.18); // déport perpendiculaire
-  const cx = mx - (dy / len) * off, cy = my + (dx / len) * off;
+  const off = Math.min(60, len * 0.18); // amplitude liée à la distance
+  // Normale unitaire à l'arête ; côté choisi selon la position du centre.
+  let nx = -dy / len, ny = dx / len;
+  if (center && (nx * (mx - center.x) + ny * (my - center.y)) < 0) { nx = -nx; ny = -ny; }
+  const cx = mx + nx * off, cy = my + ny * off;
   let ax = a.x, ay = a.y, bx = b.x, by = b.y;
   if (ra) { const tx = cx - a.x, ty = cy - a.y, tl = Math.hypot(tx, ty) || 1; ax = a.x + (tx / tl) * ra; ay = a.y + (ty / tl) * ra; }
   if (rb) { const tx = b.x - cx, ty = b.y - cy, tl = Math.hypot(tx, ty) || 1; bx = b.x - (tx / tl) * rb; by = b.y - (ty / tl) * rb; }
   return `M ${ax} ${ay} Q ${cx} ${cy} ${bx} ${by}`;
 }
-function reqEdgePath(a, b, link, blocked) {
+function reqEdgePath(a, b, link, blocked, center) {
   const ra = nodeOuterR(link.fromId) + 2;       // démarre juste hors du nœud source
   const rb = nodeOuterR(link.toId) + 9;         // laisse la place à la pointe de flèche
   const path = svgEl("path", {
-    d: reqEdgeD(a, b, ra, rb),
+    d: reqEdgeD(a, b, ra, rb, center),
     class: "g-req" + (blocked ? " blocked" : ""),
     "data-from": String(link.fromId),
     "data-to": String(link.toId),
@@ -802,13 +815,15 @@ function renderGraph() {
     const pp = pos.get(n.parentId), pc = pos.get(n.id);
     if (pp && pc) gEdges.appendChild(edgePath(pp, pc, n));
   }
-  // Arêtes de prérequis (par-dessus la hiérarchie, sous les nœuds).
+  // Arêtes de prérequis (par-dessus la hiérarchie, sous les nœuds). La courbure se
+  // bombe vers l'extérieur du graphe (centre des positions) → suit les positions.
+  const center = graphCenter(pos);
   for (const l of vibes.links) {
     if (l.kind !== "requires") continue;
     const pf = pos.get(l.fromId), pt = pos.get(l.toId);
     if (!pf || !pt) continue;
     const to = vibes.byId.get(l.toId);
-    gReq.appendChild(reqEdgePath(pf, pt, l, to && to.status !== "done"));
+    gReq.appendChild(reqEdgePath(pf, pt, l, to && to.status !== "done", center));
   }
   for (const n of vibes.forest) {
     const pp = pos.get(n.id);
@@ -910,10 +925,11 @@ function liveUpdateGraphPositions() {
     const pp = pos.get(Number(ed.dataset.pid)), pc = pos.get(Number(ed.dataset.cid));
     if (pp && pc) ed.setAttribute("d", edgeD(pp, pc));
   });
+  const center = graphCenter(pos);
   svg.querySelectorAll(".g-req").forEach((ed) => {
     const from = Number(ed.dataset.from), to = Number(ed.dataset.to);
     const pf = pos.get(from), pt = pos.get(to);
-    if (pf && pt) ed.setAttribute("d", reqEdgeD(pf, pt, nodeOuterR(from) + 2, nodeOuterR(to) + 9));
+    if (pf && pt) ed.setAttribute("d", reqEdgeD(pf, pt, nodeOuterR(from) + 2, nodeOuterR(to) + 9, center));
   });
   if (vibes.graph.edgeDel) positionEdgeDel();
 }
