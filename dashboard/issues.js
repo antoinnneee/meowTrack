@@ -3,7 +3,7 @@
 // aussi par le bloc Vibes pour les notes et le chat). Importe le noyau et les
 // ponts de navigation vers les autres vues.
 
-import { $, esc, api, activeRepo, setActiveRepo } from "./core.js";
+import { $, esc, api, activeRepo, setActiveRepo, getToken, injectRepo } from "./core.js";
 import { vibes, openVibes, openNodeInVibes } from "./vibes.js";
 import { openRepoView } from "./repo.js";
 
@@ -69,6 +69,7 @@ async function onRepoChange(slug) {
   setActiveRepo(slug);
   state.branch = ""; // les branches diffèrent d'un repo à l'autre
   state.nodes = null; // les jalons sont propres au repo → rechargés à la demande
+  subscribeIssues(); // le flux SSE est scopé au repo → se réabonner sur le nouveau
   await loadMeta();
   await loadBranches();
   await loadList();
@@ -199,7 +200,7 @@ function renderList() {
       const brBadge = it.branch && !state.branch ? `<span class="badge">⎇ ${esc(it.branch)}</span>` : "";
       const stBadge =
         it.status !== "open" ? `<span class="badge status-${it.status}">${STATUS_LABEL[it.status]}</span>` : "";
-      return `<li class="issue-card prio-${it.priority} ${it.status} ${sel}" data-ref="${esc(it.ref)}">
+      return `<li class="issue-card prio-${it.priority} ${it.status} ${sel}" data-ref="${esc(it.ref)}" draggable="true">
         <div class="row1">
           <span class="code">${esc(it.ref)}</span>
           <span class="title">${esc(it.title)}</span>
@@ -214,6 +215,104 @@ function renderList() {
   ul.querySelectorAll(".issue-card").forEach((el) =>
     el.addEventListener("click", () => selectIssue(el.dataset.ref))
   );
+}
+
+// ── Réordonnancement manuel (drag & drop) ────────────────────────────────────
+// L'ordre manuel prime sur le tri statut/priorité (colonne `position` côté serveur).
+// Listeners DÉLÉGUÉS sur la liste (posés une fois) → survivent aux re-render ; les
+// cartes portent draggable="true". On déplace le <li> en direct pendant le survol,
+// puis on persiste l'ordre du DOM à la fin du glisser.
+let dragging = null;
+
+// Carte (non draguée) sous le curseur dont on doit passer AVANT (insertion au-dessus
+// de sa moitié haute). null → insérer en fin de liste.
+function dragAfterElement(ul, y) {
+  const els = [...ul.querySelectorAll(".issue-card:not(.dragging)")];
+  let closest = { offset: -Infinity, el: null };
+  for (const el of els) {
+    const box = el.getBoundingClientRect();
+    const offset = y - box.top - box.height / 2;
+    if (offset < 0 && offset > closest.offset) closest = { offset, el };
+  }
+  return closest.el;
+}
+
+async function persistOrder(ul) {
+  const order = [...ul.querySelectorAll(".issue-card")].map((el) => el.dataset.ref);
+  // Reflète l'ordre localement (évite un saut visuel avant la confirmation serveur).
+  state.issues.sort((a, b) => order.indexOf(a.ref) - order.indexOf(b.ref));
+  try {
+    await api.send("POST", "/api/issues/reorder", { order });
+  } catch (e) {
+    // Échec → on resynchronise depuis le serveur (vérité).
+    await loadList();
+  }
+}
+
+// Pose les listeners de glisser-déposer sur la liste (une seule fois).
+function initDragReorder() {
+  const ul = $("#issueList");
+  if (!ul || ul._dndWired) return;
+  ul._dndWired = true;
+  ul.addEventListener("dragstart", (e) => {
+    const card = e.target.closest(".issue-card");
+    if (!card) return;
+    dragging = card;
+    card.classList.add("dragging");
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = "move";
+      try { e.dataTransfer.setData("text/plain", card.dataset.ref || ""); } catch { /* ignore */ }
+    }
+  });
+  ul.addEventListener("dragover", (e) => {
+    if (!dragging) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    const after = dragAfterElement(ul, e.clientY);
+    if (after == null) ul.appendChild(dragging);
+    else ul.insertBefore(dragging, after);
+  });
+  ul.addEventListener("drop", (e) => e.preventDefault());
+  ul.addEventListener("dragend", () => {
+    if (!dragging) return;
+    dragging.classList.remove("dragging");
+    dragging = null;
+    persistOrder(ul);
+  });
+}
+
+// ── Synchro temps réel des entrées (SSE, canal forêt du repo) ─────────────────
+// Les chats IA (Vibes) peuvent créer/modifier/réordonner des entrées de suivi ; le
+// serveur diffuse alors `issues:changed` sur le canal forêt du repo, auquel on
+// s'abonne ici pour recharger la liste (et rafraîchir le détail ouvert) en direct.
+let issuesEs = null;
+let issuesReloadTimer = null;
+function issueStreamUrl() {
+  const p = injectRepo("/api/nodes/stream");
+  return p + (getToken() ? (p.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(getToken()) : "");
+}
+async function refreshSelected() {
+  if (!state.selected) return;
+  try {
+    state.selected = await api.get("/api/issues/" + encodeURIComponent(state.selected.ref));
+    renderDetail();
+  } catch {
+    /* entrée supprimée entre-temps → ignoré (la liste reflètera la disparition) */
+  }
+}
+function subscribeIssues() {
+  if (issuesEs) { try { issuesEs.close(); } catch { /* ignore */ } issuesEs = null; }
+  let es;
+  try { es = new EventSource(issueStreamUrl()); } catch { return; }
+  issuesEs = es;
+  es.addEventListener("issues:changed", () => {
+    if (dragging) return; // ne pas perturber un glisser en cours
+    clearTimeout(issuesReloadTimer);
+    issuesReloadTimer = setTimeout(() => {
+      loadList();
+      refreshSelected();
+    }, 150);
+  });
 }
 
 // ── Détail ───────────────────────────────────────────────────────────────────
@@ -707,10 +806,13 @@ export function init() {
     if (e.key === "Escape" && !$("#backdrop").hidden) closeModal();
   });
 
+  initDragReorder(); // glisser-déposer de la liste (ordre manuel)
+
   // loadRepos d'abord (fixe le repo actif), puis le reste utilise ?repo=.
   loadRepos().then(() => {
     loadMeta();
     loadBranches();
     loadList();
+    subscribeIssues(); // flux temps réel des entrées (issues:changed) du repo actif
   });
 }

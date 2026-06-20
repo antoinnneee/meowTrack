@@ -109,6 +109,7 @@ export const TRACKING_SCHEMA = `
     tags        TEXT NOT NULL DEFAULT '[]',
     branch      TEXT,
     git_commit  TEXT,
+    position    INTEGER NOT NULL DEFAULT 0,           -- ordre manuel (drag & drop + actions IA)
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     UNIQUE(repo_id, ref)
@@ -259,6 +260,7 @@ function ensureTrackerSchema(conn) {
   ensureColumn(conn, "nodes", "notes", "notes TEXT NOT NULL DEFAULT ''");
   ensureColumn(conn, "nodes", "pos_x", "pos_x REAL");
   ensureColumn(conn, "nodes", "pos_y", "pos_y REAL");
+  ensureColumn(conn, "issues", "position", "position INTEGER NOT NULL DEFAULT 0");
 }
 
 export function trackDbFor(repoId) {

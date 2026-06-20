@@ -1839,14 +1839,20 @@ function opLabel(o) {
     case "reorder_children": return "↕ réordonné";
     case "add_link": return "🔒 prérequis lié";
     case "remove_link": return "🔓 prérequis retiré";
+    case "add_issue": return "🐞 " + (o.ref ? o.ref + " · " : "") + (o.title || "entrée créée");
+    case "update_issue": return "✎ " + (o.ref || "entrée");
+    case "delete_issue": return "🗑 " + (o.ref ? o.ref + " supprimée" : "entrée supprimée");
+    case "reorder_issues": return "↕ entrées réordonnées";
     default: return o.op || "action";
   }
 }
 // Id de nœud ouvrable porté par une op APPLIQUÉE (les propositions n'ont pas
 // encore d'id réel). On n'ouvre pas un nœud supprimé (il n'existe plus), ni un
-// simple réordonnancement (pas de cible unique).
+// simple réordonnancement (pas de cible unique), ni les ops du domaine SUIVI
+// (leur `id` est un id d'ENTRÉE, pas de nœud → ne pas tenter d'ouvrir un nœud).
+const ISSUE_OP_SET = new Set(["add_issue", "update_issue", "delete_issue", "reorder_issues"]);
 function openableNodeId(o) {
-  if (!o || o.op === "delete_node" || o.op === "reorder_children") return null;
+  if (!o || o.op === "delete_node" || o.op === "reorder_children" || ISSUE_OP_SET.has(o.op)) return null;
   return o.id != null ? o.id : null;
 }
 function actionChipsHtml(m) {
@@ -1858,7 +1864,7 @@ function actionChipsHtml(m) {
   const chips = ops
     .map((o) => {
       const oid = openable ? openableNodeId(o) : null;
-      const cls = "action-chip" + (o.op === "delete_node" ? " danger" : "") + (oid != null ? " clickable" : "");
+      const cls = "action-chip" + (o.op === "delete_node" || o.op === "delete_issue" ? " danger" : "") + (oid != null ? " clickable" : "");
       const attr = oid != null ? ` data-open-node="${esc(String(oid))}" role="button" tabindex="0" title="Ouvrir le nœud"` : "";
       return `<span class="${cls}"${attr}>${esc(opLabel(o))}</span>`;
     })

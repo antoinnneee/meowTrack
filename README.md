@@ -89,6 +89,7 @@ Tools exposés :
 | `meowtrack_update` | Modifier les champs (fournir `paths` remplace toutes les références). |
 | `meowtrack_set_status` | Raccourci open / in_progress / done / wontfix. |
 | `meowtrack_delete` | Supprimer une entrée (cascade). |
+| `meowtrack_reorder` | Définir l'ordre **manuel** des entrées (`order` = codes/ids ; prime sur le tri statut/priorité). |
 | `meowtrack_add_reference` | Ajouter une référence fichier/dossier (`chemin:120-145`). |
 | `meowtrack_remove_reference` | Retirer une référence par id. |
 | `meowtrack_comment` | Ajouter une note de suivi. |
@@ -328,6 +329,28 @@ sous-arbre) : `applyForestActions` vérifie `node.repoId === repo` pour toute ci
 quota global par repo. Mêmes garde-fous que le chat par nœud : auto-apply sauf **actions destructives** (→
 confirmation humaine), streaming live, fail-closed sur réponse douteuse. Les messages sont stockés dans
 `forest_messages` (scopés `repo_id`) et diffusés sur le canal SSE `forest:<repoId>` déjà existant.
+
+### Gérer le SUIVI (issues) depuis le chat IA
+
+Les **deux chats** (par nœud ET « top level ») peuvent aussi **créer et organiser les entrées de suivi** du
+dépôt via quatre actions supplémentaires : `add_issue` (nouvelle entrée — un `@chemin` dans la description
+devient une référence fichier), `update_issue`, `delete_issue` et `reorder_issues` (ordre manuel). Comme les
+entrées sont **scopées au dépôt** (pas à l'arbre de nœuds), `turns.js` **scinde** le flux d'actions : les ops
+nœud partent dans `applyNodeActions`/`applyForestActions`, les ops issue dans **`applyIssueActions`**
+(`db/issues.js`, qui réutilise `createIssue`/`updateIssue`/`deleteIssue`/`reorderIssues`). Mêmes garde-fous :
+catalogue fermé (op inconnu rejeté), cap par tour, fail-closed ; `delete_issue` est **destructif** (→
+confirmation humaine, comme `delete_node`). Le prompt reçoit un instantané compact des entrées existantes
+(code + type/statut/priorité + titre) pour cibler les bons `ref`. Après application, un event SSE
+`issues:changed` est diffusé sur le canal `forest:<repoId>` ; la **vue Suivi** y est abonnée et recharge sa
+liste en direct. Côté MCP, l'outil `meowtrack_reorder` expose le même réordonnancement.
+
+### Ordre manuel des entrées (glisser-déposer)
+
+Les entrées de suivi portent une colonne `position` : **l'ordre manuel prime** sur l'ancien tri
+statut→priorité→date (`listIssues` trie par `position`). Dans la liste du Suivi, on **réordonne par
+glisser-déposer** ; l'ordre est persisté via `POST /api/issues/reorder` (`{ order: [code|id, …] }` →
+`reorderIssues`, qui réécrit les positions et relègue les entrées non citées après — même sémantique que le
+réordonnancement des nœuds). Une nouvelle entrée s'ajoute **en bas** de la liste.
 
 ### Chat en STREAMING (réflexion repliable)
 

@@ -104,6 +104,10 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .issue-card.prio-medium { border-left-color: var(--med); }
 .issue-card.prio-low { border-left-color: var(--low); }
 .issue-card.done .title, .issue-card.wontfix .title { text-decoration: line-through; color: var(--text-dim); }
+/* Réordonnancement par glisser-déposer */
+.issue-card { cursor: grab; }
+.issue-card:active { cursor: grabbing; }
+.issue-card.dragging { opacity: 0.5; outline: 2px dashed var(--accent); }
 
 /* Badges */
 .badge { font-size: 11px; padding: 2px 8px; border-radius: 20px; border: 1px solid var(--border); color: var(--text-dim); }

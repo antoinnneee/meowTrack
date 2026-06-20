@@ -58,6 +58,8 @@ export {
   updateIssue,
   deleteIssue,
   listIssues,
+  reorderIssues,
+  applyIssueActions,
   stats,
 } from "./db/issues.js";
 

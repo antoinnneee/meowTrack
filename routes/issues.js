@@ -1,7 +1,8 @@
 // routes/issues.js — entrées de suivi (issues), commentaires et références de chemins.
 
 import { send, readBody, repoOf } from "../http-util.js";
-import { listIssues, createIssue, getIssue, updateIssue, deleteIssue, addComment, addReference, removeReference, linkIssueNode, unlinkIssueNode } from "../db.js";
+import { listIssues, createIssue, getIssue, updateIssue, deleteIssue, reorderIssues, addComment, addReference, removeReference, linkIssueNode, unlinkIssueNode } from "../db.js";
+import { broadcast, forestKey } from "../sse.js";
 
 export async function handle(ctx) {
   const { req, res, method, path, q } = ctx;
@@ -27,6 +28,17 @@ export async function handle(ctx) {
   if (method === "POST" && path === "/api/issues") {
     const body = await readBody(req);
     send(res, 201, createIssue(repoOf(q, body), body));
+    return true;
+  }
+  // POST /api/issues/reorder?repo= { order:[code|id,…] } — ordre manuel (drag & drop).
+  // AVANT la regex /:ref (sinon « reorder » serait pris pour un code d'entrée).
+  if (method === "POST" && path === "/api/issues/reorder") {
+    const body = await readBody(req);
+    const id = repoOf(q, body);
+    const order = Array.isArray(body.order) ? body.order : [];
+    const issues = reorderIssues(id, order);
+    broadcast(forestKey(id), "issues:changed", { repoId: id }); // autres clients re-listent
+    send(res, 200, { ok: true, issues });
     return true;
   }
 
