@@ -503,55 +503,61 @@ const NS = "http://www.w3.org/2000/svg";
 const G_LEVEL_GAP = 138; // distance verticale entre deux niveaux (N_k → N_k+1)
 const G_NODE_GAP = 134;  // largeur horizontale d'un emplacement feuille
 function computeGraphLayout() {
-  const pos = new Map();
-  // Rangée du haut ALIGNÉE : chaque RACINE (N0 + légendes) occupe un emplacement
-  // uniforme (G_NODE_GAP), branchée ou non → les N0 forment une ligne nette. Le
-  // sous-arbre de chaque racine est calculé tidy (placeSubtree) dans une map locale,
-  // puis recentré SOUS sa racine. Une cascade large déborde sous la rangée, mais sans
-  // chevauchement de nœuds (profondeurs = lignes différentes).
-  let rowX = 0;
+  // Layout réel : nœuds de la forêt, épinglage via posX/posY.
+  return tidyForest(
+    rootsOf(),
+    (id) => childrenOf(id),
+    (n) => (n.posX != null && n.posY != null) ? { x: n.posX, y: n.posY } : null,
+  );
+}
+// Tidy-layout générique d'une forêt. `roots` : objets racines {id, depth, …}. `kidsOf(id)` :
+// renvoie les enfants (mêmes objets). `pinOf(node)` : {x,y} si le nœud est épinglé, sinon null.
+// Chaque RACINE occupe une bande horizontale = LARGEUR de son sous-arbre (≥ 1 emplacement),
+// donc les sous-arbres frères ne se chevauchent jamais. (Bug corrigé : l'ancienne version
+// avançait la rangée d'un G_NODE_GAP FIXE par racine et ne recalait que la racine sur son
+// slot → un sous-arbre plus large qu'un slot débordait sur les feuilles du voisin.)
+function tidyForest(roots, kidsOf, pinOf) {
+  // Post-ordre : pose les feuilles à la suite du curseur, centre chaque parent sur
+  // l'intervalle [1re … dernière feuille] de ses enfants. Y = profondeur. cur.x final =
+  // largeur du sous-arbre (en pixels).
+  const placeSub = (node, local, cur) => {
+    const y = (node.depth || 0) * G_LEVEL_GAP;
+    const kids = kidsOf(node.id);
+    if (!kids.length) { local.set(node.id, { x: cur.x, y }); cur.x += G_NODE_GAP; return; }
+    for (const k of kids) placeSub(k, local, cur);
+    const first = local.get(kids[0].id).x, last = local.get(kids[kids.length - 1].id).x;
+    local.set(node.id, { x: (first + last) / 2, y });
+  };
   const tidy = new Map(); // layout auto « idéal » (relatif à la hiérarchie)
-  for (const root of rootsOf()) {
+  let cursorX = 0;
+  for (const root of roots) {
     const local = new Map();
-    placeSubtree(root, local, { x: 0 });
-    const shift = rowX - local.get(root.id).x; // recale la racine sur la rangée
-    for (const [id, p] of local) tidy.set(id, { x: p.x + shift, y: p.y });
-    rowX += G_NODE_GAP;
+    const cur = { x: 0 };
+    placeSub(root, local, cur);
+    for (const [id, p] of local) tidy.set(id, { x: p.x + cursorX, y: p.y });
+    cursorX += Math.max(cur.x, G_NODE_GAP); // avance de la largeur réelle du sous-arbre
   }
   // Positions finales : on part du tidy-layout, mais chaque nœud ÉPINGLÉ (drag & drop
   // persisté) « entraîne » tout son sous-arbre auto en le décalant du même delta. Ainsi
   // un nouvel enfant (pos NULL = auto) d'un parent déplacé apparaît À CÔTÉ de ce parent,
   // pas à l'emplacement tidy global. Un descendant lui-même épinglé redéfinit le delta
   // pour son propre sous-arbre.
+  const pos = new Map();
   const place = (node, dx, dy) => {
     const t = tidy.get(node.id) || { x: 0, y: 0 };
+    const pin = pinOf(node);
     let x, y;
-    if (node.posX != null && node.posY != null) {
-      x = node.posX; y = node.posY;
+    if (pin) {
+      x = pin.x; y = pin.y;
       dx = x - t.x; dy = y - t.y; // nouveau delta hérité par le sous-arbre
     } else {
       x = t.x + dx; y = t.y + dy;
     }
     pos.set(node.id, { x, y });
-    for (const k of childrenOf(node.id)) place(k, dx, dy);
+    for (const k of kidsOf(node.id)) place(k, dx, dy);
   };
-  for (const root of rootsOf()) place(root, 0, 0);
+  for (const root of roots) place(root, 0, 0);
   return pos;
-}
-// Post-ordre : pose d'abord les feuilles à la suite, puis centre chaque parent sur
-// l'intervalle [1re feuille … dernière feuille] de ses enfants. Y = profondeur.
-function placeSubtree(node, pos, cur) {
-  const y = (node.depth || 0) * G_LEVEL_GAP;
-  const kids = childrenOf(node.id);
-  if (!kids.length) {
-    pos.set(node.id, { x: cur.x, y });
-    cur.x += G_NODE_GAP;
-    return;
-  }
-  for (const k of kids) placeSubtree(k, pos, cur);
-  const first = pos.get(kids[0].id).x;
-  const last = pos.get(kids[kids.length - 1].id).x;
-  pos.set(node.id, { x: (first + last) / 2, y });
 }
 // ── Couleur par cascade ──────────────────────────────────────────────────────
 // Assigne une teinte stable (par id croissant) à chaque tête de cascade (profondeur 1).
@@ -637,59 +643,64 @@ function nodeGroup(n, p) {
   g.appendChild(inner);
   return g;
 }
-// Positions des nœuds fantômes (chat « top level ») dans le graphe. Même principe
-// que placeSubtree : allocation de slots-feuilles via un curseur GLOBAL (post-ordre),
-// pour qu'aucun fantôme ne se superpose à un autre — y compris les enfants de parents
-// réels adjacents (le bug : deux parents distants de G_NODE_GAP qui se partagent
-// chacun des enfants finissaient par les empiler au même x). Les racines fantômes
-// (sans parent) prolongent la rangée du haut ; les sous-jalons fantômes se posent sous
-// leur parent (réel via parentId, ou fantôme via parentKey, ordre indifférent).
-function computeGhostPositions(pos) {
-  const gpos = new Map();
+// Layout combiné réel + fantômes (chat « top level »). Les fantômes participent au MÊME
+// tidy-layout que les vrais nœuds (comme des pseudo-nœuds), donc les parents s'écartent
+// pour les accueillir et les feuilles fantômes se posent proprement sous leur parent — au
+// lieu de « filer » à droite ou de se superposer. Conséquence : l'aperçu en cours de
+// génération a déjà la disposition FINALE → plus de saut quand les vrais nœuds remplacent
+// les fantômes. Renvoie { pos (ids réels numériques), gpos (clés fantômes) }.
+// uid : id numérique pour un vrai nœud, "g:"+key pour un fantôme.
+function computeLayoutWithGhosts() {
   const ghosts = vibes._ghostNodes;
   const byKey = new Map(ghosts.map((g) => [g.key, g]));
-  // Enfants fantômes indexés par parent ('k:<key>' fantôme | 'n:<id>' réel), + ref parent
-  // de chaque fantôme. Ordre-indépendant (ne suppose plus parent-écrit-avant-enfant).
-  const kidsOf = new Map();
-  const parentRef = new Map();
-  for (const gh of ghosts) {
-    let ref = null;
-    if (gh.parentKey != null && byKey.has(gh.parentKey)) ref = "k:" + gh.parentKey;
-    else if (gh.parentId != null && pos.has(gh.parentId)) ref = "n:" + gh.parentId;
-    parentRef.set(gh.key, ref);
-    if (ref) { if (!kidsOf.has(ref)) kidsOf.set(ref, []); kidsOf.get(ref).push(gh); }
-  }
-  // Pose un sous-arbre fantôme en post-ordre : feuilles à la suite du curseur, parent
-  // centré sur l'intervalle de ses enfants (identique à placeSubtree, mais sur fantômes).
-  const place = (gh, y, cur) => {
-    const kids = kidsOf.get("k:" + gh.key) || [];
-    if (!kids.length) { gpos.set(gh.key, { x: cur.x, y }); cur.x += G_NODE_GAP; return; }
-    for (const k of kids) place(k, y + G_LEVEL_GAP, cur);
-    const first = gpos.get(kids[0].key).x, last = gpos.get(kids[kids.length - 1].key).x;
-    gpos.set(gh.key, { x: (first + last) / 2, y });
+  // Parent unifié d'un fantôme : "g:"+key (parent fantôme), id numérique (parent réel) ou null.
+  const ghostParentUid = (gh) => {
+    if (gh.parentKey != null && byKey.has(gh.parentKey)) return "g:" + gh.parentKey;
+    if (gh.parentId != null && vibes.byId.has(gh.parentId)) return gh.parentId;
+    return null;
   };
-  // Têtes des arbres fantômes : soit racines (prolongent la rangée du haut), soit
-  // accrochées sous un nœud réel. Triées par x d'ancrage pour rester de gauche à droite.
-  let maxRootX = -Infinity;
-  for (const r of rootsOf()) { const p = pos.get(r.id); if (p) maxRootX = Math.max(maxRootX, p.x); }
-  if (maxRootX === -Infinity) maxRootX = -G_NODE_GAP; // aucune racine réelle → démarre à 0
-  const tops = [];
-  let rootI = 0;
+  // Enfants fantômes indexés par uid de parent + liste des fantômes racines.
+  const ghKids = new Map();
+  const ghostRoots = [];
   for (const gh of ghosts) {
-    const ref = parentRef.get(gh.key);
-    if (ref == null) tops.push({ gh, anchorX: maxRootX + ++rootI * G_NODE_GAP, y: 0 });
-    else if (ref[0] === "n") {
-      const pp = pos.get(gh.parentId);
-      tops.push({ gh, anchorX: pp.x, y: pp.y + G_LEVEL_GAP });
-    }
-    // ref 'k:' → enfant d'un fantôme, posé récursivement par sa tête, pas une tête.
+    const pu = ghostParentUid(gh);
+    if (pu == null) ghostRoots.push(gh);
+    else { if (!ghKids.has(pu)) ghKids.set(pu, []); ghKids.get(pu).push(gh); }
   }
-  tops.sort((a, b) => a.anchorX - b.anchorX);
-  // Curseur global : chaque tête démarre au max(curseur, son ancrage) → les groupes se
-  // suivent sans jamais se chevaucher, tout en restant alignés sous/après leur parent.
-  const cur = { x: -Infinity };
-  for (const t of tops) { cur.x = Math.max(cur.x, t.anchorX); place(t.gh, t.y, cur); }
-  return gpos;
+  // Profondeur d'un fantôme (mémoïsée) : 0 si racine, sinon profondeur(parent)+1.
+  const depthCache = new Map();
+  const ghostDepth = (gh) => {
+    if (depthCache.has(gh.key)) return depthCache.get(gh.key);
+    const pu = ghostParentUid(gh);
+    const d = pu == null ? 0
+      : typeof pu === "number" ? (vibes.byId.get(pu).depth || 0) + 1
+      : ghostDepth(byKey.get(pu.slice(2))) + 1;
+    depthCache.set(gh.key, d);
+    return d;
+  };
+  // Pseudo-nœud uniforme {id (uid), depth, _real?, _ghost?} pour tidyForest.
+  const wrap = (uid) => {
+    if (typeof uid === "number") { const n = vibes.byId.get(uid); return { id: uid, depth: n.depth || 0, _real: n }; }
+    const gh = byKey.get(uid.slice(2));
+    return { id: uid, depth: ghostDepth(gh), _ghost: gh };
+  };
+  // Enfants unifiés : vrais enfants (si parent réel) PUIS enfants fantômes (nouveaux → après).
+  const kidsOf = (uid) => {
+    const out = [];
+    if (typeof uid === "number") for (const c of childrenOf(uid)) out.push(wrap(c.id));
+    for (const gh of ghKids.get(uid) || []) out.push(wrap("g:" + gh.key));
+    return out;
+  };
+  const roots = rootsOf().map((r) => wrap(r.id)).concat(ghostRoots.map((gh) => wrap("g:" + gh.key)));
+  const pinOf = (node) => node._real && node._real.posX != null && node._real.posY != null
+    ? { x: node._real.posX, y: node._real.posY } : null;
+  const all = tidyForest(roots, kidsOf, pinOf);
+  const pos = new Map(), gpos = new Map();
+  for (const [uid, p] of all) {
+    if (typeof uid === "number") pos.set(uid, p);
+    else gpos.set(uid.slice(2), p);
+  }
+  return { pos, gpos };
 }
 function ghostNodeGroup(gh, p) {
   const g = svgEl("g", { transform: `translate(${p.x},${p.y})`, class: "g-node g-ghost status-" + gh.status });
@@ -743,7 +754,11 @@ function renderGraph() {
   const svg = $("#graphSvg");
   if (!svg || $("#graphView").hidden) return;
   buildCascadeColors();         // teintes par cascade, recalculées à chaque rendu
-  const pos = computeGraphLayout();
+  // Pendant un tour IA « top level », fantômes ET vrais nœuds sont disposés ensemble
+  // (les parents s'écartent pour accueillir les fantômes) → l'aperçu = la disposition finale.
+  const layout = vibes._ghostNodes.length ? computeLayoutWithGhosts() : { pos: computeGraphLayout(), gpos: null };
+  const pos = layout.pos;
+  const gpos = layout.gpos;
   vibes.graph.posMap = pos;     // réutilisé par le drag live et le recalcul des arêtes
   vibes.graph.edgeDel = null;   // l'overlay poubelle (re)disparaît au rendu
   while (svg.firstChild) svg.removeChild(svg.firstChild);
@@ -772,7 +787,6 @@ function renderGraph() {
     if (pp) gNodes.appendChild(nodeGroup(n, pp));
   }
   // Aperçu fantôme (chat « top level ») : arêtes + nœuds non persistés, par-dessus.
-  const gpos = vibes._ghostNodes.length ? computeGhostPositions(pos) : null;
   if (gpos) {
     for (const gh of vibes._ghostNodes) {
       const gp = gpos.get(gh.key);
