@@ -255,6 +255,9 @@ défaut d'env  (MEOWTRACK_RUN_*)   →  app_settings (UI, global)  →  override
 | `run.branchPrefix` | global | `meow/` | Préfixe des branches de travail |
 | `run.testCommand` | **repo** | `null` | Commande de test lancée après chaque tâche |
 | `run.autoApplyUpdates` | global | `false` | Appliquer les `nodeUpdates` non destructifs sans confirmation |
+| `review.autoReview` | global / repo | `false` | Déclenche une auto-revue (chat IA top-level) sur point de revue (§6.6) |
+| `review.autoReviewModel` | global | `sonnet` | Modèle de l'auto-revue (`sonnet`/`opus`/`haiku`) |
+| `review.autoReviewPrompt` | global / repo | `null` | **Prompt de politique** préparé d'avance, injecté dans l'auto-revue (§6.6) |
 
 ### 5.3 Surface
 
@@ -332,12 +335,14 @@ Au `complete`/`fail` (ou via un outil/route dédié `node_review`), le serveur :
 
 - **Dashboard** : panneau « Points de revue » (par nœud + une file globale par
   repo). Chaque point : message, type, actions suggérées.
-- **Résolution** (`POST /api/nodes/:ref/reviews/:id/resolve` `{ decision, applyActions? }`) :
+- **Résolution humaine** (`POST /api/nodes/:ref/reviews/:id/resolve` `{ decision, applyActions? }`) :
   - *approuver* → applique les `suggestedActions` (via `applyNodeActions`), marque le
     point `resolved` ; si plus aucun point bloquant, on **promeut** la tâche
     `review → done` (donc déblocage + rollup).
   - *rejeter / retravailler* → `dismissed` ou remet la tâche `active`
     (`run_state=NULL`) pour un nouveau passage (attempts incrémenté).
+- **Résolution automatique** (§6.6) : un point de revue peut aussi être traité par le
+  **chat IA top-level**, qui réorganise l'arbre/les tâches en réponse.
 - C'est le « possiblement mettre à jour les éléments selon les résultats » : la
   résolution peut créer des sous-tâches, changer des statuts, ajouter des prérequis
   — tout passe par le catalogue d'actions sûr.
@@ -347,6 +352,69 @@ Au `complete`/`fail` (ou via un outil/route dédié `node_review`), le serveur :
 Le fichier reste sur la **branche de travail** (auditable dans la PR). Option : le
 serveur peut le déplacer/archiver après ingestion. Ne **jamais** l'ingérer depuis
 `main` — uniquement depuis le worktree de la tâche.
+
+### 6.6 Auto-revue par le **chat IA top-level**
+
+Plutôt qu'un humain, c'est le **chat IA de la forêt** (top-level) qui répond au point
+de revue en **remodifiant l'arbre de nœuds et/ou les tâches**. On ne crée pas un
+nouveau pipeline : on **réutilise le chat forêt existant** (`runForestTurn` /
+`buildForestPrompt` / `applyForestActions`), qui sait déjà créer/déplacer/supprimer
+des nœuds, réordonner et (dé)lier des prérequis, à l'échelle du repo.
+
+**Entrée = un tour de chat forêt synthétique.** Au lieu d'un message humain, on
+fabrique le message à partir du contexte de revue :
+
+```
+buildForestPrompt(forêt, historique, userMessage = ⟨contexte de revue⟩, …)
+   ⟨contexte de revue⟩ =
+     - le(s) reviewPoint(s) ouvert(s) (message, kind, blocking, suggestedActions)
+     - le résumé du run + testResult + la branche
+     - le nœud d'origine (ref/titre) et son sous-arbre
+     - [optionnel] le PROMPT DE POLITIQUE préparé d'avance (review.autoReviewPrompt)
+```
+
+**Le prompt de politique optionnel** (`review.autoReviewPrompt`, §5.2) est un texte
+**préparé à l'avance** par l'utilisateur (global ou par repo), injecté en tête du
+message synthétique. Il encode *comment* arbitrer — p. ex. « privilégie la
+décomposition en sous-tâches testables », « ne supprime jamais un jalon, marque-le
+`abandoned` », « si testResult=fail, crée une tâche de correction et relie-la ».
+C'est de la **donnée de configuration**, traitée comme le reste du contenu : le bloc
+de revue lui-même reste *untrusted* (anti-injection, `stripUntrustedMarkers`), seule
+la politique est une consigne de confiance car posée par l'admin via l'UI.
+
+**Application = `applyForestActions`** (scope repo). Mêmes garde-fous que le chat
+forêt manuel : cap par tour, anti-cycle, et **action destructive → proposition +
+confirmation humaine** (jamais d'auto-suppression). Donc « auto » ne veut pas dire
+« sans filet » : une réorganisation non destructive s'applique seule, une suppression
+attend un clic humain.
+
+**Traçabilité.** Le tour s'enregistre comme un **message du chat forêt** (rôle
+assistant, auteur `auto-review`) → il apparaît dans l'historique top-level et se
+diffuse en SSE (`forest:<repoId>`). Le(s) point(s) de revue traité(s) passent
+`resolved` (avec un lien vers le message) ; si plus aucun point bloquant ne reste, la
+tâche est promue `review → done`.
+
+**Déclenchement** — deux modes, selon `review.autoReview` :
+- *à la demande* : bouton « Auto-réviser » sur le point de revue (route/MCP dédiés),
+  même si `autoReview=false`.
+- *automatique* : si `review.autoReview=true` (global ou repo), l'ingestion d'un
+  point de revue lance directement l'auto-revue en tâche de fond (réutilise le
+  détachement 202 + SSE de `handleForestChat`).
+
+**Boucle bornée.** Pour éviter qu'une auto-revue regénère des points qui relancent
+une auto-revue à l'infini : un compteur d'auto-revues par nœud (réutiliser
+`run_attempts` ou un champ dédié), plafonné ; au-delà → bascule en revue **humaine**.
+
+```js
+// ai/turns.js — pendant programmatique de handleForestChat (pas d'humain).
+export async function autoReviewForest(repoId, nodeId, reviewIds, { model, policyPrompt } = {}) {
+  // 1. charge la forêt + liens + le contexte de revue (reviews, dernier run)
+  // 2. message synthétique = policyPrompt (confiance) + bloc revue (untrusted)
+  // 3. runForestTurn(...) → parse fail-closed → applyForestActions (destructif → proposé)
+  // 4. enregistre le message forêt (author='auto-review'), broadcast SSE
+  // 5. marque les reviews resolved ; promeut review→done si plus de point bloquant
+}
+```
 
 ## 7. Outils MCP (`mcp.js`)
 
@@ -360,6 +428,7 @@ Additifs, alignés sur les `meowtrack_node_*` existants. Tous prennent `repo`.
 | `meowtrack_node_fail` | `{ ref, owner, error, branch? }` | `{ ok }` | Échec borné (retry tant que attempts < max) |
 | `meowtrack_node_runs` | `{ repo, ref }` | `[runs]` | Historique d'exécution d'un nœud |
 | `meowtrack_node_reviews` | `{ repo, ref?, state? }` | `[reviews]` | Lit les points de revue (ouverts/résolus) |
+| `meowtrack_review_auto` | `{ repo, ref, reviewIds?, model? }` | `{ message, applied, resolved }` | Lance l'**auto-revue** (chat IA top-level) sur des points de revue (§6.6) |
 
 > `complete` lit `.meowtrack/runs/<ref>.json` dans le worktree : l'agent peut donc se
 > contenter d'écrire le fichier puis d'appeler `complete` (les détails passent par le
@@ -373,6 +442,8 @@ Mêmes primitives data que le MCP :
 - Historique : `GET /api/nodes/:ref/runs`.
 - Revue : `GET /api/nodes/reviews?state=open` (file globale), `GET /api/nodes/:ref/reviews`,
   `POST /api/nodes/:ref/reviews/:id/resolve`.
+- Auto-revue (§6.6) : `POST /api/nodes/:ref/reviews/auto` `{ reviewIds?, model? }` — lance
+  un tour de chat forêt synthétique ; répond `202` puis streame en SSE (`forest:<repoId>`).
 - Réglages : `GET/PUT /api/settings/orchestrator` (§5.3).
 - Front (`vibes.js`) : badges `run_state` (en cours / revue / échoué), panneau
   « Points de revue », panneau « Orchestrateur ». SSE déjà câblé pour le rafraîchissement.
@@ -396,9 +467,10 @@ Mêmes primitives data que le MCP :
    └────────────────────────────────────┘
 ```
 
-Étape de **revue humaine** entre l'exécution et le merge sur `main` : l'agent
-produit branche + diff + rapport ; un humain relit (gestionnaire git), tranche les
-points de revue, puis merge. **Jamais d'auto-merge sur `main`.**
+Étape de **revue** entre l'exécution et le merge sur `main` : l'agent produit
+branche + diff + rapport ; les points de revue sont tranchés par un humain **ou** par
+l'auto-revue IA top-level (§6.6, qui remodifie l'arbre/les tâches), puis un humain
+relit le diff (gestionnaire git) et merge. **Jamais d'auto-merge sur `main`.**
 
 ## 10. Sécurité & isolation (point critique)
 
@@ -412,6 +484,10 @@ exécuteur **inverse ça** : la sécurité devient l'**isolation**, pas l'abstin
   sous-arbre, cap par tour, destructif → confirmation. Une découverte d'agent ne peut
   pas supprimer hors scope ni en masse.
 - **Porte humaine** avant merge ; **bornes** (`maxAttempts`, timeout, bail expirable).
+- **Auto-revue** : le bloc de revue est *untrusted* (`stripUntrustedMarkers`,
+  anti-injection) ; seule la politique (`review.autoReviewPrompt`, posée par l'admin
+  via l'UI) est de confiance. Actions via `applyForestActions` (destructif →
+  confirmation) ; compteur d'auto-revues plafonné (anti-boucle).
 - **Env** : conserver le strip du token (`AI_ENV`) ; ne jamais exposer
   `MEOWTRACK_TOKEN` à l'agent. `/mcp` exigé derrière `Authorization: Bearer`.
 
@@ -433,16 +509,20 @@ exécuteur **inverse ça** : la sécurité devient l'**isolation**, pas l'abstin
    `renewLease` / `completeNode` / `failNode`, `db/runs.js`, barrel. Tests unitaires.
 2. **MCP** — outils §7. Validés depuis une session Claude Code manuelle : « vide le
    backlog meowtrack du repo X ».
-3. **Retour par fichier + revue** — `ingestRunReport`, `node_reviews`, résolution,
-   routes/UI « Points de revue ». C'est le cœur de la boucle de feedback.
-4. **Config UI** — `app_settings`/overrides repo, routes `GET/PUT /api/settings/orchestrator`,
-   panneau « Orchestrateur ».
-5. **Dashboard exécution** — badges `run_state`, historique des runs, revue de diff.
-6. **Autonomie (optionnel)** — scheduler server-side qui spawne des exécuteurs
+3. **Retour par fichier + revue** — `ingestRunReport`, `node_reviews`, résolution
+   humaine, routes/UI « Points de revue ». C'est le cœur de la boucle de feedback.
+4. **Auto-revue (§6.6)** — `autoReviewForest` (réutilise `runForestTurn` /
+   `applyForestActions`), outil `meowtrack_review_auto` + route, déclenchement à la
+   demande puis automatique (`review.autoReview`), boucle bornée.
+5. **Config UI** — `app_settings`/overrides repo (dont `review.autoReviewPrompt`,
+   éditeur de texte), routes `GET/PUT /api/settings/orchestrator`, panneau « Orchestrateur ».
+6. **Dashboard exécution** — badges `run_state`, historique des runs, revue de diff.
+7. **Autonomie (optionnel)** — scheduler server-side qui spawne des exécuteurs
    `claude -p` pointés sur le MCP de meowtrack (`--mcp-config`) avec outils
    d'écriture + worktree. Réutilise tout ce qui précède.
 
-> Phases 1–3 = chaîne complète avec retour, pilotage manuel, zéro spawn server-side.
+> Phases 1–4 = chaîne complète avec retour **et** auto-revue, pilotage manuel, zéro
+> spawn server-side.
 
 ## 13. Tests (pattern `test/*.test.mjs`, `MEOWTRACK_NO_LISTEN=1`)
 
@@ -457,6 +537,11 @@ exécuteur **inverse ça** : la sécurité devient l'**isolation**, pas l'abstin
   `nodeUpdates` non destructifs appliqués selon `autoApplyUpdates` ; un `nodeUpdate`
   destructif → proposition (pas appliqué) ; `reviewPoints` persistés ; un point
   bloquant met la tâche en revue ; sa résolution promeut `review → done`.
+- **`auto_review.test.mjs`** : le message synthétique met le bloc de revue en
+  *untrusted* et la politique en consigne ; un tour produisant des actions non
+  destructives réorganise l'arbre (via `applyForestActions`) et résout les points ;
+  une action destructive reste **proposée** (pas appliquée) ; le compteur d'auto-revue
+  plafonné bascule en revue humaine (pas de boucle infinie).
 - Étendre `node_links.test.mjs` : cycle toujours refusé (terminaison du « pique une
   feuille débloquée »).
 
@@ -464,7 +549,7 @@ exécuteur **inverse ça** : la sécurité devient l'**isolation**, pas l'abstin
 
 - `mcp.js` et les modules `db/` sont déjà copiés (`db/` récursif) → `db/runs.js` :
   **aucune** édition d'allowlist.
-- Un nouveau module **racine** (ex. scheduler `orchestrator.js`, phase 6) doit être
+- Un nouveau module **racine** (ex. scheduler `orchestrator.js`, phase 7) doit être
   **ajouté à `FILES`**, sinon `ERR_MODULE_NOT_FOUND` au boot.
 - Un nouveau `dashboard/*.js` → l'ajouter à `DASHBOARD_FILES`.
 - `.meowtrack/runs/` vit dans les repos de travail (clones), pas dans le code
@@ -476,9 +561,11 @@ exécuteur **inverse ça** : la sécurité devient l'**isolation**, pas l'abstin
 | --- | --- | --- |
 | `MEOWTRACK_RUN_LEASE_MS` | `600000` | Durée d'un bail (10 min) |
 | `MEOWTRACK_RUN_MAX_ATTEMPTS` | `3` | Retries avant `failed` |
-| `MEOWTRACK_RUN_PARALLEL` | `1` | (phase 6) exécuteurs simultanés par repo |
+| `MEOWTRACK_RUN_PARALLEL` | `1` | (phase 7) exécuteurs simultanés par repo |
 | `MEOWTRACK_RUN_BRANCH_PREFIX` | `meow/` | Préfixe des branches de travail |
 | `MEOWTRACK_RUN_AUTOAPPLY` | `0` | Auto-applique les `nodeUpdates` non destructifs |
+| `MEOWTRACK_REVIEW_AUTO` | `0` | Auto-revue par le chat IA top-level sur point de revue (§6.6) |
+| `MEOWTRACK_REVIEW_AUTO_PROMPT` | — | Prompt de politique d'auto-revue (préféré : via l'UI) |
 
 > Ces variables sont les **défauts de bootstrap** ; la valeur effective vient de
 > `app_settings` / override repo dès qu'elle est définie dans l'interface (§5.1).
@@ -490,12 +577,16 @@ exécuteur **inverse ça** : la sécurité devient l'**isolation**, pas l'abstin
   définit, et que faire si `testResult='fail'` (auto-`fail` + retry ?).
 - **Granularité « exécutable »** : feuilles uniquement (proposé) vs jalon composite.
 - **Sort du fichier rapport** : conservé sur la branche (auditable) vs archivé/supprimé.
-- **Autonomie** : pilotage manuel/`/loop` (simple) vs scheduler server-side (phase 6).
+- **Auto-revue** : destructif toujours en confirmation (proposé) même en auto, ou
+  auto-apply complet sous flag explicite ? Plafond d'auto-revues avant bascule humaine ?
+- **Autonomie** : pilotage manuel/`/loop` (simple) vs scheduler server-side (phase 7).
 
 ---
 
-*Récapitulatif : ~4 colonnes + 2 tables + primitives data + 6 outils MCP. Le tri
+*Récapitulatif : ~4 colonnes + 2 tables + primitives data + 7 outils MCP. Le tri
 topo n'existe pas (il émerge). L'exclusivité tient en une instruction SQL. La boucle
 de feedback passe par un fichier `.meowtrack/runs/<ref>.json` ingéré côté serveur,
-qui applique les retours via le catalogue d'actions sûr et lève des points de revue
-humains. La config est éditable dans l'interface (app_settings + overrides repo).*
+qui applique les retours via le catalogue d'actions sûr et lève des points de revue.
+Ces points sont résolus par un humain **ou** en auto-revue par le chat IA top-level
+(réutilise `runForestTurn`/`applyForestActions`), guidée par un prompt de politique
+préparé d'avance. La config est éditable dans l'interface (app_settings + overrides repo).*
