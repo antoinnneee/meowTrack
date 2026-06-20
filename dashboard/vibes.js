@@ -1186,10 +1186,13 @@ function wireGraph() {
 function nodeUrl(suffix) {
   return `/api/nodes/${encodeURIComponent(vibes.current)}${suffix || ""}`;
 }
-async function openNode(ref) {
+async function openNode(refOrId) {
   try {
     closeStream();
-    const node = await api.get(`/api/nodes/${encodeURIComponent(ref)}?tree=true&messages=true`);
+    const node = await api.get(`/api/nodes/${encodeURIComponent(refOrId)}?tree=true&messages=true`);
+    // On accepte un code (NODE-1) OU un id numérique (chips du chat) ; l'état
+    // interne s'aligne toujours sur le vrai code renvoyé par l'API.
+    const ref = node.ref;
     vibes.current = ref;
     vibes.currentNode = node;
     vibes.currentVersion = node.version;
@@ -1696,12 +1699,27 @@ function opLabel(o) {
     default: return o.op || "action";
   }
 }
+// Id de nœud ouvrable porté par une op APPLIQUÉE (les propositions n'ont pas
+// encore d'id réel). On n'ouvre pas un nœud supprimé (il n'existe plus), ni un
+// simple réordonnancement (pas de cible unique).
+function openableNodeId(o) {
+  if (!o || o.op === "delete_node" || o.op === "reorder_children") return null;
+  return o.id != null ? o.id : null;
+}
 function actionChipsHtml(m) {
   if (!Array.isArray(m.actions) || !m.actions.length) return "";
   const entry = m.actions[0] || {};
   const ops = entry.ops || [];
   if (!ops.length && !entry.proposed) return "";
-  const chips = ops.map((o) => `<span class="action-chip${o.op === "delete_node" ? " danger" : ""}">${esc(opLabel(o))}</span>`).join("");
+  const openable = !!entry.applied; // seules les actions appliquées portent un id réel
+  const chips = ops
+    .map((o) => {
+      const oid = openable ? openableNodeId(o) : null;
+      const cls = "action-chip" + (o.op === "delete_node" ? " danger" : "") + (oid != null ? " clickable" : "");
+      const attr = oid != null ? ` data-open-node="${esc(String(oid))}" role="button" tabindex="0" title="Ouvrir le nœud"` : "";
+      return `<span class="${cls}"${attr}>${esc(opLabel(o))}</span>`;
+    })
+    .join("");
   const confirm = entry.proposed ? `<button class="confirm-actions" type="button">Confirmer</button>` : "";
   return `<div class="action-chips">${chips}${confirm}</div>`;
 }
@@ -1777,6 +1795,14 @@ function messageEl(m) {
       const node = c.firstElementChild;
       const btn = node.querySelector(".confirm-actions");
       if (btn && m.id) btn.addEventListener("click", () => confirmActions(m.id));
+      // Chips d'actions appliquées : clic / Entrée → ouvre le nœud concerné.
+      node.querySelectorAll(".action-chip.clickable[data-open-node]").forEach((chip) => {
+        const open = () => openNode(chip.dataset.openNode);
+        chip.addEventListener("click", open);
+        chip.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+        });
+      });
       div.appendChild(node);
     }
   }
