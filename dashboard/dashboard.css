@@ -591,12 +591,17 @@ body:not(.view-repo) .repo-only { display: none; }
 .g-edge-del:hover circle { fill: var(--bug); }
 .g-link-temp.req { stroke: #ffa94d; }
 
-/* Arêtes de PRÉREQUIS : pointillé orangé distinct de la hiérarchie (pleine). */
+/* Arêtes de PRÉREQUIS : pointillé orangé distinct de la hiérarchie (pleine).
+   Les tirets s'écoulent VERS le prérequis (sens du lien « from dépend de to »),
+   ce qui lève l'ambiguïté de direction en complément de la pointe de flèche. */
 .g-reqs { pointer-events: none; }
-.g-req { fill: none; stroke: #ffa94d; stroke-width: 2.5; stroke-dasharray: 6 5; opacity: .65; pointer-events: stroke; cursor: pointer; }
+.g-req { fill: none; stroke: #ffa94d; stroke-width: 2.5; stroke-dasharray: 6 5; opacity: .7; pointer-events: stroke; cursor: pointer; animation: reqFlow 1s linear infinite; }
 .g-req:hover { opacity: 1; stroke-width: 3.5; }
-.g-req.blocked { stroke: var(--bug); opacity: .8; }
+.g-req.blocked { stroke: var(--bug); opacity: .85; }
 .g-req-arrow { fill: #ffa94d; }
+.g-req-arrow-blocked { fill: var(--bug); }
+@keyframes reqFlow { to { stroke-dashoffset: -22; } }
+@media (prefers-reduced-motion: reduce) { .g-req { animation: none; } }
 /* Nœud bloqué (prérequis non atteint) : halo rouge discret. */
 .g-node.blocked .g-disc { stroke: var(--bug); stroke-width: 2.5; }
 
