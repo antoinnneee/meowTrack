@@ -340,18 +340,37 @@ function parseRefs(deco, remotes) {
   return out;
 }
 
-// Données du graphe d'historique : commits de toutes les refs en ordre topo/date,
+// Tous les refs (heads + remotes + tags) avec leur nom complet et court. Sert à
+// bâtir une sélection positive de refs pour le graphe (cf. logGraphFor), sans
+// jamais forger de nom de ref (le `%(refname)` complet existe toujours).
+export function listRefsAll(root) {
+  if (!isGitClone(root)) return [];
+  const raw = git(["for-each-ref", "--format=" + ["%(refname)", "%(refname:short)"].join(FS), "refs/heads", "refs/remotes", "refs/tags"], root) || "";
+  return raw
+    .split("\n")
+    .filter(Boolean)
+    .map((l) => {
+      const [refname, short] = l.split(FS);
+      return { refname, short };
+    });
+}
+
+// Données du graphe d'historique : commits des refs demandées en ordre topo/date,
 // avec parents + décorations. Le calcul des « lanes » est fait côté client.
-// `excludeRefs` (optionnel) : globs `--exclude=…` appliqués avant `--all` pour
-// retirer les branches cachées — `git log` ignore alors leurs refs, donc les
-// commits qui leur sont exclusifs disparaissent (les commits partagés restent).
-export function logGraph(root, { limit = 300, all = true, excludeRefs = null } = {}) {
+// `refs` (optionnel) : sélection positive de refs (noms complets) à parcourir au
+// lieu de `--all` — permet d'exclure les branches cachées ET le HEAD du worktree
+// de tracking (que `--all` ramasserait). Liste vide → aucun commit.
+export function logGraph(root, { limit = 300, all = true, refs = null } = {}) {
   if (!isGitClone(root)) return { commits: [], head: null };
   const remotes = (git(["remote"], root) || "").split("\n").map((s) => s.trim()).filter(Boolean);
   const fmt = ["%H", "%h", "%P", "%an", "%ae", "%cr", "%cI", "%s", "%D"].join(FS) + RS;
   const args = ["log", `--max-count=${Math.max(1, Math.min(2000, limit))}`, "--date-order", `--pretty=format:${fmt}`];
-  if (Array.isArray(excludeRefs)) args.push(...excludeRefs); // doit précéder --all
-  if (all) args.push("--all");
+  if (Array.isArray(refs)) {
+    if (refs.length === 0) return { commits: [], head: git(["rev-parse", "HEAD"], root) || null };
+    args.push(...refs);
+  } else if (all) {
+    args.push("--all");
+  }
   const raw = git(args, root);
   if (raw == null) return { commits: [], head: null };
   const commits = [];

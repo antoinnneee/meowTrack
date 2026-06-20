@@ -30,6 +30,7 @@ import {
   // Gestionnaire de repos (git lecture + écriture)
   status,
   logGraph,
+  listRefsAll,
   branchesDetailed,
   diffFile,
   stagedDiff,
@@ -548,19 +549,37 @@ export function ensureAllRepos() {
 export function statusFor(repoId) {
   return status(rootForRepo(repoId));
 }
-// Graphe d'historique filtré : les branches cachées (liste explicite + branche de
-// suivi) sont exclues via `--exclude=<glob> … --all`. Leurs refs locales ET
-// distantes sont retirées, donc les commits qui leur sont exclusifs disparaissent
-// du graphe ET de la liste de commits ; les commits partagés avec une branche
-// visible restent. On nettoie aussi leurs pastilles sur ces commits partagés.
+// Nom de branche (pour comparaison avec l'ensemble des cachées) à partir d'un
+// refname complet : refs/heads/<b> → <b> ; refs/remotes/<remote>/<b> → <b> ;
+// tags / autres → null (jamais cachés).
+function refBranchName(refname) {
+  if (refname.startsWith("refs/heads/")) return refname.slice("refs/heads/".length);
+  if (refname.startsWith("refs/remotes/")) {
+    const rest = refname.slice("refs/remotes/".length); // <remote>/<b>
+    const i = rest.indexOf("/");
+    return i >= 0 ? rest.slice(i + 1) : rest;
+  }
+  return null;
+}
+
+// Graphe d'historique filtré. Plutôt que `--all` (qui ramasse aussi le HEAD du
+// worktree de tracking sur le serveur), on parcourt une **sélection positive** des
+// refs visibles : tous les refs/heads + refs/remotes + refs/tags, SAUF les branches
+// cachées (liste explicite + branche de suivi) et le refs/remotes/*/HEAD symbolique.
+// Conséquence : les commits exclusifs à une branche cachée disparaissent du graphe
+// ET de la liste de commits ; les commits partagés avec une branche visible restent.
+// On nettoie aussi les pastilles des branches cachées sur ces commits partagés.
 export function logGraphFor(repoId, opts) {
   const root = rootForRepo(repoId);
   const hidden = hiddenBranchSet(repoId);
-  const excludeRefs = [];
-  for (const name of hidden) {
-    excludeRefs.push(`--exclude=refs/heads/${name}`, `--exclude=refs/remotes/*/${name}`);
+  const refs = [];
+  for (const { refname } of listRefsAll(root)) {
+    if (/^refs\/remotes\/[^/]+\/HEAD$/.test(refname)) continue; // origin/HEAD symbolique
+    const b = refBranchName(refname);
+    if (b != null && hidden.has(b)) continue; // branche cachée
+    refs.push(refname);
   }
-  const out = logGraph(root, { ...opts, excludeRefs });
+  const out = logGraph(root, { ...opts, refs });
   for (const c of out.commits) {
     c.refs = c.refs.filter((r) => {
       if (r.kind !== "local" && r.kind !== "remote") return true; // tags / HEAD : gardés
