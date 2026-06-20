@@ -342,12 +342,20 @@ function parseRefs(deco, remotes) {
 
 // Données du graphe d'historique : commits de toutes les refs en ordre topo/date,
 // avec parents + décorations. Le calcul des « lanes » est fait côté client.
-export function logGraph(root, { limit = 300, all = true } = {}) {
+// `refs` (optionnel) : liste explicite de refs à inclure (sélection positive) au
+// lieu de `--all` — sert à masquer les commits exclusifs aux branches cachées. Une
+// liste vide (toutes les branches cachées) → aucun commit.
+export function logGraph(root, { limit = 300, all = true, refs = null } = {}) {
   if (!isGitClone(root)) return { commits: [], head: null };
   const remotes = (git(["remote"], root) || "").split("\n").map((s) => s.trim()).filter(Boolean);
   const fmt = ["%H", "%h", "%P", "%an", "%ae", "%cr", "%cI", "%s", "%D"].join(FS) + RS;
   const args = ["log", `--max-count=${Math.max(1, Math.min(2000, limit))}`, "--date-order", `--pretty=format:${fmt}`];
-  if (all) args.push("--all");
+  if (Array.isArray(refs)) {
+    if (refs.length === 0) return { commits: [], head: git(["rev-parse", "HEAD"], root) || null };
+    args.push(...refs);
+  } else if (all) {
+    args.push("--all");
+  }
   const raw = git(args, root);
   if (raw == null) return { commits: [], head: null };
   const commits = [];
