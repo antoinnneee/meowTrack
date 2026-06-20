@@ -30,6 +30,7 @@ import {
   // Gestionnaire de repos (git lecture + écriture)
   status,
   logGraph,
+  listRefsAll,
   branchesDetailed,
   diffFile,
   stagedDiff,
@@ -50,6 +51,7 @@ import {
   deleteRemoteBranch,
   renameBranch,
   merge,
+  rebase,
   cherryPick,
   revertCommit,
   resetTo,
@@ -57,7 +59,16 @@ import {
   deleteTag,
   stashSave,
   stashPop,
+  stashApply,
+  stashDrop,
+  stashShow,
   stashList,
+  abortOperation,
+  continueOperation,
+  applyPatch,
+  reflog,
+  diffRefs,
+  blame,
   setRemote,
   removeRemote,
   storeGithubCredential,
@@ -486,10 +497,10 @@ export function ensureRepo(repoId) {
   return { ok: r.ok, cloned: r.ok, branch: ctx.branch, commit: ctx.commit, output: r.output, root };
 }
 
-export function pullRepo(repoId) {
+export function pullRepo(repoId, opts) {
   const root = rootForRepo(repoId);
   if (!isGitClone(root)) return { ok: false, output: `Pas un clone git : ${root}`, root };
-  const r = pull(root);
+  const r = pull(root, opts);
   refreshPathsFor(repoId); // l'arbre a pu changer
   const ctx = gitContext(root);
   return { ok: r.ok, pulled: r.pulled, branch: ctx.branch, commit: ctx.commit, output: r.output, root };
@@ -559,19 +570,37 @@ export function ensureAllRepos() {
 export function statusFor(repoId) {
   return status(rootForRepo(repoId));
 }
-// Graphe d'historique filtré : les branches cachées (liste explicite + branche de
-// suivi) sont exclues via `--exclude=<glob> … --all`. Leurs refs locales ET
-// distantes sont retirées, donc les commits qui leur sont exclusifs disparaissent
-// du graphe ET de la liste de commits ; les commits partagés avec une branche
-// visible restent. On nettoie aussi leurs pastilles sur ces commits partagés.
+// Nom de branche (pour comparaison avec l'ensemble des cachées) à partir d'un
+// refname complet : refs/heads/<b> → <b> ; refs/remotes/<remote>/<b> → <b> ;
+// tags / autres → null (jamais cachés).
+function refBranchName(refname) {
+  if (refname.startsWith("refs/heads/")) return refname.slice("refs/heads/".length);
+  if (refname.startsWith("refs/remotes/")) {
+    const rest = refname.slice("refs/remotes/".length); // <remote>/<b>
+    const i = rest.indexOf("/");
+    return i >= 0 ? rest.slice(i + 1) : rest;
+  }
+  return null;
+}
+
+// Graphe d'historique filtré. Plutôt que `--all` (qui ramasse aussi le HEAD du
+// worktree de tracking sur le serveur), on parcourt une **sélection positive** des
+// refs visibles : tous les refs/heads + refs/remotes + refs/tags, SAUF les branches
+// cachées (liste explicite + branche de suivi) et le refs/remotes/*/HEAD symbolique.
+// Conséquence : les commits exclusifs à une branche cachée disparaissent du graphe
+// ET de la liste de commits ; les commits partagés avec une branche visible restent.
+// On nettoie aussi les pastilles des branches cachées sur ces commits partagés.
 export function logGraphFor(repoId, opts) {
   const root = rootForRepo(repoId);
   const hidden = hiddenBranchSet(repoId);
-  const excludeRefs = [];
-  for (const name of hidden) {
-    excludeRefs.push(`--exclude=refs/heads/${name}`, `--exclude=refs/remotes/*/${name}`);
+  const refs = [];
+  for (const { refname } of listRefsAll(root)) {
+    if (/^refs\/remotes\/[^/]+\/HEAD$/.test(refname)) continue; // origin/HEAD symbolique
+    const b = refBranchName(refname);
+    if (b != null && hidden.has(b)) continue; // branche cachée
+    refs.push(refname);
   }
-  const out = logGraph(root, { ...opts, excludeRefs });
+  const out = logGraph(root, { ...opts, refs });
   for (const c of out.commits) {
     c.refs = c.refs.filter((r) => {
       if (r.kind !== "local" && r.kind !== "remote") return true; // tags / HEAD : gardés
@@ -622,8 +651,32 @@ export function discardFor(repoId, paths) {
   refreshPathsFor(repoId, "");
   return r;
 }
-export function commitFor(repoId, message) {
-  return commit(rootForRepo(repoId), message);
+export function commitFor(repoId, message, opts) {
+  return commit(rootForRepo(repoId), message, opts);
+}
+export function applyPatchFor(repoId, patch, opts) {
+  const r = applyPatch(rootForRepo(repoId), patch, opts);
+  refreshPathsFor(repoId, "");
+  return r;
+}
+export function abortOperationFor(repoId) {
+  const r = abortOperation(rootForRepo(repoId));
+  refreshPathsFor(repoId, "");
+  return r;
+}
+export function continueOperationFor(repoId) {
+  const r = continueOperation(rootForRepo(repoId));
+  refreshPathsFor(repoId, "");
+  return r;
+}
+export function reflogFor(repoId, opts) {
+  return reflog(rootForRepo(repoId), opts);
+}
+export function diffRefsFor(repoId, a, b, relPath) {
+  return diffRefs(rootForRepo(repoId), a, b, relPath);
+}
+export function blameFor(repoId, relPath, branch) {
+  return blame(rootForRepo(repoId), relPath, branch);
 }
 export function fetchFor(repoId) {
   return fetchRemote(rootForRepo(repoId));
@@ -660,6 +713,11 @@ export function mergeFor(repoId, name) {
   refreshPathsFor(repoId, "");
   return r;
 }
+export function rebaseFor(repoId, onto) {
+  const r = rebase(rootForRepo(repoId), onto);
+  refreshPathsFor(repoId, "");
+  return r;
+}
 export function cherryPickFor(repoId, hash) {
   const r = cherryPick(rootForRepo(repoId), hash);
   refreshPathsFor(repoId, "");
@@ -686,10 +744,21 @@ export function stashSaveFor(repoId, opts) {
   refreshPathsFor(repoId, "");
   return r;
 }
-export function stashPopFor(repoId) {
-  const r = stashPop(rootForRepo(repoId));
+export function stashPopFor(repoId, ref) {
+  const r = stashPop(rootForRepo(repoId), ref);
   refreshPathsFor(repoId, "");
   return r;
+}
+export function stashApplyFor(repoId, ref) {
+  const r = stashApply(rootForRepo(repoId), ref);
+  refreshPathsFor(repoId, "");
+  return r;
+}
+export function stashDropFor(repoId, ref) {
+  return stashDrop(rootForRepo(repoId), ref);
+}
+export function stashShowFor(repoId, ref) {
+  return stashShow(rootForRepo(repoId), ref);
 }
 export function stashListFor(repoId) {
   return stashList(rootForRepo(repoId));

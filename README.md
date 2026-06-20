@@ -182,6 +182,24 @@ Le bouton **📂 Fichiers** de la barre d'outils de l'onglet **🔀 Repo** ouvre
 
 Le bouton **✨ Améliorer (IA)** de la modale (`POST /api/improve-description`) réécrit la description courante via `claude -p --model sonnet` (CLI headless, exécuté côté serveur, sans shell). Les `@chemin` sont préservés. Nécessite le CLI Claude installé + authentifié sur le serveur (`MEOWTRACK_CLAUDE_BIN`).
 
+### Jalons liés à une entrée
+
+Une entrée de suivi peut **référencer un ou plusieurs jalons** (nœuds Vibes) de **son repo** — un lien
+**vivant** : on relit toujours l'état courant du nœud (titre, statut, progression), rien n'est copié. En vue
+détail, la section **« Jalons liés »** liste les jalons rattachés (clic → ouvre le nœud dans l'onglet Vibes) et
+un sélecteur **« ➕ Importer un jalon… »** permet d'en ajouter ; un badge **🎯 N** apparaît sur la carte dans la
+liste. Stocké dans la table `issue_nodes` (`issue_id`, `node_id`, `UNIQUE`/`PRIMARY KEY` → ajout idempotent,
+`ON DELETE CASCADE` des deux côtés). Les deux extrémités sont du **même repo** par construction (une base
+tracker par repo). Routes : `POST /api/issues/:ref/nodes` (`{ nodeRef }`, code `NODE-1` ou id) pour lier,
+`DELETE /api/issues/:ref/nodes/:nodeId` pour détacher ; `GET /api/issues/:ref` renvoie le tableau `nodes`.
+
+**Sens inverse (créer un suivi depuis un jalon).** Le détail d'un jalon (onglet Vibes) affiche une section
+**« 🐞 Suivis liés »** listant les entrées rattachées (clic → ouvre l'entrée dans Suivi) avec un bouton
+**« ➕ Suivi »** : il ouvre la modale de création d'entrée **pré-remplie** (titre = titre du jalon, type
+`task`), et à l'enregistrement l'entrée est **automatiquement liée** au jalon puis affichée dans la vue Suivi.
+Côté données, `GET /api/nodes/:ref` renvoie désormais aussi un tableau `issues` (résumé des entrées liées :
+`ref`, `title`, `type`, `status`, `priority`).
+
 ## Vibes — arbre de nœuds, graphe organique & chat IA streaming
 
 Onglet **🌱 Vibes** du dashboard : un **arbre de NŒUDS récursif** (`nodes`, ref `NODE-1`…). Un seul

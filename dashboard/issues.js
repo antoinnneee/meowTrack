@@ -4,14 +4,26 @@
 // ponts de navigation vers les autres vues.
 
 import { $, esc, api, activeRepo, setActiveRepo } from "./core.js";
-import { vibes, openVibes } from "./vibes.js";
+import { vibes, openVibes, openNodeInVibes } from "./vibes.js";
 import { openRepoView } from "./repo.js";
 
 const TYPE_ICON = { bug: "🐞", feature: "✨", task: "✅", chore: "🧹" };
 const STATUS_LABEL = { open: "Ouvert", in_progress: "En cours", done: "Fait", wontfix: "Abandonné" };
 const PRIO_LABEL = { critical: "Critique", high: "Haute", medium: "Moyenne", low: "Basse" };
 
-export let state = { issues: [], selected: null, editing: null, refs: [], branch: "", branches: [], serverBranch: null, repos: [] };
+export let state = { issues: [], selected: null, editing: null, refs: [], branch: "", branches: [], serverBranch: null, repos: [], nodes: null, linkNodeAfterCreate: null };
+
+// Jalons (nœuds Vibes) du repo actif, pour le sélecteur d'import dans le détail.
+// Chargés à la demande et mémorisés ; invalidés au changement de repo.
+async function ensureNodesLoaded(force) {
+  if (state.nodes && !force) return state.nodes;
+  try {
+    state.nodes = await api.get("/api/nodes?view=forest");
+  } catch {
+    state.nodes = [];
+  }
+  return state.nodes;
+}
 
 // ── Chargement & liste ───────────────────────────────────────────────────────
 async function loadMeta() {
@@ -20,8 +32,7 @@ async function loadMeta() {
     const g = m.git || {};
     $("#meta").innerHTML =
       `repo <b>${esc((m.repoRoot || "").split(/[\\/]/).pop())}</b> · ` +
-      `branche <b>${esc(g.branch || "?")}</b> @ <b>${esc(g.commit || "?")}</b> · ` +
-      `<b>${m.total || 0}</b> entrées (${m.byStatus?.in_progress || 0} en cours, ${m.byStatus?.open || 0} ouvertes)`;
+      `branche <b>${esc(g.branch || "?")}</b> @ <b>${esc(g.commit || "?")}</b>`;
   } catch (e) {
     $("#meta").textContent = "⚠ serveur injoignable : " + e.message;
   }
@@ -57,6 +68,7 @@ async function loadRepos() {
 async function onRepoChange(slug) {
   setActiveRepo(slug);
   state.branch = ""; // les branches diffèrent d'un repo à l'autre
+  state.nodes = null; // les jalons sont propres au repo → rechargés à la demande
   await loadMeta();
   await loadBranches();
   await loadList();
@@ -182,6 +194,7 @@ function renderList() {
       const sel = state.selected?.ref === it.ref ? "selected" : "";
       const tags = it.tags.map((t) => `<span class="badge tag">${esc(t)}</span>`).join("");
       const refBadge = it.references.length ? `<span class="badge refcount">📎 ${it.references.length}</span>` : "";
+      const nodeBadge = it.nodes?.length ? `<span class="badge nodecount">🎯 ${it.nodes.length}</span>` : "";
       // Badge branche affiché seulement hors filtre branche (sinon redondant).
       const brBadge = it.branch && !state.branch ? `<span class="badge">⎇ ${esc(it.branch)}</span>` : "";
       const stBadge =
@@ -193,7 +206,7 @@ function renderList() {
         </div>
         <div class="row2">
           <span class="badge type-${it.type}">${TYPE_ICON[it.type]} ${it.type}</span>
-          ${stBadge}${brBadge}${refBadge}${tags}
+          ${stBadge}${brBadge}${refBadge}${nodeBadge}${tags}
         </div>
       </li>`;
     })
@@ -207,6 +220,7 @@ function renderList() {
 async function selectIssue(ref) {
   try {
     state.selected = await api.get("/api/issues/" + encodeURIComponent(ref));
+    await ensureNodesLoaded(); // alimente le sélecteur d'import de jalons du détail
     renderList();
     renderDetail();
     // Mobile (master-détail) : bascule sur le panneau détail plein écran.
@@ -248,6 +262,32 @@ function renderDetail() {
     )
     .join("");
 
+  // Jalons liés (lien vivant vers des nœuds Vibes) + sélecteur d'import.
+  const linkedNodes = it.nodes || [];
+  const nodesHtml = linkedNodes.length
+    ? linkedNodes
+        .map(
+          (n) => `<li class="node-link color-${esc(n.color || "accent")}">
+            <button class="nl-open" data-ref="${esc(n.ref)}" title="Ouvrir dans Vibes">
+              <span class="nl-emoji">${esc(n.emoji || "🎯")}</span>
+              <span class="nl-title">${esc(n.title)}</span>
+              <span class="code">${esc(n.ref)}</span>
+              <span class="nl-prog">${n.progress}%</span>
+            </button>
+            <button class="nl-remove ghost" data-id="${n.id}" title="Détacher ce jalon">✕</button>
+          </li>`
+        )
+        .join("")
+    : '<li class="empty">Aucun jalon lié.</li>';
+  const linkedIds = new Set(linkedNodes.map((n) => n.id));
+  const nodeOpts = (state.nodes || [])
+    .filter((n) => !linkedIds.has(n.id))
+    .map((n) => {
+      const indent = "  ".repeat(Math.max(0, n.depth || 0));
+      return `<option value="${esc(n.ref)}">${indent}${esc((n.emoji || "🎯") + " " + n.title)} (${esc(n.ref)})</option>`;
+    })
+    .join("");
+
   $("#detail").innerHTML = `
     <div class="detail-head">
       <button id="detailBack" class="ghost detail-back" title="Retour à la liste">←</button>
@@ -281,6 +321,17 @@ function renderDetail() {
     </div>
 
     <div class="detail-section">
+      <h3>Jalons liés (${linkedNodes.length})</h3>
+      <ul class="node-link-list">${nodesHtml}</ul>
+      <div class="add-node-link">
+        <select id="nodeLinkSel" ${nodeOpts ? "" : "disabled"}>
+          <option value="">${nodeOpts ? "➕ Importer un jalon…" : "Aucun jalon disponible"}</option>
+          ${nodeOpts}
+        </select>
+      </div>
+    </div>
+
+    <div class="detail-section">
       <h3>Commentaires</h3>
       <ul class="comment-list">${commentsHtml}</ul>
       <div class="add-comment">
@@ -303,6 +354,36 @@ function renderDetail() {
   };
   $("#commentBtn").addEventListener("click", submitComment);
   ci.addEventListener("keydown", (e) => e.key === "Enter" && submitComment());
+
+  // Jalons liés : ouverture dans Vibes, détachement, et import via le sélecteur.
+  $("#detail").querySelectorAll(".nl-open").forEach((b) =>
+    b.addEventListener("click", () => openNodeInVibes(b.dataset.ref))
+  );
+  $("#detail").querySelectorAll(".nl-remove").forEach((b) =>
+    b.addEventListener("click", () => unlinkNode(it.ref, b.dataset.id))
+  );
+  const nsel = $("#nodeLinkSel");
+  nsel?.addEventListener("change", () => {
+    if (nsel.value) linkNode(it.ref, nsel.value);
+  });
+}
+
+// Lie / détache un jalon puis rafraîchit le détail (lien vivant) et la liste (badge).
+async function linkNode(ref, nodeRef) {
+  try {
+    await api.send("POST", `/api/issues/${encodeURIComponent(ref)}/nodes`, { nodeRef });
+    await Promise.all([selectIssue(ref), loadList()]);
+  } catch (e) {
+    alert("Échec de la liaison : " + e.message);
+  }
+}
+async function unlinkNode(ref, nodeId) {
+  try {
+    await api.send("DELETE", `/api/issues/${encodeURIComponent(ref)}/nodes/${encodeURIComponent(nodeId)}`);
+    await Promise.all([selectIssue(ref), loadList()]);
+  } catch (e) {
+    alert("Échec du détachement : " + e.message);
+  }
 }
 
 async function setStatus(ref, status) {
@@ -323,6 +404,7 @@ async function deleteIssue(ref) {
 // ── Modale création / édition ────────────────────────────────────────────────
 function openModal(issue) {
   state.editing = issue || null;
+  state.linkNodeAfterCreate = null; // armé seulement par createIssueFromNode()
   state.refs = issue ? issue.references.map((r) => ({ path: r.path, lineStart: r.lineStart, lineEnd: r.lineEnd })) : [];
   $("#modalTitle").textContent = issue ? `Éditer ${issue.ref}` : "Nouvelle entrée";
   $("#mType").value = issue?.type || "bug";
@@ -433,16 +515,50 @@ async function saveIssue() {
     alert("Titre requis.");
     return;
   }
+  // Création depuis un jalon (vue Vibes) : on liera l'entrée au nœud puis on
+  // basculera sur la vue Suivi pour la montrer.
+  const fromNode = !state.editing && state.linkNodeAfterCreate != null;
+  const nodeToLink = state.linkNodeAfterCreate;
   try {
     const saved = state.editing
       ? await api.send("PATCH", "/api/issues/" + encodeURIComponent(state.editing.ref), payload)
       : await api.send("POST", "/api/issues", payload);
+    if (fromNode) {
+      try {
+        await api.send("POST", `/api/issues/${encodeURIComponent(saved.ref)}/nodes`, { nodeRef: nodeToLink });
+      } catch (e) {
+        alert("Entrée créée mais liaison au jalon échouée : " + e.message);
+      }
+    }
+    state.linkNodeAfterCreate = null;
     closeModal();
     await Promise.all([loadList(), loadMeta()]);
+    if (fromNode && location.hash !== "") location.hash = ""; // → vue Suivi (switchView via hashchange)
     await selectIssue(saved.ref);
   } catch (e) {
     alert("Échec : " + e.message);
   }
+}
+
+// ── Ponts depuis la vue Vibes (jalon → suivi) ────────────────────────────────
+// Ouvre la modale de création d'entrée pré-remplie depuis un jalon ; l'entrée sera
+// automatiquement liée au nœud à l'enregistrement (cf. saveIssue).
+export function createIssueFromNode(node) {
+  if (!node) return;
+  openModal(null);
+  state.linkNodeAfterCreate = node.id;
+  $("#modalTitle").textContent = `Nouveau suivi — jalon ${node.ref}`;
+  $("#mType").value = "task";
+  $("#mTitle").value = node.title || "";
+  $("#mDesc").value = `Suivi rattaché au jalon ${node.ref} — ${node.title || ""}`;
+  $("#mTitle").focus();
+  $("#mTitle").select();
+}
+
+// Bascule sur la vue Suivi puis ouvre une entrée (depuis un suivi listé sur un jalon).
+export async function openIssueInTrack(ref) {
+  if (location.hash !== "") location.hash = ""; // → switchView('track') via hashchange
+  await selectIssue(ref);
 }
 
 // ── Autocomplete partagé (@ description, chat IA, …) ──────────────────────────

@@ -167,6 +167,15 @@
             <div class="nd-links-view" id="ndLinksView"></div>
           </div>
 
+          <!-- Entrées de suivi (issues) rattachées à ce jalon -->
+          <div class="nd-issues" id="ndIssues">
+            <div class="ms-section-head">
+              <h3>🐞 Suivis liés</h3>
+              <button id="ndAddIssue" class="ghost" title="Créer une entrée de suivi liée à ce jalon">＋ Suivi</button>
+            </div>
+            <div class="nd-issues-view" id="ndIssuesView"></div>
+          </div>
+
           <div class="ms-section-head">
             <h3>Sous-jalons</h3>
             <button id="ndAddChild" class="ghost">+ Sous-jalon</button>
@@ -315,8 +324,16 @@
         <button class="ghost" id="rgStash" title="Remiser les modifications (git stash push -u)">📦 Stash</button>
         <button class="ghost" id="rgStashPop" title="Restaurer la dernière remise (git stash pop)">📤 Pop</button>
         <button class="ghost" id="rgFiles" title="Explorer les fichiers du dépôt (coloration syntaxique)">📂 Fichiers</button>
+        <button class="ghost" id="rgReflog" title="Reflog (positions récentes de HEAD — filet de sécurité)">🕔 Reflog</button>
         <button class="ghost" id="rgConfig" title="Configuration git du dépôt">⚙ Config</button>
         <button class="ghost" id="rgRefresh" title="Rafraîchir">↻</button>
+      </div>
+
+      <!-- Bandeau d'opération en cours (merge/cherry-pick/revert/rebase conflictuel) -->
+      <div class="repo-conflict" id="repoConflict" hidden>
+        <span class="rc-msg" id="repoConflictMsg"></span>
+        <button class="primary xs" id="rgContinue" title="Poursuivre une fois les conflits résolus et indexés">▶ Continuer</button>
+        <button class="danger xs" id="rgAbort" title="Interrompre et revenir à l'état précédent">✕ Interrompre</button>
       </div>
 
       <div class="repo-body">
@@ -350,6 +367,7 @@
               <button class="ghost xs" id="wcAiMsg" title="Rédiger le message avec Claude à partir du diff indexé">✨ IA</button>
             </div>
             <textarea id="wcCommitMsg" rows="4" placeholder="Décris le commit… (✨ IA pour générer à partir du diff indexé)"></textarea>
+            <label class="wc-amend" title="Réécrire le dernier commit au lieu d'en créer un nouveau"><input type="checkbox" id="wcAmend" /> Amender le dernier commit</label>
             <button class="primary" id="wcCommitBtn">Commit</button>
           </div>
         </aside>

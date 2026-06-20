@@ -2,8 +2,119 @@
 // graphe d'historique (façon GitKraken), staging/commit, config git, auth GitHub
 // (device flow) et credentials. Exporte les ponts openRepoView / initRepo.
 
-import { $, esc, api } from "./core.js";
+import { $, esc, api, getToken, injectRepo } from "./core.js";
 import { toast, showCtxMenu } from "./vibes.js";
+
+// ── Modales génériques (remplacent window.prompt/confirm/alert — cohérence UX) ──
+// Construites en DOM à la volée (aucun HTML à prévoir), refermées au clic backdrop /
+// Échap. uiPrompt/uiConfirm renvoient une Promise ; uiAlert est fire-and-forget.
+function _btn(cls, label) {
+  const b = document.createElement("button");
+  b.className = cls;
+  b.textContent = label;
+  return b;
+}
+function _modalShell(title) {
+  const backdrop = document.createElement("div");
+  backdrop.className = "modal-backdrop";
+  const modal = document.createElement("div");
+  modal.className = "modal ui-modal";
+  modal.setAttribute("role", "dialog");
+  modal.setAttribute("aria-modal", "true");
+  if (title) {
+    const h = document.createElement("h2");
+    h.textContent = title;
+    modal.appendChild(h);
+  }
+  backdrop.appendChild(modal);
+  document.body.appendChild(backdrop);
+  const close = () => backdrop.remove();
+  backdrop.addEventListener("mousedown", (e) => {
+    if (e.target === backdrop) close();
+  });
+  return { backdrop, modal, close };
+}
+function uiPrompt(title, { label = "", value = "", placeholder = "", multiline = false, okLabel = "Valider" } = {}) {
+  return new Promise((resolve) => {
+    const { modal, close } = _modalShell(title);
+    const field = document.createElement("label");
+    field.className = "ui-field";
+    if (label) field.append(document.createTextNode(label));
+    const input = document.createElement(multiline ? "textarea" : "input");
+    if (!multiline) input.type = "text";
+    if (multiline) input.rows = 4;
+    input.value = value;
+    input.placeholder = placeholder;
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    field.appendChild(input);
+    modal.appendChild(field);
+    const actions = document.createElement("div");
+    actions.className = "modal-actions";
+    const cancel = _btn("ghost", "Annuler");
+    const okb = _btn("primary", okLabel);
+    actions.append(cancel, okb);
+    modal.appendChild(actions);
+    let settled = false;
+    const done = (v) => {
+      if (settled) return;
+      settled = true;
+      close();
+      resolve(v);
+    };
+    cancel.onclick = () => done(null);
+    okb.onclick = () => done(input.value);
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !multiline) {
+        e.preventDefault();
+        done(input.value);
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        done(null);
+      }
+    });
+    setTimeout(() => {
+      input.focus();
+      if (input.select) input.select();
+    }, 0);
+  });
+}
+function uiConfirm(message, { danger = false, okLabel = "Confirmer" } = {}) {
+  return new Promise((resolve) => {
+    const { modal, close } = _modalShell("Confirmation");
+    const p = document.createElement("p");
+    p.className = "ui-msg";
+    p.textContent = message;
+    modal.appendChild(p);
+    const actions = document.createElement("div");
+    actions.className = "modal-actions";
+    const cancel = _btn("ghost", "Annuler");
+    const okb = _btn(danger ? "danger" : "primary", okLabel);
+    actions.append(cancel, okb);
+    modal.appendChild(actions);
+    const done = (v) => {
+      close();
+      resolve(v);
+    };
+    cancel.onclick = () => done(false);
+    okb.onclick = () => done(true);
+    setTimeout(() => okb.focus(), 0);
+  });
+}
+function uiAlert(message) {
+  const { modal, close } = _modalShell("");
+  const p = document.createElement("p");
+  p.className = "ui-msg";
+  p.textContent = message;
+  modal.appendChild(p);
+  const actions = document.createElement("div");
+  actions.className = "modal-actions";
+  const okb = _btn("primary", "OK");
+  actions.appendChild(okb);
+  modal.appendChild(actions);
+  okb.onclick = close;
+  setTimeout(() => okb.focus(), 0);
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Gestionnaire de repos (git) — toolbar + sidebar branches + graphe d'historique
@@ -19,6 +130,7 @@ const repoMgr = { status: null, log: null, branches: null, stashes: [], loading:
 
 // ── Cycle de vie ──────────────────────────────────────────────────────────────
 export async function openRepoView() {
+  connectRepoStream();
   await loadRepoAll();
 }
 async function refreshRepo() {
@@ -39,6 +151,7 @@ async function loadRepoAll() {
     repoMgr.branches = br;
     repoMgr.stashes = Array.isArray(stashes) ? stashes : [];
     renderRepoToolbar();
+    renderConflictBanner();
     renderRepoSide();
     renderRepoGraph();
     renderWorkingTree();
@@ -47,17 +160,91 @@ async function loadRepoAll() {
   }
 }
 
+// ── Bandeau d'opération en cours (merge/cherry-pick/revert/rebase conflictuel) ──
+const OP_LABEL = { merge: "Fusion", "cherry-pick": "Cherry-pick", revert: "Revert", rebase: "Rebase" };
+function renderConflictBanner() {
+  const banner = $("#repoConflict");
+  if (!banner) return;
+  const op = (repoMgr.status && repoMgr.status.op && repoMgr.status.op.type) || null;
+  if (!op) {
+    banner.hidden = true;
+    return;
+  }
+  const conflicts = ((repoMgr.status && repoMgr.status.files) || []).filter((f) => f.conflicted).length;
+  $("#repoConflictMsg").textContent =
+    `${OP_LABEL[op] || op} en cours` + (conflicts ? ` — ${conflicts} fichier(s) en conflit à résoudre puis indexer` : " — prêt à continuer");
+  $("#rgContinue").disabled = conflicts > 0;
+  banner.hidden = false;
+}
+
+// Pull intelligent : ff-only d'abord ; si l'intégration échoue alors qu'on a divergé
+// (local ET distant ont avancé), propose un pull --rebase.
+async function pullSmart() {
+  try {
+    const r = await api.send("POST", "/api/git/pull", {});
+    await refreshRepo();
+    if (r && r.ok === false) {
+      if (/diverg|non-fast-forward|not possible to fast-forward|ff.?only/i.test(r.output || "")) {
+        if (await uiConfirm("Le ff-only a échoué (branches divergentes).\n\nTenter un pull --rebase ?", { okLabel: "Rebase" }))
+          await doGit(() => api.send("POST", "/api/git/pull", { rebase: true }));
+      } else {
+        uiAlert("Échec du pull :\n" + (r.output || "erreur inconnue"));
+      }
+    }
+  } catch (e) {
+    uiAlert(e.message === "git_busy" ? "Une opération git est déjà en cours sur ce repo." : "Erreur : " + e.message);
+    await refreshRepo();
+  }
+}
+
+// ── Temps réel : abonnement SSE (auto-refresh + multi-onglets). Géré paresseusement :
+// un seul flux par vue, réouvert à chaque entrée, débounce du rafraîchissement.
+let repoStream = null;
+let repoStreamTimer = null;
+function connectRepoStream() {
+  disconnectRepoStream();
+  let url = injectRepo("/api/git/stream");
+  const tok = getToken();
+  if (tok) url += (url.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(tok);
+  try {
+    repoStream = new EventSource(url);
+    repoStream.addEventListener("git:changed", () => {
+      if (repoStreamTimer) return; // débounce : un refresh par fenêtre
+      repoStreamTimer = setTimeout(() => {
+        repoStreamTimer = null;
+        if (!$("#repoView").hidden) loadRepoAll();
+      }, 400);
+    });
+  } catch {
+    /* EventSource indisponible : on garde le bouton ↻ */
+  }
+}
+function disconnectRepoStream() {
+  if (repoStream) {
+    try {
+      repoStream.close();
+    } catch {
+      /* ignore */
+    }
+    repoStream = null;
+  }
+  if (repoStreamTimer) {
+    clearTimeout(repoStreamTimer);
+    repoStreamTimer = null;
+  }
+}
+
 // Exécute une opération git mutante, signale l'échec/les conflits, rafraîchit.
 async function doGit(call, { confirmMsg } = {}) {
-  if (confirmMsg && !confirm(confirmMsg)) return null;
+  if (confirmMsg && !(await uiConfirm(confirmMsg, { danger: true }))) return null;
   try {
     const r = await call();
-    if (r && r.ok === false) alert("Échec git :\n" + (r.output || "erreur inconnue"));
-    else if (r && typeof r.output === "string" && /CONFLICT|conflit|Merge conflict/i.test(r.output)) alert(r.output);
+    if (r && r.ok === false) uiAlert("Échec git :\n" + (r.output || "erreur inconnue"));
+    else if (r && typeof r.output === "string" && /CONFLICT|conflit|Merge conflict/i.test(r.output)) uiAlert(r.output);
     await refreshRepo();
     return r;
   } catch (e) {
-    alert(e.message === "git_busy" ? "Une opération git est déjà en cours sur ce repo." : "Erreur : " + e.message);
+    uiAlert(e.message === "git_busy" ? "Une opération git est déjà en cours sur ce repo." : "Erreur : " + e.message);
     await refreshRepo();
     return null;
   }
@@ -112,9 +299,9 @@ function renderRepoSide() {
   }
   html += `</div>`;
 
-  html += `<div class="side-group"><h4>Remises (stash)</h4>`;
+  html += `<div class="side-group"><h4>Remises (stash) <span class="hint">(clic droit : options)</span></h4>`;
   if (!repoMgr.stashes.length) html += `<div class="side-empty">—</div>`;
-  for (const s of repoMgr.stashes) html += item("stash", `${s.ref} · ${s.desc}`, "", "");
+  for (const s of repoMgr.stashes) html += item("stash", `${s.ref} · ${s.desc}`, `data-stash-ref="${esc(s.ref)}"`, "");
   html += `</div>`;
 
   $("#repoSide").innerHTML = html;
@@ -125,7 +312,7 @@ async function setBranchHidden(name, hidden) {
   try {
     await api.send("POST", hidden ? "/api/git/branch/hide" : "/api/git/branch/unhide", { name });
   } catch (e) {
-    alert("Erreur : " + e.message);
+    uiAlert("Erreur : " + e.message);
   }
   await refreshRepo();
 }
@@ -151,11 +338,17 @@ function branchCtxMenu(name, clientX, clientY) {
   }
   items.push({
     label: "Renommer…",
-    onClick: () => {
-      const newName = (window.prompt("Nouveau nom de la branche :", name) || "").trim();
+    onClick: async () => {
+      const newName = ((await uiPrompt("Renommer la branche", { label: "Nouveau nom :", value: name })) || "").trim();
       if (newName && newName !== name) doGit(() => api.send("POST", "/api/git/branch/rename", { oldName: name, newName }));
     },
   });
+  if (name !== current) {
+    items.push({
+      label: `Rebaser « ${current || "?"} » sur « ${name} »`,
+      onClick: () => doGit(() => api.send("POST", "/api/git/rebase", { onto: name }), { confirmMsg: `Rebaser la branche courante « ${current} » sur « ${name} » ?` }),
+    });
+  }
   const hide = hideMenuItem(bObj);
   if (hide) items.push(hide);
   if (name !== current) items.push({ label: "Supprimer la branche locale", danger: true, onClick: () => doGitDeleteBranch(name) });
@@ -188,6 +381,25 @@ function remoteBranchCtxMenu(fullName, shortName, clientX, clientY) {
     },
   ];
   showCtxMenu(clientX, clientY, items);
+}
+
+// Menu contextuel d'une remise (clic droit) : voir le diff, appliquer (garde), pop
+// (retire), jeter. `pop`/`apply`/`drop` ciblent la réf exacte (stash@{N}).
+function stashCtxMenu(ref, clientX, clientY) {
+  showCtxMenu(clientX, clientY, [
+    { label: "Voir le diff", onClick: () => openStashDiff(ref) },
+    { label: "Appliquer (garder la remise)", onClick: () => doGit(() => api.send("POST", "/api/git/stash/apply", { ref }), { confirmMsg: `Appliquer ${ref} (sans la retirer) ?` }) },
+    { label: "Pop (appliquer puis retirer)", onClick: () => doGit(() => api.send("POST", "/api/git/stash/pop", { ref }), { confirmMsg: `Restaurer puis retirer ${ref} ?` }) },
+    { label: "Jeter la remise", danger: true, onClick: () => doGit(() => api.send("POST", "/api/git/stash/drop", { ref }), { confirmMsg: `⚠️ Jeter ${ref} ? (irréversible)` }) },
+  ]);
+}
+async function openStashDiff(ref) {
+  try {
+    const r = await api.get(`/api/git/stash/show?ref=${encodeURIComponent(ref)}`);
+    openDiffModal(`Remise ${ref}`, "", renderDiffText(r.diff));
+  } catch (e) {
+    uiAlert("Erreur : " + e.message);
+  }
 }
 
 // ── Graphe d'historique : calcul des lanes + rendu SVG par ligne ──────────────
@@ -311,23 +523,24 @@ function commitCtxMenu(hash, clientX, clientY) {
   showCtxMenu(clientX, clientY, [
     {
       label: "Créer un tag ici…",
-      onClick: () => {
-        const name = (window.prompt("Nom du tag :", "") || "").trim();
+      onClick: async () => {
+        const name = ((await uiPrompt("Créer un tag", { label: "Nom du tag :", placeholder: "v1.0.0" })) || "").trim();
         if (!name) return;
-        const message = (window.prompt("Message du tag (vide = tag léger) :", "") || "").trim();
+        const message = ((await uiPrompt("Message du tag", { label: "Message (vide = tag léger) :" })) || "").trim();
         doGit(() => api.send("POST", "/api/git/tag", { name, ref: hash, message }));
       },
     },
     {
       label: "Créer une branche ici…",
-      onClick: () => {
-        const name = (window.prompt("Nom de la branche (créée sur ce commit) :", "") || "").trim();
+      onClick: async () => {
+        const name = ((await uiPrompt("Nouvelle branche", { label: "Nom (créée sur ce commit) :" })) || "").trim();
         if (name) doGit(() => api.send("POST", "/api/git/branch", { name, ref: hash, checkout: true }));
       },
     },
     { label: "Checkout ce commit (HEAD détaché)", onClick: () => doGit(() => api.send("POST", "/api/git/checkout-commit", { hash }), { confirmMsg: `Checkout ${short} en HEAD détaché ?` }) },
     { label: "Cherry-pick sur la branche courante", onClick: () => doGit(() => api.send("POST", "/api/git/cherry-pick", { hash }), { confirmMsg: `Cherry-pick ${short} sur la branche courante ?` }) },
     { label: "Revert ce commit", onClick: () => doGit(() => api.send("POST", "/api/git/revert", { hash }), { confirmMsg: `Créer un commit qui annule ${short} ?` }) },
+    { label: "Comparer avec HEAD (diff)", onClick: () => openRefsDiff(hash, "HEAD") },
     { label: "Réinitialiser la branche ici (--mixed)", onClick: () => doGit(() => api.send("POST", "/api/git/reset", { hash, mode: "mixed" }), { confirmMsg: `Déplacer la branche courante sur ${short} (--mixed, garde les modifs) ?` }) },
     { label: "Réinitialiser la branche ici (--hard)", danger: true, onClick: () => doGit(() => api.send("POST", "/api/git/reset", { hash, mode: "hard" }), { confirmMsg: `⚠️ reset --hard sur ${short} : TOUTES les modifications non commitées seront PERDUES. Continuer ?` }) },
     { label: "Copier le hash", onClick: () => { try { navigator.clipboard.writeText(hash); } catch { /* ignore */ } } },
@@ -339,14 +552,17 @@ function commitCtxMenu(hash, clientX, clientY) {
 const ST_LETTER = { M: "M", A: "A", D: "D", R: "R", C: "C", U: "U", T: "T" };
 function fileRow(f, section) {
   const isStaged = section === "staged";
+  const isConflict = section === "conflict";
   const code = isStaged ? f.x : f.untracked ? "?" : f.y;
-  const letter = f.untracked ? "?" : ST_LETTER[code] || code || "•";
-  const stCls = f.conflicted ? "conflict" : f.untracked ? "untracked" : ST_LETTER[code] ? code : "";
-  const title = f.conflicted ? "conflit" : f.untracked ? "non suivi" : { M: "modifié", A: "ajouté", D: "supprimé", R: "renommé" }[code] || "modifié";
-  const act = isStaged
-    ? `<button class="act unstage" data-act="unstage" title="Désindexer">−</button>`
-    : `<button class="act discard" data-act="discard" title="Abandonner les modifications">↶</button><button class="act stage" data-act="stage" title="Indexer">＋</button>`;
-  return `<li class="wc-file" data-path="${esc(f.path)}" data-staged="${isStaged}" data-untracked="${f.untracked}">
+  const letter = isConflict ? "!" : f.untracked ? "?" : ST_LETTER[code] || code || "•";
+  const stCls = isConflict ? "conflict" : f.untracked ? "untracked" : ST_LETTER[code] ? code : "";
+  const title = isConflict ? "conflit" : f.untracked ? "non suivi" : { M: "modifié", A: "ajouté", D: "supprimé", R: "renommé" }[code] || "modifié";
+  let act;
+  if (isConflict) act = `<button class="act stage" data-act="stage" title="Marquer résolu (indexer)">✓</button>`;
+  else if (isStaged) act = `<button class="act unstage" data-act="unstage" title="Désindexer">−</button>`;
+  else
+    act = `<button class="act discard" data-act="discard" title="Abandonner les modifications">↶</button><button class="act stage" data-act="stage" title="Indexer">＋</button>`;
+  return `<li class="wc-file${isConflict ? " conflict-file" : ""}" data-path="${esc(f.path)}" data-staged="${isStaged}" data-untracked="${f.untracked}">
     <span class="st ${stCls}" title="${title}">${esc(letter)}</span>
     <span class="fp" title="${esc(f.path)}"><bdi>${esc(f.path)}</bdi></span>
     ${act}
@@ -355,17 +571,26 @@ function fileRow(f, section) {
 function renderWorkingTree() {
   const st = repoMgr.status || { files: [] };
   const files = st.files || [];
-  const unstaged = files.filter((f) => f.unstaged);
-  const staged = files.filter((f) => f.staged);
-  $("#wcUnstaged").innerHTML = unstaged.length ? unstaged.map((f) => fileRow(f, "unstaged")).join("") : `<li class="empty">Rien à indexer.</li>`;
+  // Les fichiers en conflit (UU/AA/DD…) apparaîtraient à la fois en indexé ET non
+  // indexé : on les isole en tête des « non indexées » avec une action « Marquer résolu ».
+  const conflicted = files.filter((f) => f.conflicted);
+  const unstaged = files.filter((f) => f.unstaged && !f.conflicted);
+  const staged = files.filter((f) => f.staged && !f.conflicted);
+  const unstagedHtml = conflicted.map((f) => fileRow(f, "conflict")).join("") + unstaged.map((f) => fileRow(f, "unstaged")).join("");
+  $("#wcUnstaged").innerHTML = unstagedHtml || `<li class="empty">Rien à indexer.</li>`;
   $("#wcStaged").innerHTML = staged.length ? staged.map((f) => fileRow(f, "staged")).join("") : `<li class="empty">Rien d'indexé.</li>`;
-  $("#wcUnstagedCount").textContent = unstaged.length;
+  $("#wcUnstagedCount").textContent = conflicted.length + unstaged.length;
   $("#wcStagedCount").textContent = staged.length;
   updateCommitBtn();
 }
 function updateCommitBtn() {
-  const staged = ((repoMgr.status && repoMgr.status.files) || []).filter((f) => f.staged).length;
-  $("#wcCommitBtn").disabled = !(staged > 0 && $("#wcCommitMsg").value.trim());
+  const staged = ((repoMgr.status && repoMgr.status.files) || []).filter((f) => f.staged && !f.conflicted).length;
+  const msg = $("#wcCommitMsg").value.trim();
+  // En mode amender, on peut committer sans fichier indexé (ré-écrire le message seul)
+  // et sans message (--no-edit garde l'existant). Sinon : au moins un fichier + un message.
+  const amend = $("#wcAmend") && $("#wcAmend").checked;
+  $("#wcCommitBtn").disabled = amend ? !(staged > 0 || msg) : !(staged > 0 && msg);
+  $("#wcCommitBtn").textContent = amend ? "Amender" : "Commit";
 }
 
 // ── Diff (fichier ou commit) ──────────────────────────────────────────────────
@@ -394,19 +619,156 @@ function openDiffModal(title, metaHtml, bodyHtml) {
 }
 function closeDiffModal() {
   $("#diffBackdrop").hidden = true;
+  currentFileDiff = null;
 }
+
+// Une ligne de diff en bloc (indépendant des espaces du <pre> : on concatène en "").
+function diffLineSpan(l) {
+  let cls = "";
+  if (l.startsWith("+++") || l.startsWith("---")) cls = "dl-meta";
+  else if (l.startsWith("@@")) cls = "dl-hunk";
+  else if (l.startsWith("+")) cls = "dl-add";
+  else if (l.startsWith("-")) cls = "dl-del";
+  else if (/^(diff |index |new file|deleted file|rename |similarity |old mode|new mode)/.test(l)) cls = "dl-meta";
+  return `<span class="dl-line ${cls}">${esc(l) || " "}</span>`;
+}
+
+// Découpe un diff unifié en en-tête (avant le 1er @@) + hunks → staging partiel.
+function parseDiffHunks(text) {
+  const header = [];
+  const hunks = [];
+  let cur = null;
+  let started = false;
+  for (const l of String(text || "").split("\n")) {
+    if (l.startsWith("@@")) {
+      started = true;
+      if (cur) hunks.push(cur);
+      cur = { lines: [l] };
+    } else if (!started) {
+      header.push(l);
+    } else if (cur) {
+      cur.lines.push(l);
+    }
+  }
+  if (cur) hunks.push(cur);
+  return { header: header.join("\n"), hunks };
+}
+
+// Diff état courant (pour le staging par hunk + blame).
+let currentFileDiff = null;
+
+// Rend le diff d'un fichier suivi avec un bouton d'action PAR hunk (indexer / désindexer
+// / abandonner). Les hunks d'un fichier non suivi n'ont pas de sens → renderDiffText.
+function renderHunkDiff() {
+  const { hunks, staged, untracked } = currentFileDiff;
+  if (untracked) return renderDiffText(currentFileDiff.raw);
+  if (!hunks.length) return '<span class="dl-meta">(aucune différence)</span>';
+  const parts = [];
+  for (let i = 0; i < hunks.length; i++) {
+    const bar = staged
+      ? `<button class="ghost xs" data-hunk="${i}" data-mode="unstage">− Désindexer ce hunk</button>`
+      : `<button class="ghost xs" data-hunk="${i}" data-mode="stage">＋ Indexer ce hunk</button><button class="danger xs" data-hunk="${i}" data-mode="discard">↶ Abandonner</button>`;
+    const body = hunks[i].lines.map(diffLineSpan).join("");
+    parts.push(`<div class="diff-hunk"><div class="diff-hunk-bar">${bar}</div>${body}</div>`);
+  }
+  return parts.join("");
+}
+
 async function openFileDiff(path, staged, untracked) {
   try {
     const r = await api.get(`/api/git/diff?path=${encodeURIComponent(path)}&staged=${staged}&untracked=${untracked}`);
-    openDiffModal(path + (staged ? "  (indexé)" : ""), "", renderDiffText(r.diff));
+    const parsed = parseDiffHunks(r.diff);
+    currentFileDiff = { path, staged, untracked, raw: r.diff || "", header: parsed.header, hunks: parsed.hunks };
+    const blameBtn = untracked ? "" : `<button class="ghost xs" id="diffBlameBtn">🔍 Blame</button>`;
+    openDiffModal(path + (staged ? "  (indexé)" : ""), blameBtn, renderHunkDiff());
   } catch (e) {
-    alert("Erreur diff : " + e.message);
+    uiAlert("Erreur diff : " + e.message);
+  }
+}
+
+// Applique un hunk précis (indexer / désindexer / abandonner) via /api/git/apply-patch,
+// puis rouvre le diff pour montrer ce qu'il reste.
+async function applyHunk(index, mode) {
+  if (!currentFileDiff || !currentFileDiff.hunks[index]) return;
+  const patch = currentFileDiff.header + "\n" + currentFileDiff.hunks[index].lines.join("\n") + "\n";
+  const opts = mode === "stage" ? { cached: true } : mode === "unstage" ? { cached: true, reverse: true } : { reverse: true };
+  if (mode === "discard" && !(await uiConfirm("Abandonner ce hunk dans le working tree ? (irréversible)", { danger: true }))) return;
+  const { path, staged, untracked } = currentFileDiff;
+  const r = await doGit(() => api.send("POST", "/api/git/apply-patch", { patch, ...opts }));
+  if (r && r.ok !== false) openFileDiff(path, staged, untracked); // rouvre le diff mis à jour
+}
+
+// Blame d'un fichier (qui a écrit chaque ligne).
+async function openBlame(path, branch = null) {
+  try {
+    const r = await api.get(`/api/git/blame?path=${encodeURIComponent(path)}${branch ? "&branch=" + encodeURIComponent(branch) : ""}`);
+    if (r.ok === false) return uiAlert(r.output || "blame indisponible");
+    const rows = (r.lines || [])
+      .map((ln) => `<span class="dl-line"><span class="blame-sha" title="${esc(ln.author)}">${esc(ln.short)}</span> <span class="blame-author">${esc(ln.author)}</span>  ${esc(ln.content) || " "}</span>`)
+      .join("");
+    openDiffModal("Blame · " + path, "", rows || '<span class="dl-meta">(vide)</span>');
+  } catch (e) {
+    uiAlert("Erreur blame : " + e.message);
+  }
+}
+
+// Diff entre deux réfs (commit ↔ HEAD…).
+async function openRefsDiff(a, b) {
+  try {
+    const r = await api.get(`/api/git/diff-refs?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
+    if (r.ok === false) return uiAlert(r.output || "diff indisponible");
+    openDiffModal(`${(a || "").slice(0, 8)} → ${(b || "").slice(0, 8)}`, "", renderDiffText(r.diff));
+  } catch (e) {
+    uiAlert("Erreur : " + e.message);
+  }
+}
+
+// Reflog : positions récentes de HEAD (filet de sécurité). Chaque entrée → menu (reset/checkout).
+async function openReflog() {
+  try {
+    const r = await api.get("/api/git/reflog?limit=120");
+    const rows = (r.entries || [])
+      .map(
+        (e) =>
+          `<li class="reflog-row" data-hash="${esc(e.hash)}"><code>${esc(e.selector)}</code> <span class="rl-sub">${esc(e.subject)}</span> <span class="rl-date" title="${esc(e.dateIso)}">${esc(e.date)}</span></li>`
+      )
+      .join("");
+    const { modal, close } = _modalShell("🕔 Reflog");
+    const ul = document.createElement("ul");
+    ul.className = "reflog-list";
+    ul.innerHTML = rows || '<li class="empty">(vide)</li>';
+    ul.addEventListener("contextmenu", (ev) => {
+      const li = ev.target.closest(".reflog-row");
+      if (!li) return;
+      ev.preventDefault();
+      const hash = li.dataset.hash;
+      const short = hash.slice(0, 8);
+      showCtxMenu(ev.clientX, ev.clientY, [
+        { label: "Voir le détail", onClick: () => { close(); openCommitDetail(hash); } },
+        { label: "Créer une branche ici…", onClick: async () => { const n = ((await uiPrompt("Nouvelle branche", { label: "Nom :" })) || "").trim(); if (n) { close(); doGit(() => api.send("POST", "/api/git/branch", { name: n, ref: hash, checkout: true })); } } },
+        { label: "Checkout (HEAD détaché)", onClick: () => { close(); doGit(() => api.send("POST", "/api/git/checkout-commit", { hash }), { confirmMsg: `Checkout ${short} en HEAD détaché ?` }); } },
+        { label: "Réinitialiser la branche ici (--hard)", danger: true, onClick: () => { close(); doGit(() => api.send("POST", "/api/git/reset", { hash, mode: "hard" }), { confirmMsg: `⚠️ reset --hard sur ${short} : modifications non commitées PERDUES. Continuer ?` }); } },
+        { label: "Copier le hash", onClick: () => { try { navigator.clipboard.writeText(hash); } catch { /* ignore */ } } },
+      ]);
+    });
+    const hint = document.createElement("p");
+    hint.className = "hint";
+    hint.textContent = "Clic droit sur une entrée pour agir (retrouver un commit « perdu » après un reset/rebase).";
+    modal.append(hint, ul);
+    const actions = document.createElement("div");
+    actions.className = "modal-actions";
+    const okb = _btn("ghost", "Fermer");
+    okb.onclick = close;
+    actions.appendChild(okb);
+    modal.appendChild(actions);
+  } catch (e) {
+    uiAlert("Erreur reflog : " + e.message);
   }
 }
 async function openCommitDetail(hash) {
   try {
     const d = await api.get("/api/git/commit/" + encodeURIComponent(hash));
-    if (d.ok === false) return alert(d.output || "commit introuvable");
+    if (d.ok === false) return uiAlert(d.output || "commit introuvable");
     const meta = `${esc(d.author)} &lt;${esc(d.email)}&gt; · ${esc(d.date)} · <span style="font-family:ui-monospace,monospace">${esc((d.hash || "").slice(0, 10))}</span>`;
     const files = (d.files || [])
       .map((f) => `<span class="dl-meta">+${esc(f.added)} -${esc(f.deleted)}</span>  ${esc(f.path)}`)
@@ -414,7 +776,7 @@ async function openCommitDetail(hash) {
     const body = (d.body ? esc(d.body) + "\n\n" : "") + (files || "(aucun fichier)");
     openDiffModal(d.subject || hash, meta, `<span>${body}</span>`);
   } catch (e) {
-    alert("Erreur : " + e.message);
+    uiAlert("Erreur : " + e.message);
   }
 }
 
@@ -566,7 +928,7 @@ async function loadFileInExplorer(path) {
 async function aiCommitMessage() {
   const btn = $("#wcAiMsg");
   const staged = ((repoMgr.status && repoMgr.status.files) || []).filter((f) => f.staged).length;
-  if (!staged) return alert("Indexe d'abord des fichiers : l'IA rédige à partir du diff indexé.");
+  if (!staged) return uiAlert("Indexe d'abord des fichiers : l'IA rédige à partir du diff indexé.");
   const old = btn.textContent;
   btn.disabled = true;
   btn.textContent = "✨ …";
@@ -577,7 +939,7 @@ async function aiCommitMessage() {
       updateCommitBtn();
     }
   } catch (e) {
-    alert("Échec IA : " + e.message);
+    uiAlert("Échec IA : " + e.message);
   } finally {
     btn.textContent = old;
     btn.disabled = false;
@@ -599,7 +961,7 @@ async function openConfigModal() {
     loadCredentials();
     loadTrackingConfig();
   } catch (e) {
-    alert("Erreur config : " + e.message);
+    uiAlert("Erreur config : " + e.message);
   }
 }
 function closeConfigModal() {
@@ -633,7 +995,7 @@ async function saveConfig() {
     });
     closeConfigModal();
   } catch (e) {
-    alert("Échec : " + e.message);
+    uiAlert("Échec : " + e.message);
   }
 }
 
@@ -741,7 +1103,7 @@ async function startGithubConnect() {
   try {
     const r = await api.send("POST", "/api/git/github/device/start", {});
     if (r.configured === false) {
-      alert(r.message || "OAuth App GitHub non configurée côté serveur.");
+      uiAlert(r.message || "OAuth App GitHub non configurée côté serveur.");
       return;
     }
     ghAuth.flowId = r.flowId;
@@ -751,7 +1113,7 @@ async function startGithubConnect() {
     $("#ghDevice").hidden = false;
     scheduleGithubPoll((r.interval || 5) * 1000);
   } catch (e) {
-    alert("Échec : " + e.message);
+    uiAlert("Échec : " + e.message);
   } finally {
     $("#ghConnect").disabled = false;
   }
@@ -783,11 +1145,11 @@ async function githubPollOnce() {
   if (ghAuth.flowId) scheduleGithubPoll(interval);
 }
 async function disconnectGithub() {
-  if (!confirm("Oublier le credential GitHub stocké sur le serveur ?")) return;
+  if (!(await uiConfirm("Oublier le credential GitHub stocké sur le serveur ?"))) return;
   try {
     await api.send("POST", "/api/git/github/disconnect", {});
   } catch (e) {
-    alert("Échec : " + e.message);
+    uiAlert("Échec : " + e.message);
   }
   await loadGithubStatus();
 }
@@ -798,7 +1160,7 @@ async function saveGithubClientId() {
     toast(clientId ? "Client ID enregistré" : "Client ID effacé");
     await loadGithubStatus();
   } catch (e) {
-    alert("Échec : " + e.message);
+    uiAlert("Échec : " + e.message);
   }
 }
 
@@ -833,25 +1195,25 @@ async function addCredential() {
   const host = $("#credHost").value.trim();
   const username = $("#credUser").value.trim();
   const password = $("#credPass").value;
-  if (!host || !password) return alert("Hôte et mot de passe/token requis.");
+  if (!host || !password) return uiAlert("Hôte et mot de passe/token requis.");
   try {
     const r = await api.send("POST", "/api/git/credentials", { protocol, host, username, password });
-    if (r.ok === false) return alert("Échec : " + (r.output || "erreur inconnue"));
+    if (r.ok === false) return uiAlert("Échec : " + (r.output || "erreur inconnue"));
     $("#credHost").value = "";
     $("#credUser").value = "";
     $("#credPass").value = "";
     toast("Identifiant enregistré");
     await loadCredentials();
   } catch (e) {
-    alert("Échec : " + e.message);
+    uiAlert("Échec : " + e.message);
   }
 }
 async function deleteCredential(entry) {
-  if (!confirm(`Oublier les identifiants pour ${entry.protocol}://${entry.host} ?`)) return;
+  if (!(await uiConfirm(`Oublier les identifiants pour ${entry.protocol}://${entry.host} ?`))) return;
   try {
     await api.send("POST", "/api/git/credentials/delete", entry);
   } catch (e) {
-    alert("Échec : " + e.message);
+    uiAlert("Échec : " + e.message);
   }
   await loadCredentials();
 }
@@ -860,28 +1222,31 @@ async function deleteCredential(entry) {
 export function initRepo() {
   // Toolbar
   $("#rgFetch").addEventListener("click", () => doGit(() => api.send("POST", "/api/git/fetch", {})));
-  $("#rgPull").addEventListener("click", () => doGit(() => api.send("POST", "/api/git/pull", {})));
+  $("#rgPull").addEventListener("click", () => pullSmart());
   $("#rgPush").addEventListener("click", () => {
     const setUpstream = !(repoMgr.status && repoMgr.status.upstream);
     doGit(() => api.send("POST", "/api/git/push", { setUpstream }));
   });
-  $("#rgBranch").addEventListener("click", () => {
-    const name = (window.prompt("Nom de la nouvelle branche (créée depuis HEAD et checkout) :", "") || "").trim();
+  $("#rgBranch").addEventListener("click", async () => {
+    const name = ((await uiPrompt("Nouvelle branche", { label: "Nom (créée depuis HEAD et checkout) :" })) || "").trim();
     if (name) doGit(() => api.send("POST", "/api/git/branch", { name, checkout: true }));
   });
-  $("#rgMerge").addEventListener("click", () => {
+  $("#rgMerge").addEventListener("click", async () => {
     const locals = ((repoMgr.branches && repoMgr.branches.local) || []).filter((b) => !b.current).map((b) => b.name);
-    const name = (window.prompt("Branche à fusionner dans la courante" + (locals.length ? ` (ex. ${locals.slice(0, 5).join(", ")})` : "") + " :", "") || "").trim();
+    const name = ((await uiPrompt("Fusionner une branche", { label: "Branche à fusionner dans la courante :", placeholder: locals.slice(0, 1)[0] || "" })) || "").trim();
     if (name) doGit(() => api.send("POST", "/api/git/merge", { name }), { confirmMsg: `Fusionner « ${name} » dans la branche courante ?` });
   });
-  $("#rgStash").addEventListener("click", () => {
-    const message = (window.prompt("Message de la remise (stash) — optionnel :", "") || "").trim();
+  $("#rgStash").addEventListener("click", async () => {
+    const message = ((await uiPrompt("Remiser (stash)", { label: "Message — optionnel :" })) || "").trim();
     doGit(() => api.send("POST", "/api/git/stash", { message, includeUntracked: true }));
   });
   $("#rgStashPop").addEventListener("click", () => doGit(() => api.send("POST", "/api/git/stash/pop", {}), { confirmMsg: "Restaurer la dernière remise (stash pop) ?" }));
   $("#rgFiles").addEventListener("click", openFilesModal);
+  $("#rgReflog").addEventListener("click", openReflog);
   $("#rgConfig").addEventListener("click", openConfigModal);
   $("#rgRefresh").addEventListener("click", () => refreshRepo());
+  $("#rgAbort").addEventListener("click", () => doGit(() => api.send("POST", "/api/git/abort", {}), { confirmMsg: "Interrompre l'opération en cours et revenir à l'état précédent ?" }));
+  $("#rgContinue").addEventListener("click", () => doGit(() => api.send("POST", "/api/git/continue", {})));
 
   // Modale explorateur de fichiers
   $("#filesClose").addEventListener("click", closeFilesModal);
@@ -910,11 +1275,25 @@ export function initRepo() {
   $("#wcUnstageAll").addEventListener("click", () => doGit(() => api.send("POST", "/api/git/unstage", { all: true })));
   $("#wcAiMsg").addEventListener("click", aiCommitMessage);
   $("#wcCommitMsg").addEventListener("input", updateCommitBtn);
+  $("#wcAmend").addEventListener("change", () => {
+    // En cochant « amender » sans message, on pré-remplit avec le message du dernier commit.
+    if ($("#wcAmend").checked && !$("#wcCommitMsg").value.trim()) {
+      const head = (repoMgr.log && repoMgr.log.commits && repoMgr.log.commits[0]) || null;
+      if (head && head.subject) $("#wcCommitMsg").value = head.subject;
+    }
+    updateCommitBtn();
+  });
   $("#wcCommitBtn").addEventListener("click", async () => {
     const message = $("#wcCommitMsg").value.trim();
-    if (!message) return;
-    const r = await doGit(() => api.send("POST", "/api/git/commit", { message }));
-    if (r && r.ok !== false) $("#wcCommitMsg").value = "";
+    const amend = $("#wcAmend").checked;
+    if (!amend && !message) return;
+    if (amend && !(await uiConfirm("Réécrire le dernier commit ? (à éviter s'il a déjà été poussé)", { okLabel: "Amender" }))) return;
+    const r = await doGit(() => api.send("POST", "/api/git/commit", { message, amend }));
+    if (r && r.ok !== false) {
+      $("#wcCommitMsg").value = "";
+      $("#wcAmend").checked = false;
+      updateCommitBtn();
+    }
   });
 
   // Délégation : clic sur un fichier (diff) ou ses actions (stage/unstage/discard).
@@ -950,7 +1329,7 @@ export function initRepo() {
     commitCtxMenu(row.dataset.hash, e.clientX, e.clientY);
   });
 
-  // Sidebar : clic gauche = checkout ; clic droit (branche locale/distante) = menu.
+  // Sidebar : clic gauche = checkout (branche) / diff (remise) ; clic droit = menu.
   $("#repoSide").addEventListener("click", (e) => {
     const local = e.target.closest("[data-branch]");
     if (local) {
@@ -958,7 +1337,12 @@ export function initRepo() {
       return;
     }
     const remote = e.target.closest("[data-checkout-remote]");
-    if (remote) doGit(() => api.send("POST", "/api/git/checkout", { name: remote.dataset.checkoutRemote }));
+    if (remote) {
+      doGit(() => api.send("POST", "/api/git/checkout", { name: remote.dataset.checkoutRemote }));
+      return;
+    }
+    const stash = e.target.closest("[data-stash-ref]");
+    if (stash) openStashDiff(stash.dataset.stashRef);
   });
   $("#repoSide").addEventListener("contextmenu", (e) => {
     const local = e.target.closest("[data-branch]");
@@ -971,6 +1355,12 @@ export function initRepo() {
     if (remote) {
       e.preventDefault();
       remoteBranchCtxMenu(remote.dataset.remoteFull, remote.dataset.checkoutRemote, e.clientX, e.clientY);
+      return;
+    }
+    const stash = e.target.closest("[data-stash-ref]");
+    if (stash) {
+      e.preventDefault();
+      stashCtxMenu(stash.dataset.stashRef, e.clientX, e.clientY);
     }
   });
 
@@ -978,6 +1368,15 @@ export function initRepo() {
   $("#diffClose").addEventListener("click", closeDiffModal);
   $("#diffBackdrop").addEventListener("mousedown", (e) => {
     if (e.target === $("#diffBackdrop")) closeDiffModal();
+  });
+  // Staging par hunk : action sur un bouton de hunk.
+  $("#diffBody").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-hunk]");
+    if (btn) applyHunk(Number(btn.dataset.hunk), btn.dataset.mode);
+  });
+  // Bouton Blame (injecté dans la barre meta du diff d'un fichier).
+  $("#diffMeta").addEventListener("click", (e) => {
+    if (e.target.closest("#diffBlameBtn") && currentFileDiff) openBlame(currentFileDiff.path);
   });
 
   // Modale config
@@ -1019,18 +1418,18 @@ export function initRepo() {
   $("#cfgRemoteAdd").addEventListener("click", () => {
     const name = $("#cfgRemoteName").value.trim();
     const url = $("#cfgRemoteUrl").value.trim();
-    if (!name || !url) return alert("Nom et URL requis.");
+    if (!name || !url) return uiAlert("Nom et URL requis.");
     doGitRemote(() => api.send("POST", "/api/git/remote", { name, url, add: true }));
   });
-  $("#cfgRemotes").addEventListener("click", (e) => {
+  $("#cfgRemotes").addEventListener("click", async (e) => {
     const edit = e.target.closest("[data-rmt-edit]");
     if (edit) {
-      const url = (window.prompt(`Nouvelle URL pour « ${edit.dataset.rmtEdit} » :`, "") || "").trim();
+      const url = ((await uiPrompt("Modifier le remote", { label: `Nouvelle URL pour « ${edit.dataset.rmtEdit} » :` })) || "").trim();
       if (url) doGitRemote(() => api.send("POST", "/api/git/remote", { name: edit.dataset.rmtEdit, url, add: false }));
       return;
     }
     const del = e.target.closest("[data-rmt-del]");
-    if (del && confirm(`Supprimer le remote « ${del.dataset.rmtDel} » ?`)) doGitRemote(() => api.send("POST", "/api/git/remote/delete", { name: del.dataset.rmtDel }));
+    if (del && (await uiConfirm(`Supprimer le remote « ${del.dataset.rmtDel} » ?`, { danger: true }))) doGitRemote(() => api.send("POST", "/api/git/remote/delete", { name: del.dataset.rmtDel }));
   });
 
   document.addEventListener("keydown", (e) => {
@@ -1044,9 +1443,9 @@ export function initRepo() {
 async function doGitRemote(call) {
   try {
     const r = await call();
-    if (r && r.ok === false) alert("Échec : " + (r.output || "erreur inconnue"));
+    if (r && r.ok === false) uiAlert("Échec : " + (r.output || "erreur inconnue"));
   } catch (e) {
-    alert("Erreur : " + e.message);
+    uiAlert("Erreur : " + e.message);
   }
   $("#cfgRemoteName").value = "";
   $("#cfgRemoteUrl").value = "";
@@ -1061,17 +1460,17 @@ async function doGitRemote(call) {
 
 // Suppression de branche avec repli sur -D (forcé) si non fusionnée.
 async function doGitDeleteBranch(name) {
-  if (!confirm(`Supprimer la branche « ${name} » ?`)) return;
+  if (!(await uiConfirm(`Supprimer la branche « ${name} » ?`, { danger: true }))) return;
   try {
     const r = await api.send("POST", "/api/git/branch/delete", { name });
     if (r.ok === false) {
-      if (confirm(`Échec : ${r.output}\n\nForcer la suppression (git branch -D) ?`)) {
+      if (await uiConfirm(`Échec : ${r.output}\n\nForcer la suppression (git branch -D) ?`, { danger: true, okLabel: "Forcer" })) {
         const f = await api.send("POST", "/api/git/branch/delete", { name, force: true });
-        if (f.ok === false) alert("Échec : " + f.output);
+        if (f.ok === false) uiAlert("Échec : " + f.output);
       }
     }
   } catch (e) {
-    alert("Erreur : " + e.message);
+    uiAlert("Erreur : " + e.message);
   }
   await refreshRepo();
 }

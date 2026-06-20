@@ -91,6 +91,7 @@ FILES=(
     "config.js"
     "http-util.js"
     "sse.js"
+    "git-watch.js"
     "github.js"
     "mcp-endpoint.js"
     "package.json"

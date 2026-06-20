@@ -5,6 +5,8 @@
 
 import { send, readBody, repoOf } from "../http-util.js";
 import { hideBranch, unhideBranch } from "../db.js";
+import { openStream, gitKey, broadcast } from "../sse.js";
+import { addGitWatcher, removeGitWatcher } from "../git-watch.js";
 import {
   statusFor,
   logGraphFor,
@@ -30,6 +32,7 @@ import {
   checkoutBranchFor,
   checkoutCommitFor,
   mergeFor,
+  rebaseFor,
   cherryPickFor,
   revertCommitFor,
   resetToFor,
@@ -37,8 +40,17 @@ import {
   deleteTagFor,
   stashSaveFor,
   stashPopFor,
+  stashApplyFor,
+  stashDropFor,
+  stashShowFor,
   setRemoteFor,
   removeRemoteFor,
+  abortOperationFor,
+  continueOperationFor,
+  applyPatchFor,
+  reflogFor,
+  diffRefsFor,
+  blameFor,
   getTrackingConfig,
   setTrackingConfig,
   flushTrackingCommits,
@@ -55,11 +67,24 @@ async function withGitLock(repoId, res, fn) {
     return await fn();
   } finally {
     gitLocks.delete(repoId);
+    // Toute mutation peut avoir changé le working tree / l'historique → on signale aux
+    // vues abonnées (multi-onglets + auto-refresh) de re-fetcher. Best-effort.
+    broadcast(gitKey(repoId), "git:changed", { repoId });
   }
 }
 
 export async function handle(ctx) {
   const { req, res, method, path, q } = ctx;
+
+  // ── Flux temps réel (SSE) : auto-refresh de la vue git. Auth ?token= via le gate. ──
+  // Le watcher fs n'existe que tant qu'un client est branché (lazy, déréférencé à la fermeture).
+  if (method === "GET" && path === "/api/git/stream") {
+    const id = repoOf(q);
+    addGitWatcher(id);
+    req.on("close", () => removeGitWatcher(id));
+    openStream(req, res, gitKey(id));
+    return true;
+  }
 
   // ── Lectures (non verrouillées) ──
   if (method === "GET" && path === "/api/git/status") {
@@ -128,6 +153,22 @@ export async function handle(ctx) {
     send(res, 200, commitDetailFor(repoOf(q), gitCommitMatch[1]));
     return true;
   }
+  if (method === "GET" && path === "/api/git/reflog") {
+    send(res, 200, reflogFor(repoOf(q), { limit: Number(q.get("limit")) || 100 }));
+    return true;
+  }
+  if (method === "GET" && path === "/api/git/diff-refs") {
+    send(res, 200, diffRefsFor(repoOf(q), q.get("a") || "", q.get("b") || "", q.get("path") || null));
+    return true;
+  }
+  if (method === "GET" && path === "/api/git/blame") {
+    send(res, 200, blameFor(repoOf(q), q.get("path") || "", q.get("branch") || null));
+    return true;
+  }
+  if (method === "GET" && path === "/api/git/stash/show") {
+    send(res, 200, stashShowFor(repoOf(q), q.get("ref") || null));
+    return true;
+  }
 
   // ── Écritures (verrouillées par repo) ──
   if (method === "POST" && path === "/api/git/stage") {
@@ -151,7 +192,26 @@ export async function handle(ctx) {
   if (method === "POST" && path === "/api/git/commit") {
     const body = await readBody(req);
     const id = repoOf(q, body);
-    await withGitLock(id, res, () => send(res, 200, commitFor(id, body.message)));
+    await withGitLock(id, res, () => send(res, 200, commitFor(id, body.message, { amend: !!body.amend })));
+    return true;
+  }
+  // Staging / abandon PARTIEL (au niveau du hunk) : applique un patch unifié à l'index
+  // (cached) et/ou en inversé (reverse). Voir applyPatchFor.
+  if (method === "POST" && path === "/api/git/apply-patch") {
+    const body = await readBody(req);
+    const id = repoOf(q, body);
+    await withGitLock(id, res, () => send(res, 200, applyPatchFor(id, body.patch, { cached: !!body.cached, reverse: !!body.reverse })));
+    return true;
+  }
+  // Conflits : interrompre (--abort) / poursuivre (--continue) l'opération en cours.
+  if (method === "POST" && path === "/api/git/abort") {
+    const id = repoOf(q, await readBody(req));
+    await withGitLock(id, res, () => send(res, 200, abortOperationFor(id)));
+    return true;
+  }
+  if (method === "POST" && path === "/api/git/continue") {
+    const id = repoOf(q, await readBody(req));
+    await withGitLock(id, res, () => send(res, 200, continueOperationFor(id)));
     return true;
   }
   if (method === "POST" && path === "/api/git/commit-message") {
@@ -165,8 +225,9 @@ export async function handle(ctx) {
     return true;
   }
   if (method === "POST" && path === "/api/git/pull") {
-    const id = repoOf(q, await readBody(req));
-    await withGitLock(id, res, () => send(res, 200, pullRepo(id)));
+    const body = await readBody(req);
+    const id = repoOf(q, body);
+    await withGitLock(id, res, () => send(res, 200, pullRepo(id, { rebase: !!body.rebase })));
     return true;
   }
   if (method === "POST" && path === "/api/git/push") {
@@ -217,6 +278,12 @@ export async function handle(ctx) {
     await withGitLock(id, res, () => send(res, 200, mergeFor(id, body.name)));
     return true;
   }
+  if (method === "POST" && path === "/api/git/rebase") {
+    const body = await readBody(req);
+    const id = repoOf(q, body);
+    await withGitLock(id, res, () => send(res, 200, rebaseFor(id, body.onto)));
+    return true;
+  }
   if (method === "POST" && path === "/api/git/cherry-pick") {
     const body = await readBody(req);
     const id = repoOf(q, body);
@@ -254,8 +321,21 @@ export async function handle(ctx) {
     return true;
   }
   if (method === "POST" && path === "/api/git/stash/pop") {
-    const id = repoOf(q, await readBody(req));
-    await withGitLock(id, res, () => send(res, 200, stashPopFor(id)));
+    const body = await readBody(req);
+    const id = repoOf(q, body);
+    await withGitLock(id, res, () => send(res, 200, stashPopFor(id, body.ref || null)));
+    return true;
+  }
+  if (method === "POST" && path === "/api/git/stash/apply") {
+    const body = await readBody(req);
+    const id = repoOf(q, body);
+    await withGitLock(id, res, () => send(res, 200, stashApplyFor(id, body.ref || null)));
+    return true;
+  }
+  if (method === "POST" && path === "/api/git/stash/drop") {
+    const body = await readBody(req);
+    const id = repoOf(q, body);
+    await withGitLock(id, res, () => send(res, 200, stashDropFor(id, body.ref)));
     return true;
   }
   if (method === "POST" && path === "/api/git/config") {
