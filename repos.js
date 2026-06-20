@@ -66,7 +66,7 @@ import {
   clearCredential,
   credentialStatus,
 } from "./repo.js";
-import { getRepoRow, listRepoRows, createRepo, checkpointTracker, closeTrackerDb, getSetting, setSetting } from "./db.js";
+import { getRepoRow, listRepoRows, createRepo, checkpointTracker, closeTrackerDb, getSetting, setSetting, getHiddenBranches } from "./db.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -444,8 +444,17 @@ export function inspectPathFor(repoId, relPath, branch = null) {
 export function searchPathsFor(repoId, query = "", limit = 30, branch = null) {
   return searchPaths(getIndex(repoId, branch), query, limit);
 }
+// Ensemble effectif des branches masquées d'un dépôt : liste explicite (UI) +
+// branche de suivi (orphan tracking.db), toujours cachée des sélecteurs de code.
+function hiddenBranchSet(repoId) {
+  const set = new Set(getHiddenBranches(repoId));
+  set.add(trackingBranch());
+  return set;
+}
 export function listBranchesFor(repoId) {
-  return listBranches(rootForRepo(repoId));
+  const { branches, current } = listBranches(rootForRepo(repoId));
+  const hidden = hiddenBranchSet(repoId);
+  return { branches: branches.filter((b) => !hidden.has(b)), current };
 }
 
 // ── Clone / pull d'un repo ───────────────────────────────────────────────────
@@ -543,7 +552,19 @@ export function logGraphFor(repoId, opts) {
   return logGraph(rootForRepo(repoId), opts);
 }
 export function branchesDetailedFor(repoId) {
-  return branchesDetailed(rootForRepo(repoId));
+  const d = branchesDetailed(rootForRepo(repoId));
+  const explicit = new Set(getHiddenBranches(repoId));
+  const trk = trackingBranch();
+  // Annote chaque branche : `hidden` (masquée des sélecteurs), `hiddenLocked` pour
+  // la branche de suivi (cachée par défaut, non « démasquable » depuis l'UI).
+  const mark = (b, short) => ({ ...b, hidden: explicit.has(short) || short === trk, hiddenLocked: short === trk });
+  return {
+    ...d,
+    local: (d.local || []).map((b) => mark(b, b.name)),
+    remote: (d.remote || []).map((b) => mark(b, b.name.includes("/") ? b.name.slice(b.name.indexOf("/") + 1) : b.name)),
+    hiddenBranches: [...explicit],
+    trackingBranch: trk,
+  };
 }
 export function diffFileFor(repoId, relPath, opts) {
   return diffFile(rootForRepo(repoId), relPath, opts);

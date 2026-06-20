@@ -2607,11 +2607,16 @@ function renderRepoSide() {
     `<div class="side-item ${cls}" ${attrs}><span class="si-name" title="${esc(name)}">${esc(name)}</span>${right || ""}</div>`;
   let html = "";
 
+  // Pastille « masquée » (œil barré) ; les branches masquées sont grisées et
+  // restent listées ici pour pouvoir les ré-afficher (clic droit).
+  const hiddenBadge = (b) => (b.hidden ? `<span class="si-hidden" title="${b.hiddenLocked ? "Branche de suivi — masquée par défaut" : "Masquée des sélecteurs"}">🚫</span>` : "");
+
   html += `<div class="side-group"><h4>Local <span class="hint">(clic droit : options)</span></h4>`;
   if (!br.local.length) html += `<div class="side-empty">—</div>`;
   for (const b of br.local) {
     const trk = b.ahead || b.behind ? `<span class="si-track">↑${b.ahead} ↓${b.behind}</span>` : "";
-    html += item(b.current ? "current local" : "local", b.name, `data-branch="${esc(b.name)}"`, trk);
+    const cls = `${b.current ? "current local" : "local"}${b.hidden ? " hidden" : ""}`;
+    html += item(cls, b.name, `data-branch="${esc(b.name)}"`, hiddenBadge(b) + trk);
   }
   html += `</div>`;
 
@@ -2619,7 +2624,8 @@ function renderRepoSide() {
   if (!br.remote.length) html += `<div class="side-empty">—</div>`;
   for (const b of br.remote) {
     const short = b.name.includes("/") ? b.name.slice(b.name.indexOf("/") + 1) : b.name;
-    html += item("remote", b.name, `data-checkout-remote="${esc(short)}" data-remote-full="${esc(b.name)}"`, "");
+    const cls = `remote${b.hidden ? " hidden" : ""}`;
+    html += item(cls, b.name, `data-checkout-remote="${esc(short)}" data-remote-full="${esc(b.name)}"`, hiddenBadge(b));
   }
   html += `</div>`;
 
@@ -2631,9 +2637,27 @@ function renderRepoSide() {
   $("#repoSide").innerHTML = html;
 }
 
-// Menu contextuel d'une branche locale (clic droit) : checkout, merge, rename, delete.
+// Masque / ré-affiche une branche dans les sélecteurs (sans toucher le dépôt git).
+async function setBranchHidden(name, hidden) {
+  try {
+    await api.send("POST", hidden ? "/api/git/branch/hide" : "/api/git/branch/unhide", { name });
+  } catch (e) {
+    alert("Erreur : " + e.message);
+  }
+  await refreshRepo();
+}
+// Entrée de menu « Masquer / Afficher » selon l'état courant (null si non proposable).
+function hideMenuItem(b) {
+  if (!b || b.hiddenLocked) return null; // branche de suivi : toujours masquée
+  return b.hidden
+    ? { label: "Afficher dans les sélecteurs", onClick: () => setBranchHidden(b.name, false) }
+    : { label: "Masquer des sélecteurs", onClick: () => setBranchHidden(b.name, true) };
+}
+
+// Menu contextuel d'une branche locale (clic droit) : checkout, merge, rename, masquer, delete.
 function branchCtxMenu(name, clientX, clientY) {
   const current = repoMgr.branches && repoMgr.branches.current;
+  const bObj = (repoMgr.branches && repoMgr.branches.local || []).find((x) => x.name === name);
   const items = [];
   if (name !== current) {
     items.push({ label: `Checkout « ${name} »`, onClick: () => doGit(() => api.send("POST", "/api/git/checkout", { name })) });
@@ -2649,6 +2673,8 @@ function branchCtxMenu(name, clientX, clientY) {
       if (newName && newName !== name) doGit(() => api.send("POST", "/api/git/branch/rename", { oldName: name, newName }));
     },
   });
+  const hide = hideMenuItem(bObj);
+  if (hide) items.push(hide);
   if (name !== current) items.push({ label: "Supprimer la branche locale", danger: true, onClick: () => doGitDeleteBranch(name) });
   showCtxMenu(clientX, clientY, items);
 }
@@ -2660,12 +2686,15 @@ function remoteBranchCtxMenu(fullName, shortName, clientX, clientY) {
   const slash = fullName.indexOf("/");
   const remote = slash > 0 ? fullName.slice(0, slash) : "origin";
   const branch = slash > 0 ? fullName.slice(slash + 1) : fullName;
+  const bObj = (repoMgr.branches && repoMgr.branches.remote || []).find((x) => x.name === fullName);
+  const hide = hideMenuItem(bObj && { ...bObj, name: shortName }); // masquage par nom court
   const items = [
     { label: `Checkout « ${shortName} » (suivi local)`, onClick: () => doGit(() => api.send("POST", "/api/git/checkout", { name: shortName })) },
     {
       label: `Merge « ${fullName} » dans « ${current || "?"} »`,
       onClick: () => doGit(() => api.send("POST", "/api/git/merge", { name: fullName }), { confirmMsg: `Fusionner « ${fullName} » dans « ${current} » ?` }),
     },
+    ...(hide ? [hide] : []),
     {
       label: "Supprimer la branche distante",
       danger: true,

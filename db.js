@@ -48,6 +48,10 @@ registry.exec(`
     value TEXT NOT NULL DEFAULT ''
   );
 `);
+// Migration additive idempotente : liste JSON des branches masquées par dépôt
+// (sélecteurs de branche, autocomplete « @ »). La branche de suivi est toujours
+// masquée par défaut côté repos.js, sans figurer dans cette liste.
+ensureColumn(registry, "repos", "hidden_branches", "hidden_branches TEXT NOT NULL DEFAULT '[]'");
 
 // ── Pool de connexions « tracker.db » par dépôt + connexion AMBIANTE ──────────
 // Une base SQLite PAR dépôt (cloisonnement total + versionnement git). Toutes les
@@ -499,6 +503,15 @@ function nextRef(repoId, type) {
 // ═══════════════════════════════════════════════════════════════════════════
 // Registre des repos (CRUD pur — aucune dépendance git ; cf. repos.js pour le clone).
 // ═══════════════════════════════════════════════════════════════════════════
+function parseHiddenBranches(raw) {
+  if (!raw) return [];
+  try {
+    const a = JSON.parse(raw);
+    return Array.isArray(a) ? a.filter((x) => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
 function rowToRepo(r) {
   if (!r) return null;
   return {
@@ -509,6 +522,7 @@ function rowToRepo(r) {
     localPath: r.local_path,
     defaultBranch: r.default_branch,
     isDefault: !!r.is_default,
+    hiddenBranches: parseHiddenBranches(r.hidden_branches),
     createdAt: r.created_at,
   };
 }
@@ -571,6 +585,10 @@ export function updateRepo(idOrSlug, fields = {}) {
   if ("url" in fields) { sets.push("url = ?"); vals.push(fields.url || null); }
   if ("localPath" in fields) { sets.push("local_path = ?"); vals.push(fields.localPath || null); }
   if ("defaultBranch" in fields) { sets.push("default_branch = ?"); vals.push(fields.defaultBranch || null); }
+  if ("hiddenBranches" in fields && Array.isArray(fields.hiddenBranches)) {
+    sets.push("hidden_branches = ?");
+    vals.push(JSON.stringify([...new Set(fields.hiddenBranches.filter((x) => typeof x === "string" && x.trim()))]));
+  }
   const tx = registry.transaction(() => {
     if (sets.length) registry.prepare(`UPDATE repos SET ${sets.join(", ")} WHERE id = ?`).run(...vals, row.id);
     if (fields.isDefault === true) {
@@ -600,6 +618,35 @@ export function deleteRepo(idOrSlug) {
     console.error(`[meowtrack] suppression tracker (repo ${row.id}) : ${e.message || e}`);
   }
   return { deleted: true, id: row.id, slug: row.slug };
+}
+
+// ── Branches masquées (par dépôt) ────────────────────────────────────────────
+// Liste explicite des branches masquées dans les sélecteurs. La branche de suivi
+// est ajoutée par-dessus côté repos.js (toujours cachée, hors de cette liste).
+export function getHiddenBranches(idOrSlug) {
+  const row = getRepoRow(idOrSlug);
+  return row ? parseHiddenBranches(row.hidden_branches) : [];
+}
+function writeHiddenBranches(row, list) {
+  const arr = [...new Set(list.filter((x) => typeof x === "string" && x.trim()))];
+  registry.prepare("UPDATE repos SET hidden_branches = ? WHERE id = ?").run(JSON.stringify(arr), row.id);
+  return arr;
+}
+export function hideBranch(idOrSlug, name) {
+  const row = getRepoRow(idOrSlug);
+  if (!row) throw new Error(`Repo introuvable : ${idOrSlug}`);
+  if (!name || !String(name).trim()) throw new Error("Nom de branche requis");
+  const list = writeHiddenBranches(row, [...parseHiddenBranches(row.hidden_branches), String(name).trim()]);
+  return { repo: row.slug, hiddenBranches: list };
+}
+export function unhideBranch(idOrSlug, name) {
+  const row = getRepoRow(idOrSlug);
+  if (!row) throw new Error(`Repo introuvable : ${idOrSlug}`);
+  const list = writeHiddenBranches(
+    row,
+    parseHiddenBranches(row.hidden_branches).filter((b) => b !== String(name).trim())
+  );
+  return { repo: row.slug, hiddenBranches: list };
 }
 
 // Extrait les tokens `@chemin` d'un texte (description). Accepte lettres, chiffres,
