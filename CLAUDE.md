@@ -28,7 +28,7 @@ The MCP server and dashboard share the DB and run **simultaneously** (SQLite WAL
 
 **Two domains live in the same DB:**
 - **Issues** (`BUG-1`, `FEAT-2`…): bug/feature/task/chore tracker with file/folder *references*, comments, tags, captured branch/commit. Exposed via MCP tools (`meowtrack_create/list/get/update/...`) and `/api/issues`.
-- **Nodes** ("Good Vibes", `NODE-1`…): a recursive tree of goals/milestones with per-node AI chat. One node type at any depth; progress is the recursive average of children. Exposed via `/api/nodes/*` and `meowtrack_node_*` tools.
+- **Nodes** ("Vibes", `NODE-1`…): a recursive tree of goals/milestones with per-node AI chat. One node type at any depth; progress is the recursive average of children. Exposed via `/api/nodes/*` and `meowtrack_node_*` tools.
 
 **Multi-repo is pervasive.** A `repos` registry table scopes **every issue and node** to a repo; refs are numbered **per repo** (`(repo_id, ref)` unique, one counter each). Almost every MCP tool and HTTP route takes `repo` / `?repo=` (slug or id); omitted → the `is_default` repo (or `MEOWTRACK_DEFAULT_REPO` on the MCP side). An old single-repo DB is auto-migrated on startup (`migrateLegacyMultiRepo` in `db/migrations.js`) — preserve that path when touching the schema.
 
@@ -51,7 +51,7 @@ Chat read access to source (`MEOWTRACK_AI_REPO_ACCESS=1`, default) is sandboxed:
 
 ### Front-end
 
-`dashboard/` is a static vanilla-JS SPA served by the HTTP server. **No build step, no framework** — native ES modules loaded via `<script type="module" src="dashboard.js">`. `dashboard.js` is a tiny entry that loads the modules and registers the `DOMContentLoaded` initialisers; the code is split by the three UI blocks: `core.js` (shared `$`/`esc`/`api`/token/repo helpers), `issues.js` (Suivi + the shared `@`-mention autocomplete), `vibes.js` (Good Vibes nodes/graph/chat + `toast`/context-menu), `repo.js` (git manager). Cross-block sharing is via explicit `import`/`export`; the few circular edges (issues↔vibes↔repo) are safe (used only inside function bodies). `serveStatic` (`http-util.js`) serves any single-segment `*.js`/`*.css` under `dashboard/` (anti-traversal). The graph view is hand-rolled SVG built via DOM API (anti-XSS — no `innerHTML` of user data). All DB writes go through the HTTP API; the front reconciles node state by `version`.
+`dashboard/` is a static vanilla-JS SPA served by the HTTP server. **No build step, no framework** — native ES modules loaded via `<script type="module" src="dashboard.js">`. `dashboard.js` is a tiny entry that loads the modules and registers the `DOMContentLoaded` initialisers; the code is split by the three UI blocks: `core.js` (shared `$`/`esc`/`api`/token/repo helpers), `issues.js` (Suivi + the shared `@`-mention autocomplete), `vibes.js` (Vibes nodes/graph/chat + `toast`/context-menu), `repo.js` (git manager). Cross-block sharing is via explicit `import`/`export`; the few circular edges (issues↔vibes↔repo) are safe (used only inside function bodies). `serveStatic` (`http-util.js`) serves any single-segment `*.js`/`*.css` under `dashboard/` (anti-traversal). The graph view is hand-rolled SVG built via DOM API (anti-XSS — no `innerHTML` of user data). All DB writes go through the HTTP API; the front reconciles node state by `version`.
 
 ## Configuration & conventions
 

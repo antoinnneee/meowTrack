@@ -9,7 +9,7 @@ export const TYPES = ["bug", "feature", "task", "chore"];
 export const STATUSES = ["open", "in_progress", "done", "wontfix"];
 export const PRIORITIES = ["low", "medium", "high", "critical"];
 
-// ── Vocabulaire Good Vibes v2 (arbre de nœuds) ───────────────────────────────
+// ── Vocabulaire Vibes v2 (arbre de nœuds) ───────────────────────────────
 export const NODE_STATUSES = ["active", "paused", "done", "abandoned"];
 export const NODE_COLORS = ["accent", "feature", "task", "bug", "high"];
 export const CHAT_MODELS = ["sonnet", "opus", "haiku"];

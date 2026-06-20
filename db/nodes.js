@@ -1,4 +1,4 @@
-// db/nodes.js — Good Vibes v2 : arbre de NŒUDS récursif + application des actions
+// db/nodes.js — Vibes v2 : arbre de NŒUDS récursif + application des actions
 // IA (catalogue fermé scopé sous-arbre / repo).
 //
 // Un seul type de nœud (objectif = jalon = sous-jalon), `parent_id` self-réf.

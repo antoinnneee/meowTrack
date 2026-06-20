@@ -1,4 +1,4 @@
-// parse_ai_turn.test.mjs — test de régression isolé du parsing IA de Good Vibes.
+// parse_ai_turn.test.mjs — test de régression isolé du parsing IA de Vibes.
 //
 // parseAiTurn (server.js) sépare le texte conversationnel des actions structurées
 // renvoyées par `claude -p`. Il doit être FAIL-CLOSED : au moindre doute, zéro

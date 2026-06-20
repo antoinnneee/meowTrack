@@ -175,9 +175,9 @@ Chaque entrée est rattachée à une **branche git** (champ `branch`, sélection
 
 Le bouton **✨ Améliorer (IA)** de la modale (`POST /api/improve-description`) réécrit la description courante via `claude -p --model sonnet` (CLI headless, exécuté côté serveur, sans shell). Les `@chemin` sont préservés. Nécessite le CLI Claude installé + authentifié sur le serveur (`MEOWTRACK_CLAUDE_BIN`).
 
-## Good Vibes — arbre de nœuds, graphe organique & chat IA streaming
+## Vibes — arbre de nœuds, graphe organique & chat IA streaming
 
-Onglet **🌱 Good Vibes** du dashboard : un **arbre de NŒUDS récursif** (`nodes`, ref `NODE-1`…). Un seul
+Onglet **🌱 Vibes** du dashboard : un **arbre de NŒUDS récursif** (`nodes`, ref `NODE-1`…). Un seul
 type de nœud — objectif = jalon = sous-jalon — chacun avec titre, statut, couleur, emoji, échéance et une
 **progression** dérivée (moyenne récursive de ses enfants ; une feuille `done` = 100 %). Profondeur libre :
 un jalon « sert de goal » et peut avoir ses propres sous-jalons.

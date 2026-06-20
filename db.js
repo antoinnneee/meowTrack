@@ -11,7 +11,7 @@
 //   db/registry.js    registre des dépôts (CRUD), app_settings, resolveRepoId
 //   db/migrations.js  bootstrap + migrations one-shot (initDb)
 //   db/issues.js      issues / références / commentaires
-//   db/nodes.js       arbre Good Vibes + application des actions IA
+//   db/nodes.js       arbre Vibes + application des actions IA
 //   db/messages.js    persistance des chats (par nœud + forêt)
 //
 // MULTI-REPOS : un registre `repos` (meowtrack.db, par machine) scope toutes les
@@ -58,7 +58,7 @@ export {
   stats,
 } from "./db/issues.js";
 
-// ── Nœuds Good Vibes (arbre + actions IA) ────────────────────────────────────
+// ── Nœuds Vibes (arbre + actions IA) ────────────────────────────────────
 export {
   getNode,
   getSubtree,

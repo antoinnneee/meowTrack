@@ -119,6 +119,8 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 /* Détail */
 .detail-pane .empty, .issue-list .empty { color: var(--text-dim); padding: 24px; text-align: center; }
 .detail-head { display: flex; align-items: flex-start; gap: 12px; }
+/* Bouton « retour à la liste » : visible uniquement en master-détail mobile. */
+.detail-back { display: none; }
 .detail-head h1 { font-size: 20px; margin: 0 0 4px; flex: 1; }
 .detail-sub { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0 16px; }
 .detail-section { margin: 18px 0; }
@@ -185,7 +187,7 @@ kbd { background: var(--surface-2); border: 1px solid var(--border); border-radi
 .refs-head { display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; font-size: 12px; color: var(--text-dim); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 8px; }
 
-/* ═══════════════════════════ Good Vibes ═══════════════════════════════════ */
+/* ═══════════════════════════ Vibes ═══════════════════════════════════ */
 /* Bascule de vues : .view[hidden] doit battre .layout{display:grid} et .goal-view{display:flex}. */
 .view[hidden] { display: none !important; }
 
@@ -332,7 +334,7 @@ body:not(.view-repo) .repo-only { display: none; }
 }
 .toast[hidden] { display: none; }
 
-/* ═══════════════════════════ Good Vibes v2 ════════════════════════════════ */
+/* ═══════════════════════════ Vibes v2 ════════════════════════════════ */
 /* Barre + toggle graphe/grille */
 .vibes-bar { display: flex; align-items: center; gap: 16px; padding: 12px 26px; border-bottom: 1px solid var(--border); }
 .vibes-bar[hidden] { display: none; }
@@ -707,3 +709,62 @@ button.xs { padding: 3px 8px; font-size: 11px; }
 .gh-wait-row { display: flex; align-items: center; gap: 10px; }
 .gh-wait { flex: 1; font-size: 12px; color: var(--text-dim); }
 .msg.ai { max-width: 94%; } /* un peu plus large pour les tableaux/blocs de code */
+
+/* ═══════════════════════════ Responsive / mobile ══════════════════════════════
+   Tablette/téléphone (≤ 768px) : topbar enroulée + onglets pleine largeur, vues
+   master-détail empilées (Suivi, Vibes, Repo), modales pleine largeur.
+   Les media queries plus anciennes (900px gd-body, 640px forest-chat) restent
+   valides ; ce bloc, placé en dernier, prime à largeur égale. */
+@media (max-width: 768px) {
+  /* Champs texte ≥16px : empêche le zoom automatique d'iOS/Safari au focus. */
+  input, textarea { font-size: 16px; }
+
+  /* — Topbar : enroulée ; les 3 onglets occupent une ligne pleine largeur — */
+  .topbar { flex-wrap: wrap; gap: 6px 8px; padding: 8px 10px; }
+  .brand { font-size: 15px; }
+  .topbar .meta { display: none; }                 /* compteurs masqués (gain de place) */
+  .nav-tabs { order: 1; flex: 1 1 100%; }
+  .nav-tabs .tab { flex: 1 1 0; text-align: center; padding: 9px 6px; }
+  /* Sélecteurs + boutons d'action passent sous les onglets. */
+  .topbar > :not(.brand):not(.nav-tabs):not(.live-dot) { order: 2; }
+  .topbar button { padding: 8px 11px; }
+  .branch-select { max-width: none; flex: 1 1 130px; }
+
+  /* — Suivi : master-détail (liste OU détail, plein écran + bouton retour) — */
+  .layout { grid-template-columns: 1fr; }
+  .list-pane { border-right: none; }
+  .filters { padding: 10px; }
+  .detail-pane { display: none; padding: 16px 14px; }
+  body.issue-open .list-pane { display: none; }
+  body.issue-open .detail-pane { display: block; }
+  .detail-back { display: inline-flex; align-items: center; }
+
+  /* — Modales : pleine largeur, lignes de formulaire empilées — */
+  .modal-backdrop { padding: 12px 8px; }
+  .modal { padding: 16px; border-radius: 12px; }
+  .form-row { flex-direction: column; gap: 10px; }
+  /* Neutralise les largeurs fixes inline (style="flex:0 0 90px"…) en colonne. */
+  .form-row label { flex: 1 1 auto !important; width: 100%; }
+
+  /* — Vibes : grille 1 colonne + détail empilé (timeline puis chat) — */
+  .vibes-bar { padding: 10px 14px; }
+  .vibes-bar h2 { font-size: 15px; }
+  .vibes-view-grid { padding: 16px 12px; }
+  .goal-cards { grid-template-columns: 1fr; }
+  .gd-head { padding: 12px 14px; gap: 8px; flex-wrap: wrap; }
+  .gd-titles h1 { font-size: 18px; }
+  .goal-view { overflow-y: auto; }
+  .gd-body { display: flex; flex-direction: column; flex: 0 0 auto; }
+  .gd-timeline { border-right: none; border-bottom: 1px solid var(--border); overflow: visible; padding: 16px 14px; }
+  .gd-chat { min-height: 80vh; }
+
+  /* — Repo (git) : les trois panneaux s'empilent verticalement — */
+  .repo-body { display: flex; flex-direction: column; }
+  .repo-side { border-right: none; border-bottom: 1px solid var(--border); flex: 0 0 auto; max-height: 200px; }
+  .repo-graph-pane { flex: 1 1 auto; min-height: 260px; }
+  .repo-wc { border-left: none; border-top: 1px solid var(--border); flex: 0 0 auto; max-height: 60vh; }
+  .repo-toolbar { padding: 8px 10px; }
+
+  /* — Autocomplétion @ : ne déborde plus l'écran — */
+  .mention-menu { min-width: 0; max-width: calc(100vw - 24px); }
+}

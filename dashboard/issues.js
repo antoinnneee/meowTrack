@@ -1,6 +1,6 @@
 // issues.js — bloc « Suivi » : registre des dépôts (sélecteur), liste/détail des
 // entrées, modale de création/édition, et l'autocomplete « @ » partagé (utilisé
-// aussi par le bloc Good Vibes pour les notes et le chat). Importe le noyau et les
+// aussi par le bloc Vibes pour les notes et le chat). Importe le noyau et les
 // ponts de navigation vers les autres vues.
 
 import { $, esc, api, activeRepo, setActiveRepo } from "./core.js";
@@ -53,7 +53,7 @@ async function loadRepos() {
 }
 
 // Bascule de repo actif : persiste + recharge tout (méta, branches, liste, et la
-// vue Good Vibes si elle est ouverte — forêt + flux SSE du nouveau repo).
+// vue Vibes si elle est ouverte — forêt + flux SSE du nouveau repo).
 async function onRepoChange(slug) {
   setActiveRepo(slug);
   state.branch = ""; // les branches diffèrent d'un repo à l'autre
@@ -209,6 +209,8 @@ async function selectIssue(ref) {
     state.selected = await api.get("/api/issues/" + encodeURIComponent(ref));
     renderList();
     renderDetail();
+    // Mobile (master-détail) : bascule sur le panneau détail plein écran.
+    document.body.classList.add("issue-open");
   } catch (e) {
     $("#detail").innerHTML = `<div class="empty">Erreur : ${esc(e.message)}</div>`;
   }
@@ -248,6 +250,7 @@ function renderDetail() {
 
   $("#detail").innerHTML = `
     <div class="detail-head">
+      <button id="detailBack" class="ghost detail-back" title="Retour à la liste">←</button>
       <div style="flex:1">
         <h1>${esc(it.title)}</h1>
         <div class="detail-sub">
@@ -286,6 +289,7 @@ function renderDetail() {
       </div>
     </div>`;
 
+  $("#detailBack")?.addEventListener("click", () => document.body.classList.remove("issue-open"));
   $("#editBtn").addEventListener("click", () => openModal(it));
   $("#delBtn").addEventListener("click", () => deleteIssue(it.ref));
   $("#detail").querySelectorAll(".status-buttons button").forEach((b) =>
@@ -311,6 +315,7 @@ async function deleteIssue(ref) {
   if (!confirm(`Supprimer ${ref} ?`)) return;
   await api.send("DELETE", "/api/issues/" + encodeURIComponent(ref));
   state.selected = null;
+  document.body.classList.remove("issue-open"); // mobile : revient à la liste
   $("#detail").innerHTML = '<div class="empty">Entrée supprimée.</div>';
   await Promise.all([loadList(), loadMeta()]);
 }

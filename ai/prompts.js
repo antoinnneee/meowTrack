@@ -92,7 +92,7 @@ export function buildNodePrompt(scopeNode, descendants, history, userMessage, au
   const historyBlock = historyBlockOf(history);
 
   return [
-    `Tu es l'assistant d'un tableau d'objectifs arborescent ("Good Vibes"), pour le projet logiciel « ${repoLabel} ».`,
+    `Tu es l'assistant d'un tableau d'objectifs arborescent ("Vibes"), pour le projet logiciel « ${repoLabel} ».`,
     "Un NŒUD est un objectif/jalon ; il peut avoir des sous-nœuds (sous-jalons) à profondeur libre.",
     "Tu discutes avec une ou plusieurs personnes du NŒUD COURANT et tu peux MODIFIER ce nœud ET tout son",
     "SOUS-ARBRE (ses descendants) via des actions structurées — JAMAIS en dehors.",
@@ -151,7 +151,7 @@ export function buildForestPrompt(forestNodes, history, userMessage, author, rep
   const historyBlock = historyBlockOf(history);
 
   return [
-    `Tu es l'assistant d'un tableau d'objectifs arborescent ("Good Vibes"), pour le projet logiciel « ${repoLabel} ».`,
+    `Tu es l'assistant d'un tableau d'objectifs arborescent ("Vibes"), pour le projet logiciel « ${repoLabel} ».`,
     "Un NŒUD est un objectif/jalon ; il peut avoir des sous-nœuds (sous-jalons) à profondeur libre.",
     "Tu discutes ici au NIVEAU LE PLUS HAUT (toute la forêt d'objectifs du dépôt) : aide à clarifier les",
     "ambitions, puis CRÉE et organise des objectifs RACINES et leurs sous-jalons via des actions structurées.",

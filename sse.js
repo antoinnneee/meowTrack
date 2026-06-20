@@ -1,4 +1,4 @@
-// sse.js — temps réel Good Vibes : broadcaster SSE en mémoire + ouverture de flux.
+// sse.js — temps réel Vibes : broadcaster SSE en mémoire + ouverture de flux.
 //
 // channels: clé → Set<client> ; clé = `node:<repoId>:<id>` (room d'un nœud) |
 // `forest:<repoId>` (forêt d'UN repo — multi-repos : un repo n'entend jamais les

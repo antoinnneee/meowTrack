@@ -4,7 +4,7 @@
 //
 //   core.js    helpers DOM/auth/API partagés
 //   issues.js  Suivi (issues) + autocomplete « @ »
-//   vibes.js   Good Vibes (nœuds, graphe, chat IA) + toast/menu contextuel
+//   vibes.js   Vibes (nœuds, graphe, chat IA) + toast/menu contextuel
 //   repo.js    Gestionnaire de dépôts (git)
 //
 // Chargé via <script type="module" src="dashboard.js"> dans index.html.
