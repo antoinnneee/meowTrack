@@ -74,6 +74,18 @@ function aiErrorMessage(e) {
     : (e && e.message) || "Erreur lors de l'appel à l'IA.";
 }
 
+// Dump diagnostic du bloc d'actions brut quand parseAiTurn le juge illisible
+// (malformed). On isole la portion après la sentinelle (sinon tout le brut),
+// tronquée, pour voir POURQUOI le JSON ne parse pas (guillemets typographiques,
+// virgule traînante, troncature, "actions" absent…). \n échappés pour 1 ligne/journal.
+function dumpMalformedTurn(tag, raw) {
+  const s = String(raw || "");
+  const i = s.indexOf(ACTIONS_SENTINEL);
+  const blob = i >= 0 ? s.slice(i) : s;
+  const snippet = blob.slice(0, 4000).replace(/\n/g, "\\n");
+  console.error(`[meowtrack] ${tag}: BLOC ILLISIBLE (len=${blob.length}, sentinelle=${i >= 0}) → ${snippet}`);
+}
+
 // Diffuse l'event « liens de prérequis modifiés » : le graphe recharge ses liens,
 // et la vue détail du nœud rafraîchit « Dépend de / Requis par ».
 function broadcastLinksChanged(repoId, nodeId) {
@@ -170,6 +182,7 @@ async function runNodeTurn(repoId, nodeId, scopeSnapshot, descendants, history, 
       `[meowtrack] runNodeTurn node=${nodeId}: parse → ${(actions || []).length} action(s), malformed=${!!malformed}` +
         (actions && actions.length ? ` ops=[${actions.map((a) => a && a.op).join(",")}]` : "")
     );
+    if (malformed) dumpMalformedTurn(`runNodeTurn node=${nodeId}`, raw);
     // index des tailles de sous-arbre pour l'affichage des suppressions
     const subById = new Map((descendants || []).map((n) => [n.id, 0]));
     const destructive = describeDestructive(actions, scopeSnapshot, subById);
@@ -390,6 +403,7 @@ async function runForestTurn(repoId, forestSnapshot, history, userText, author, 
       `[meowtrack] runForestTurn repo=${repoId}: parse → ${(actions || []).length} action(s), malformed=${!!malformed}` +
         (actions && actions.length ? ` ops=[${actions.map((a) => a && a.op).join(",")}]` : "")
     );
+    if (malformed) dumpMalformedTurn(`runForestTurn repo=${repoId}`, raw);
     const subById = new Map((forestSnapshot || []).map((n) => [n.id, 0]));
     const destructive = describeDestructive(actions, null, subById);
     const baseText = text || (malformed ? "(réponse de l'IA illisible — aucune action appliquée)" : "");
