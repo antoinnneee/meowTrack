@@ -1730,7 +1730,20 @@ function subscribeForest() {
   es.addEventListener("ai:turn", (e) => {
     const d = JSON.parse(e.data);
     applyAiTurnEvent(d);
-    if (d.state === "start" || d.state === "end") clearGhostsForest(); // début/fin → les vrais nœuds remplacent les fantômes
+    if (d.state === "start") {
+      clearGhostsForest(); // nouveau tour → on repart d'une forêt sans fantômes résiduels
+    } else if (d.state === "end") {
+      // Fin de tour : refetch AUTORITATIF de la forêt si un aperçu fantôme était affiché.
+      // L'aperçu streaming (parse permissif) peut montrer des nœuds que le tour n'a PAS
+      // persistés (parse final fail-closed, proposition destructive en attente de
+      // confirmation, cap d'actions atteint) ; à l'inverse l'ajout incrémental via
+      // node:updated peut manquer un nœud. Sans ce refetch, les fantômes s'effacent
+      // sans que les vrais nœuds prennent leur place. loadForest reflète la vérité serveur.
+      const hadGhosts = vibes._ghostNodes.length > 0;
+      vibes._ghostNodes = [];
+      if (hadGhosts) loadForest();
+      else renderForestSoon();
+    }
   });
   es.addEventListener("node:ghost", (e) => applyGhostForest(JSON.parse(e.data)));
   es.addEventListener("chat:cleared", () => renderChat([]));

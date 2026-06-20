@@ -19,7 +19,7 @@ export const MESSAGE_STATES = ["pending", "streaming", "complete", "error"];
 export const MAX_DEPTH = 32; // profondeur max d'un arbre (anti-DoS récursion)
 export const MAX_NODES_PER_SUBTREE = 500; // garde-fou volume par sous-arbre
 export const MAX_NODES_PER_REPO = 2000; // garde-fou volume par repo (chat « top level »)
-export const MAX_ACTIONS = 20; // actions IA max appliquées par tour
+export const MAX_ACTIONS = 200; // actions IA max appliquées par tour
 export const MAX_NOTES = 50000; // taille max du corps markdown d'UNE note (~50 Ko)
 export const MAX_NOTE_COUNT = 50; // nombre max de notes par nœud
 
