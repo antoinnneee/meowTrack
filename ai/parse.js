@@ -105,6 +105,33 @@ function repairJson(s) {
     .replace(/[‘’]/g, "'")
     .replace(/,\s*([}\]])/g, "$1");
 }
+// Échappe les caractères de contrôle bruts (saut de ligne, CR, tab) présents À
+// L'INTÉRIEUR des chaînes JSON. Le modèle insère du markdown multi-ligne dans les
+// notes (`notes[].body`), produisant de vrais \n non échappés — invalides en JSON,
+// ce qui faisait échouer JSON.parse (bug de création de nœuds par le chat IA). On
+// respecte l'état de chaîne (les sauts de ligne de mise en forme ENTRE tokens sont
+// laissés tels quels), donc on n'invente jamais d'action : reste fail-closed.
+function escapeCtrlInStrings(s) {
+  let out = "";
+  let inStr = false;
+  let esc = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inStr) {
+      if (esc) { out += ch; esc = false; continue; }
+      if (ch === "\\") { out += ch; esc = true; continue; }
+      if (ch === '"') { out += ch; inStr = false; continue; }
+      if (ch === "\n") { out += "\\n"; continue; }
+      if (ch === "\r") { out += "\\r"; continue; }
+      if (ch === "\t") { out += "\\t"; continue; }
+      out += ch;
+    } else {
+      out += ch;
+      if (ch === '"') inStr = true;
+    }
+  }
+  return out;
+}
 // Extrait le 1er objet { … } équilibré (en respectant les chaînes JSON).
 function balancedObject(s) {
   const start = s.indexOf("{");
@@ -144,18 +171,29 @@ export function parseAiTurn(stdout) {
     // ET contient "actions" (anti faux-positif : jamais d'action devinée en prose).
     const fence = raw.match(/```json\s*([\s\S]*?)```/i);
     if (fence && /"actions"\s*:/.test(fence[1])) {
-      blob = fence[1];
-      text = raw.replace(fence[0], "").trim();
+      // On capture DEPUIS l'ouverture ```json jusqu'à la fin du brut (et non fence[1],
+      // que tronquerait un ``` imbriqué dans un body markdown) — balancedObject isolera
+      // ensuite l'objet équilibré.
+      const at = raw.indexOf(fence[0]);
+      blob = raw.slice(at);
+      text = raw.slice(0, at).trim();
     }
   }
   if (!blob) return { text, actions: [], note: "", malformed: false };
   if (blob.length > 64 * 1024) return { text, actions: [], note: "", malformed: true };
 
-  const fence = blob.match(/```json\s*([\s\S]*?)```/i) || blob.match(/```\s*([\s\S]*?)```/);
-  const jsonStr = fence ? fence[1] : balancedObject(blob);
+  // Isolement de l'objet JSON via le scanner conscient des chaînes (et non un regex de
+  // fence) : il traverse sans broncher les ``` imbriqués ET les sauts de ligne bruts des
+  // notes markdown. Tentatives de parsing, de la plus stricte à la plus tolérante :
+  // brut → smart-quotes/virgules → \n bruts échappés → les deux combinés.
+  const jsonStr = balancedObject(blob);
   if (!jsonStr) return { text, actions: [], note: "", malformed: true };
 
-  let obj = tryParse(jsonStr) || tryParse(repairJson(jsonStr));
+  let obj =
+    tryParse(jsonStr) ||
+    tryParse(repairJson(jsonStr)) ||
+    tryParse(escapeCtrlInStrings(jsonStr)) ||
+    tryParse(repairJson(escapeCtrlInStrings(jsonStr)));
   if (!obj || !Array.isArray(obj.actions)) return { text, actions: [], note: "", malformed: true };
   const note = obj.note ? String(obj.note).slice(0, 500) : "";
   return { text: text || note, actions: obj.actions, note, malformed: false };
