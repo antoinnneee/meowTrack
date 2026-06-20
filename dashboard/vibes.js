@@ -806,7 +806,10 @@ function renderGraph() {
   // Le fit englobe aussi les fantômes (sinon ils apparaîtraient hors cadre).
   let fitPos = pos;
   if (gpos && gpos.size) { fitPos = new Map(pos); let i = 0; for (const v of gpos.values()) fitPos.set("ghost:" + i++, v); }
-  if (!vibes.graph.userView) fitView(fitPos, svg);
+  // Pendant un tour de création (fantômes présents), on RECADRE toujours : l'arbre en
+  // cours de génération reste centré au lieu de « filer » à droite hors cadre quand
+  // l'utilisateur avait pané/zoomé (userView). Sinon on respecte sa vue manuelle.
+  if (!vibes.graph.userView || vibes._ghostNodes.length) fitView(fitPos, svg);
   else applyViewBox(svg);
   // Feu d'artifice sur les nœuds qui viennent d'apparaître / d'être atteints.
   if (!REDUCED) {
@@ -1588,6 +1591,9 @@ function paintGhostKids() {
 // remplacés par les vrais nœuds (node:updated / rechargement) en fin de tour.
 function applyGhostForest(d) {
   if (!d || !d.key) return;
+  // Premier fantôme du tour → on abandonne la vue manuelle figée pour recadrer la
+  // création (et le résultat final reste cadré aussi, une fois les fantômes remplacés).
+  if (!vibes._ghostNodes.length) vibes.graph.userView = false;
   const gh = {
     key: String(d.key),
     title: d.title || "…",
