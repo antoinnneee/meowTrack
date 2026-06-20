@@ -10,13 +10,15 @@ import { resolveRepoId } from "./db.js";
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const PUBLIC = join(HERE, "dashboard");
 
-// Allowlist stricte des fichiers statiques (pas de path traversal).
-const STATIC = {
-  "/": ["index.html", "text/html; charset=utf-8"],
-  "/index.html": ["index.html", "text/html; charset=utf-8"],
-  "/dashboard.css": ["dashboard.css", "text/css; charset=utf-8"],
-  "/dashboard.js": ["dashboard.js", "text/javascript; charset=utf-8"],
+// Types servis depuis le dossier dashboard/ (SPA modulaire : un fichier par bloc).
+const STATIC_MIME = {
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".html": "text/html; charset=utf-8",
 };
+// Nom de fichier SÛR : un seul segment (aucun « / » ni « .. »), caractères restreints
+// + extension connue → impossible de sortir de PUBLIC (anti path-traversal).
+const SAFE_STATIC = /^\/[a-zA-Z0-9_-]+\.(js|css|html)$/;
 
 export function send(res, status, body, headers = {}) {
   const data = typeof body === "string" || Buffer.isBuffer(body) ? body : JSON.stringify(body);
@@ -54,9 +56,12 @@ export function readBody(req) {
 }
 
 export async function serveStatic(pathname, res) {
-  const entry = STATIC[pathname];
-  if (!entry) return false;
-  const [file, mime] = entry;
+  let file;
+  if (pathname === "/") file = "index.html";
+  else if (SAFE_STATIC.test(pathname)) file = pathname.slice(1);
+  else return false;
+  const mime = STATIC_MIME[file.slice(file.lastIndexOf("."))];
+  if (!mime) return false;
   try {
     const data = await readFile(join(PUBLIC, file));
     res.writeHead(200, { "Content-Type": mime, "Cache-Control": "no-store" });
