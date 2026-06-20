@@ -79,6 +79,14 @@ import {
   ensureAllRepos,
   invalidateRepo,
   importReposFromDir,
+  // Versionnement git du tracker.db par dépôt (branche orphan « tracking »)
+  trackingGitEnabled,
+  syncAllTrackingStores,
+  startTrackingCommitter,
+  stopTrackingCommitter,
+  flushTrackingCommits,
+  getTrackingConfig,
+  setTrackingConfig,
   // Gestionnaire de repos (git)
   statusFor,
   logGraphFor,
@@ -361,6 +369,12 @@ async function withGitLock(repoId, res, fn) {
 function forestKey(repoId) {
   return `forest:${repoId}`;
 }
+// Clé de la room d'un nœud. NAMESPACÉE PAR REPO : avec une base SQLite par dépôt,
+// les ids de nœuds ne sont plus globalement uniques (chaque base repart à 1) → sans
+// le repoId, deux dépôts partageant un même id se mélangeraient sur la même room.
+function nodeKey(repoId, id) {
+  return `node:${repoId}:${id}`;
+}
 // Persist d'ABORD (transaction synchrone better-sqlite3), broadcast ENSUITE l'état
 // committé (re-SELECT), jamais d'optimistic serveur ni la sortie IA brute.
 const channels = new Map();
@@ -426,35 +440,35 @@ function broadcast(key, type, data) {
 }
 
 // Diffuse un nœud complet committé (room du nœud + forêt). Réconcilié par `version`.
-function broadcastNode(id) {
-  const n = getNode(id);
+function broadcastNode(repoId, id) {
+  const n = getNode(id, { repoId });
   if (!n) return;
-  broadcast(`node:${id}`, "node:updated", n);
+  broadcast(nodeKey(repoId, id), "node:updated", n);
   broadcast(forestKey(n.repoId), "node:updated", n);
 }
 // Diffuse les nœuds affectés par une mutation (ids = nœud muté + sa chaîne
 // d'ancêtres, dont la progression a bougé). Pour chacun : `node:updated` (room +
 // forêt) ET une sonnette `subtree:dirty` à sa room → toute vue détail rootée sur
 // un ancêtre re-fetch son sous-arbre (auto-correcteur, robuste).
-function broadcastAffected(ids) {
+function broadcastAffected(repoId, ids) {
   for (const id of ids || []) {
-    broadcastNode(id);
-    broadcast(`node:${id}`, "subtree:dirty", { changedId: id, rootId: id });
+    broadcastNode(repoId, id);
+    broadcast(nodeKey(repoId, id), "subtree:dirty", { changedId: id, rootId: id });
   }
 }
 // Rafraîchit la chaîne racine→anchor : progression (node:updated) + sonnette
 // subtree:dirty à chaque ancêtre. Utilisé par create/delete/move/reorder (où la
 // db ne renvoie pas la liste affectée).
-function refreshAncestors(anchorId, changedId) {
-  const path = nodePathIds(anchorId); // [root, …, anchor]
+function refreshAncestors(repoId, anchorId, changedId) {
+  const path = nodePathIds(anchorId, repoId); // [root, …, anchor]
   for (const id of path) {
-    broadcastNode(id);
-    broadcast(`node:${id}`, "subtree:dirty", { changedId: changedId ?? anchorId, rootId: id });
+    broadcastNode(repoId, id);
+    broadcast(nodeKey(repoId, id), "subtree:dirty", { changedId: changedId ?? anchorId, rootId: id });
   }
 }
-function broadcastMessage(nodeId, msg) {
+function broadcastMessage(repoId, nodeId, msg) {
   if (!msg) return; // nœud supprimé pendant le tour IA → message introuvable
-  broadcast(`node:${nodeId}`, "message", msg);
+  broadcast(nodeKey(repoId, nodeId), "message", msg);
 }
 // Diffuse un message du chat « top level » sur la room forêt du repo (réutilise le
 // canal `forest:<repoId>` auquel le front est déjà abonné via /api/nodes/stream).
@@ -1014,8 +1028,8 @@ function describeDestructive(actions, scopeNode, subtreeById) {
 }
 
 // ── Tour de chat IA STREAMING (async, détaché ; le HTTP a déjà répondu 202) ──
-async function runNodeTurn(nodeId, scopeSnapshot, descendants, history, userText, author, model, pendingId, root, repo) {
-  const batcher = makeStreamBatcher(`node:${nodeId}`, pendingId);
+async function runNodeTurn(repoId, nodeId, scopeSnapshot, descendants, history, userText, author, model, pendingId, root, repo) {
+  const batcher = makeStreamBatcher(nodeKey(repoId, nodeId), pendingId);
   let reasoning = "";
   let answer = "";
   let shownLen = 0; // longueur de `answer` déjà diffusée comme texte conversationnel
@@ -1061,7 +1075,7 @@ async function runNodeTurn(nodeId, scopeSnapshot, descendants, history, userText
     const objs = parseActionObjects(answer.slice(i)); // objets complets seulement
     for (let k = ghostCount; k < objs.length; k++) {
       const gh = ghostPayloadFromAction(objs[k], "g:" + pendingId + ":" + k);
-      if (gh) broadcast(`node:${nodeId}`, "node:ghost", gh);
+      if (gh) broadcast(nodeKey(repoId, nodeId), "node:ghost", gh);
     }
     ghostCount = objs.length;
   };
@@ -1069,8 +1083,8 @@ async function runNodeTurn(nodeId, scopeSnapshot, descendants, history, userText
   const ensureStreaming = () => {
     if (switchedToStreaming) return;
     switchedToStreaming = true;
-    const m = updateNodeMessage(pendingId, { state: "streaming" });
-    broadcastMessage(nodeId, m);
+    const m = updateNodeMessage(pendingId, { state: "streaming" }, repoId);
+    broadcastMessage(repoId, nodeId, m);
   };
   try {
     const prompt = buildNodePrompt(scopeSnapshot, descendants, history, userText, author, repo);
@@ -1109,17 +1123,17 @@ async function runNodeTurn(nodeId, scopeSnapshot, descendants, history, userText
         reasoning,
         state: "complete",
         actions: [{ proposed: true, ops: actions.slice(0, MAX_ACTIONS_CAP), note }],
-      });
-      broadcastMessage(nodeId, msg);
+      }, repoId);
+      broadcastMessage(repoId, nodeId, msg);
       return;
     }
 
-    const applied = applyNodeActions(nodeId, actions);
+    const applied = applyNodeActions(nodeId, actions, repoId);
     const summary = applied.applied.length ? [{ applied: true, ops: applied.applied, note }] : [];
     const body = baseText || (applied.applied.length ? note || "Modifications appliquées." : "");
-    const msg = updateNodeMessage(pendingId, { body, reasoning, state: "complete", actions: summary });
-    broadcastMessage(nodeId, msg);
-    broadcastAffected(applied.affectedNodeIds);
+    const msg = updateNodeMessage(pendingId, { body, reasoning, state: "complete", actions: summary }, repoId);
+    broadcastMessage(repoId, nodeId, msg);
+    broadcastAffected(repoId, applied.affectedNodeIds);
   } catch (e) {
     batcher.end();
     const emsg =
@@ -1135,15 +1149,15 @@ async function runNodeTurn(nodeId, scopeSnapshot, descendants, history, userText
         ? "L'IA s'est interrompue (sortie anormale)."
         : (e && e.message) || "Erreur lors de l'appel à l'IA.";
     try {
-      const msg = updateNodeMessage(pendingId, { body: emsg, reasoning, state: "error" });
-      broadcastMessage(nodeId, msg);
+      const msg = updateNodeMessage(pendingId, { body: emsg, reasoning, state: "error" }, repoId);
+      broadcastMessage(repoId, nodeId, msg);
     } catch {
       /* ignore */
     }
   } finally {
     aiLocks.delete(nodeId);
     aiInFlight = Math.max(0, aiInFlight - 1);
-    broadcast(`node:${nodeId}`, "ai:turn", { nodeId, state: "end", turnId: pendingId });
+    broadcast(nodeKey(repoId, nodeId), "ai:turn", { nodeId, state: "end", turnId: pendingId });
   }
 }
 
@@ -1160,21 +1174,22 @@ async function handleNodeChat(req, res, node) {
   if (aiLocks.has(node.id)) return send(res, 409, { error: "ai_busy" });
   if (aiInFlight >= MAX_CONCURRENT_AI) return send(res, 429, { error: "ai_overloaded" });
 
-  const userMessage = addNodeMessage(node.id, { role: "user", author, body: text, state: "complete", clientNonce });
-  broadcastMessage(node.id, userMessage);
+  const repoId = node.repoId;
+  const userMessage = addNodeMessage(node.id, { role: "user", author, body: text, state: "complete", clientNonce }, repoId);
+  broadcastMessage(repoId, node.id, userMessage);
 
-  const pendingMessage = addNodeMessage(node.id, { role: "assistant", author: "claude", model, body: "", state: "pending" });
-  broadcastMessage(node.id, pendingMessage);
+  const pendingMessage = addNodeMessage(node.id, { role: "assistant", author: "claude", model, body: "", state: "pending" }, repoId);
+  broadcastMessage(repoId, node.id, pendingMessage);
 
   // Snapshot (nœud + sous-arbre) + historique FIGÉS avant lock/202.
-  const sub = getSubtree(node.id);
-  const snapshot = sub ? sub.node : getNode(node.id);
+  const sub = getSubtree(node.id, { repoId });
+  const snapshot = sub ? sub.node : getNode(node.id, { repoId });
   const descendants = sub ? sub.descendants : [];
-  const history = listNodeMessages(node.id, { limit: 1000 }).filter((m) => m.state === "complete" && m.id !== userMessage.id);
+  const history = listNodeMessages(node.id, { limit: 1000, repoId }).filter((m) => m.state === "complete" && m.id !== userMessage.id);
 
   aiLocks.set(node.id, { child: null }); // atomique (pas d'await entre check et set)
   aiInFlight++;
-  broadcast(`node:${node.id}`, "ai:turn", { nodeId: node.id, actor: author, model, state: "start", turnId: pendingMessage.id });
+  broadcast(nodeKey(repoId, node.id), "ai:turn", { nodeId: node.id, actor: author, model, state: "start", turnId: pendingMessage.id });
 
   // Clone du repo du nœud → cwd de l'IA (lecture du code réel, multi-repos).
   let root = null;
@@ -1191,25 +1206,26 @@ async function handleNodeChat(req, res, node) {
     /* repo introuvable → libellé générique dans le prompt */
   }
   send(res, 202, { userMessage, pendingMessage });
-  runNodeTurn(node.id, snapshot, descendants, history, text, author, model, pendingMessage.id, root, repo).catch(() => {});
+  runNodeTurn(repoId, node.id, snapshot, descendants, history, text, author, model, pendingMessage.id, root, repo).catch(() => {});
 }
 
 // POST /api/nodes/:ref/chat/confirm { messageId } — applique une proposition
 // destructive (mode confirmation). Premier clic de n'importe quel participant.
 function handleNodeChatConfirm(req, res, node, body) {
+  const repoId = node.repoId;
   const messageId = Number(body.messageId);
-  const msg = getNodeMessage(messageId);
+  const msg = getNodeMessage(messageId, repoId);
   if (!msg || msg.nodeId !== node.id) return send(res, 404, { error: "not_found" });
   const proposal = Array.isArray(msg.actions) ? msg.actions.find((a) => a && a.proposed) : null;
   if (!proposal) return send(res, 400, { error: "Aucune proposition à confirmer" });
-  const result = applyNodeActions(node.id, proposal.ops || []);
+  const result = applyNodeActions(node.id, proposal.ops || [], repoId);
   const cleaned = String(msg.body || "").replace(/⚠️[\s\S]*$/u, "").trim();
   const updated = updateNodeMessage(messageId, {
     body: `${cleaned}\n\n✅ ${result.applied.length} action(s) confirmée(s).`,
     actions: [{ applied: true, ops: result.applied, note: proposal.note || "" }],
-  });
-  broadcastMessage(node.id, updated);
-  broadcastAffected(result.affectedNodeIds);
+  }, repoId);
+  broadcastMessage(repoId, node.id, updated);
+  broadcastAffected(repoId, result.affectedNodeIds);
   return send(res, 200, { ok: true, applied: result.applied });
 }
 
@@ -1321,7 +1337,7 @@ async function runForestTurn(repoId, forestSnapshot, history, userText, author, 
         reasoning,
         state: "complete",
         actions: [{ proposed: true, ops: actions.slice(0, MAX_ACTIONS_CAP), note }],
-      });
+      }, repoId);
       broadcastForestMessage(repoId, msg);
       return;
     }
@@ -1329,9 +1345,9 @@ async function runForestTurn(repoId, forestSnapshot, history, userText, author, 
     const applied = applyForestActions(repoId, actions);
     const summary = applied.applied.length ? [{ applied: true, ops: applied.applied, note }] : [];
     const body = baseText || (applied.applied.length ? note || "Modifications appliquées." : "");
-    const msg = updateForestMessage(pendingId, { body, reasoning, state: "complete", actions: summary });
+    const msg = updateForestMessage(pendingId, { body, reasoning, state: "complete", actions: summary }, repoId);
     broadcastForestMessage(repoId, msg);
-    broadcastAffected(applied.affectedNodeIds);
+    broadcastAffected(repoId, applied.affectedNodeIds);
     if (forestStructuralChange(applied.applied)) broadcast(room, "nodes:reordered", { forest: true });
   } catch (e) {
     batcher.end();
@@ -1348,7 +1364,7 @@ async function runForestTurn(repoId, forestSnapshot, history, userText, author, 
         ? "L'IA s'est interrompue (sortie anormale)."
         : (e && e.message) || "Erreur lors de l'appel à l'IA.";
     try {
-      const msg = updateForestMessage(pendingId, { body: emsg, reasoning, state: "error" });
+      const msg = updateForestMessage(pendingId, { body: emsg, reasoning, state: "error" }, repoId);
       broadcastForestMessage(repoId, msg);
     } catch {
       /* ignore */
@@ -1402,7 +1418,7 @@ function handleForestChat(res, repoId, body) {
 // du chat « top level ».
 function handleForestChatConfirm(req, res, repoId, body) {
   const messageId = Number(body.messageId);
-  const msg = getForestMessage(messageId);
+  const msg = getForestMessage(messageId, repoId);
   if (!msg || msg.repoId !== repoId) return send(res, 404, { error: "not_found" });
   const proposal = Array.isArray(msg.actions) ? msg.actions.find((a) => a && a.proposed) : null;
   if (!proposal) return send(res, 400, { error: "Aucune proposition à confirmer" });
@@ -1411,9 +1427,9 @@ function handleForestChatConfirm(req, res, repoId, body) {
   const updated = updateForestMessage(messageId, {
     body: `${cleaned}\n\n✅ ${result.applied.length} action(s) confirmée(s).`,
     actions: [{ applied: true, ops: result.applied, note: proposal.note || "" }],
-  });
+  }, repoId);
   broadcastForestMessage(repoId, updated);
-  broadcastAffected(result.affectedNodeIds);
+  broadcastAffected(repoId, result.affectedNodeIds);
   if (forestStructuralChange(result.applied)) broadcast(forestKey(repoId), "nodes:reordered", { forest: true });
   return send(res, 200, { ok: true, applied: result.applied });
 }
@@ -1684,6 +1700,18 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === "GET" && path === "/api/git/config") {
       return send(res, 200, getGitConfigFor(repoOf()));
+    }
+    // ── Versionnement du tracking (global, instance) : config + commit manuel ──
+    if (req.method === "GET" && path === "/api/tracking/config") {
+      return send(res, 200, getTrackingConfig());
+    }
+    if (req.method === "POST" && path === "/api/tracking/config") {
+      const body = await readBody(req);
+      return send(res, 200, setTrackingConfig(body));
+    }
+    if (req.method === "POST" && path === "/api/tracking/commit") {
+      flushTrackingCommits(); // commit (+ push opt-in) immédiat de tous les trackers
+      return send(res, 200, getTrackingConfig());
     }
     // ── Auth GitHub (device flow) ──
     // État : OAuth App configurée ? credential github.com présent ? (jamais le token)
@@ -2000,7 +2028,7 @@ const server = createServer(async (req, res) => {
         const issue = getIssue(id, ref);
         if (!issue) return send(res, 404, { error: "not_found", ref });
         const { path: p } = await readBody(req);
-        addReference(issue.id, p);
+        addReference(issue.id, p, id);
         return send(res, 201, getIssue(id, issue.id));
       }
     }
@@ -2008,7 +2036,7 @@ const server = createServer(async (req, res) => {
     // DELETE /api/references/:id
     const refMatch = path.match(/^\/api\/references\/(\d+)$/);
     if (refMatch && req.method === "DELETE") {
-      return send(res, 200, { removed: removeReference(Number(refMatch[1])) });
+      return send(res, 200, { removed: removeReference(Number(refMatch[1]), repoOf()) });
     }
 
     // ───────────────────── Good Vibes v2 : arbre de nœuds / chat ─────────────
@@ -2057,8 +2085,8 @@ const server = createServer(async (req, res) => {
       const n = createNode(id, body.parentId != null ? body.parentId : null, body);
       broadcast(forestKey(n.repoId), "node:created", n);
       if (n.parentId != null) {
-        broadcast(`node:${n.parentId}`, "node:created", n);
-        refreshAncestors(n.parentId, n.id); // progression + dirty des ancêtres
+        broadcast(nodeKey(n.repoId, n.parentId), "node:created", n);
+        refreshAncestors(n.repoId, n.parentId, n.id); // progression + dirty des ancêtres
       }
       return send(res, 201, n);
     }
@@ -2069,7 +2097,7 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req);
       const id = repoOf(body);
       const list = Array.isArray(body.positions) ? body.positions : [];
-      setNodePositions(list);
+      setNodePositions(list, id);
       // Notifie la forêt du repo (les autres clients re-positionnent en douceur).
       broadcast(forestKey(id), "nodes:moved", { positions: list });
       return send(res, 200, { ok: true, count: list.length });
@@ -2085,23 +2113,23 @@ const server = createServer(async (req, res) => {
 
       if (sub === "/stream") {
         if (!node) return send(res, 404, { error: "not_found", ref });
-        return openStream(req, res, `node:${node.id}`);
+        return openStream(req, res, nodeKey(id, node.id));
       }
       if (sub === "" && req.method === "GET") {
         return node
-          ? send(res, 200, getNode(node.id, { withTree: q.get("tree") !== "false", withMessages: q.get("messages") === "true" }))
+          ? send(res, 200, getNode(node.id, { repoId: id, withTree: q.get("tree") !== "false", withMessages: q.get("messages") === "true" }))
           : send(res, 404, { error: "not_found", ref });
       }
       if (!node) return send(res, 404, { error: "not_found", ref });
 
       if (sub === "/subtree" && req.method === "GET") {
-        return send(res, 200, getNode(node.id, { withTree: true }));
+        return send(res, 200, getNode(node.id, { repoId: id, withTree: true }));
       }
       if (sub === "" && req.method === "PATCH") {
         const body = await readBody(req);
         try {
-          const n = updateNode(node.id, body, body.expectedVersion);
-          refreshAncestors(n.id, n.id); // n + ancêtres (progression) + dirty
+          const n = updateNode(node.id, body, body.expectedVersion, id);
+          refreshAncestors(id, n.id, n.id); // n + ancêtres (progression) + dirty
           return send(res, 200, n);
         } catch (e) {
           if (e.code === "version_conflict") return send(res, 409, { error: "version_conflict", node: e.node });
@@ -2110,39 +2138,39 @@ const server = createServer(async (req, res) => {
       }
       if (sub === "" && req.method === "DELETE") {
         const repoId = node.repoId;
-        const r = deleteNode(node.id);
+        const r = deleteNode(node.id, repoId);
         const payload = { id: node.id, parentId: r.parentId, rootId: r.rootId };
-        broadcast(`node:${node.id}`, "node:deleted", payload);
+        broadcast(nodeKey(repoId, node.id), "node:deleted", payload);
         broadcast(forestKey(repoId), "node:deleted", payload);
         if (r.parentId != null) {
-          broadcast(`node:${r.parentId}`, "node:deleted", payload);
-          refreshAncestors(r.parentId, node.id); // progression des ancêtres + dirty
+          broadcast(nodeKey(repoId, r.parentId), "node:deleted", payload);
+          refreshAncestors(repoId, r.parentId, node.id); // progression des ancêtres + dirty
         }
         return send(res, 200, r);
       }
       if (sub === "/move" && req.method === "POST") {
         const { newParentId, position } = await readBody(req);
         const oldParentId = node.parentId;
-        const n = moveNode(node.id, newParentId != null ? newParentId : null, position);
+        const n = moveNode(node.id, newParentId != null ? newParentId : null, position, id);
         broadcast(forestKey(n.repoId), "node:reparented", { id: n.id, parentId: n.parentId, rootId: n.rootId });
-        refreshAncestors(n.id, n.id);
-        if (oldParentId != null && oldParentId !== n.parentId) refreshAncestors(oldParentId, n.id);
+        refreshAncestors(n.repoId, n.id, n.id);
+        if (oldParentId != null && oldParentId !== n.parentId) refreshAncestors(n.repoId, oldParentId, n.id);
         return send(res, 200, n);
       }
       if (sub === "/reorder" && req.method === "POST") {
         const { order } = await readBody(req);
-        reorderChildren(node.id, order || []);
-        refreshAncestors(node.id, node.id);
+        reorderChildren(node.id, order || [], id);
+        refreshAncestors(id, node.id, node.id);
         broadcast(forestKey(node.repoId), "nodes:reordered", { parentId: node.id });
-        return send(res, 200, getNode(node.id, { withTree: true }));
+        return send(res, 200, getNode(node.id, { repoId: id, withTree: true }));
       }
       if (sub === "/messages" && req.method === "GET") {
-        return send(res, 200, listNodeMessages(node.id, { afterId: Number(q.get("afterId")) || 0, limit: Number(q.get("limit")) || 500 }));
+        return send(res, 200, listNodeMessages(node.id, { afterId: Number(q.get("afterId")) || 0, limit: Number(q.get("limit")) || 500, repoId: id }));
       }
       if (sub === "/messages" && req.method === "DELETE") {
         if (aiLocks.has(node.id)) return send(res, 409, { error: "ai_busy" }); // pas pendant un tour IA
-        const removed = clearNodeMessages(node.id);
-        broadcast(`node:${node.id}`, "chat:cleared", { nodeId: node.id });
+        const removed = clearNodeMessages(node.id, id);
+        broadcast(nodeKey(id, node.id), "chat:cleared", { nodeId: node.id });
         return send(res, 200, { ok: true, removed });
       }
       if (sub === "/chat" && req.method === "POST") {
@@ -2170,6 +2198,29 @@ if (process.env.MEOWTRACK_NO_LISTEN !== "1") {
     else if (r.ok) console.error(`[meowtrack]   ${r.slug} : ${r.cloned ? "cloné" : "à jour"} (${r.branch || "?"} @ ${r.commit || "?"}).`);
     else console.error(`[meowtrack]   ⚠️  ${r.slug} : sync échouée — ${r.output || "erreur inconnue"}`);
   }
+
+  // Versionnement git des tracker.db (opt-in MEOWTRACK_TRACKING_GIT=1) : prépare les
+  // worktrees de la branche orphan « tracking » (restore inter-machines), démarre le
+  // committer périodique, et fait un flush+commit final à l'arrêt.
+  if (trackingGitEnabled()) {
+    console.error("[meowtrack] Versionnement tracking (branche orphan) : préparation des worktrees…");
+    for (const s of syncAllTrackingStores()) {
+      if (s.error) console.error(`[meowtrack]   ⚠️  ${s.slug} : ${s.error}`);
+      else console.error(`[meowtrack]   ${s.slug} : ${s.mode}.`);
+    }
+    startTrackingCommitter();
+  }
+  // Commit final à l'arrêt — enregistré INCONDITIONNELLEMENT (no-op si désactivé) pour
+  // couvrir une activation faite à chaud via l'UI après le démarrage.
+  let _flushed = false;
+  const flush = () => {
+    if (_flushed) return;
+    _flushed = true;
+    try { stopTrackingCommitter(); } catch { /* ignore */ }
+  };
+  process.on("SIGINT", () => { flush(); process.exit(0); });
+  process.on("SIGTERM", () => { flush(); process.exit(0); });
+  process.on("exit", flush);
 
   server.listen(PORT, HOST, () => {
     console.error(`[meowtrack] Dashboard prêt → http://${HOST}:${PORT}`);

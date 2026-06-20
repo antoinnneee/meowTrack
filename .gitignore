@@ -1,7 +1,12 @@
-# Base locale (par machine) + artefacts WAL SQLite.
+# Base de REGISTRE locale (par machine) + artefacts WAL SQLite.
 meowtrack.db
 meowtrack.db-wal
 meowtrack.db-shm
+
+# Bases « tracker.db » PAR dépôt (données de tracking, cloisonnées par dépôt).
+# Phase 1 : simple dossier local. Phase 2 : worktrees de la branche orphan « tracking »
+# (versionnés DANS chaque dépôt, donc hors du dépôt de CODE meowtrack).
+.trackers/
 
 # Dépendances Node.
 node_modules/

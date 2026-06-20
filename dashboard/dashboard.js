@@ -2941,6 +2941,7 @@ async function openConfigModal() {
     $("#cfgBackdrop").hidden = false;
     loadGithubStatus();
     loadCredentials();
+    loadTrackingConfig();
   } catch (e) {
     alert("Erreur config : " + e.message);
   }
@@ -2977,6 +2978,65 @@ async function saveConfig() {
     closeConfigModal();
   } catch (e) {
     alert("Échec : " + e.message);
+  }
+}
+
+// ── Versionnement du suivi (tracking) : config globale (branche orphan + worktree) ─
+function renderTrackingConfig(c) {
+  $("#trkGit").checked = !!c.git;
+  $("#trkPush").checked = !!c.push;
+  $("#trkBranch").value = c.branch || "";
+  $("#trkRemote").value = c.remote || "";
+  const env = $("#trkEnvHint");
+  if (c.env && (c.env.git || c.env.push)) {
+    env.hidden = false;
+    env.textContent =
+      "Variables d'environnement actives" +
+      (c.env.git ? " · MEOWTRACK_TRACKING_GIT" : "") +
+      (c.env.push ? " · MEOWTRACK_TRACKING_PUSH" : "") +
+      " (un réglage ci-dessus les surcharge).";
+  } else {
+    env.hidden = true;
+  }
+  const stores = (c.stores || []).map((s) => `${esc(s.slug)} : ${esc(s.mode)}`).join(" · ");
+  $("#trkStatus").textContent = c.git ? `Activé — ${stores || "aucun dépôt"}` : "Désactivé.";
+}
+async function loadTrackingConfig() {
+  try {
+    renderTrackingConfig(await api.get("/api/tracking/config"));
+  } catch (e) {
+    $("#trkStatus").textContent = "Erreur : " + e.message;
+  }
+}
+async function applyTrackingConfig() {
+  const btn = $("#trkApply");
+  btn.disabled = true;
+  $("#trkStatus").textContent = "Application…";
+  try {
+    const c = await api.send("POST", "/api/tracking/config", {
+      git: $("#trkGit").checked,
+      push: $("#trkPush").checked,
+      branch: $("#trkBranch").value.trim(),
+      remote: $("#trkRemote").value.trim(),
+    });
+    renderTrackingConfig(c);
+  } catch (e) {
+    $("#trkStatus").textContent = "Échec : " + e.message;
+  } finally {
+    btn.disabled = false;
+  }
+}
+async function commitTrackingNow() {
+  const btn = $("#trkCommitNow");
+  btn.disabled = true;
+  $("#trkStatus").textContent = "Sauvegarde…";
+  try {
+    renderTrackingConfig(await api.send("POST", "/api/tracking/commit", {}));
+    $("#trkStatus").textContent = "Sauvegardé. " + $("#trkStatus").textContent;
+  } catch (e) {
+    $("#trkStatus").textContent = "Échec : " + e.message;
+  } finally {
+    btn.disabled = false;
   }
 }
 
@@ -3244,6 +3304,8 @@ function initRepo() {
   // Modale config
   $("#cfgCancel").addEventListener("click", closeConfigModal);
   $("#cfgSave").addEventListener("click", saveConfig);
+  $("#trkApply").addEventListener("click", applyTrackingConfig);
+  $("#trkCommitNow").addEventListener("click", commitTrackingNow);
   $("#cfgBackdrop").addEventListener("mousedown", (e) => {
     if (e.target === $("#cfgBackdrop")) closeConfigModal();
   });
