@@ -7,7 +7,7 @@
 // Sentinelle marquant le début du bloc d'actions dans la sortie IA. Émise par les
 // prompts (ai/prompts.js), détectée ici et pendant le streaming (ai/turns.js).
 export const ACTIONS_SENTINEL = "<<<MEOWTRACK_ACTIONS>>>";
-export const MAX_ACTIONS_CAP = 20;
+export const MAX_ACTIONS_CAP = 200;
 
 // Construit le payload `node:ghost` d'une action `add_node` (ou null sinon). Partagé
 // par le chat par nœud ET le chat « top level ». `fallbackKey` sert quand l'action
