@@ -1,0 +1,758 @@
+// db/nodes.js — Good Vibes v2 : arbre de NŒUDS récursif + application des actions
+// IA (catalogue fermé scopé sous-arbre / repo).
+//
+// Un seul type de nœud (objectif = jalon = sous-jalon), `parent_id` self-réf.
+// `path` ('/1/4/9/' ids ancêtres + self) rend subtree/ancestors/scope O(1) en SQL
+// pur (LIKE). `progress` (0..100) est STOCKÉ et recalculé en remontant la chaîne
+// d'ancêtres à chaque mutation (recomputeAncestorProgress). `version` par nœud =
+// pivot de concurrence (bumpé sur le nœud + ses ancêtres).
+//
+// MULTI-REPOS : chaque nœud porte `repo_id` (un arbre ne traverse jamais 2 repos —
+// move inter-repo refusé). Les ids étant globaux (PK), les lectures par id n'exigent
+// pas de repo ; seules les résolutions par CODE (NODE-1) exigent un repoId.
+//
+// Cycle ESM SÛR avec ./messages.js (getNode → listNodeMessages ; messages →
+// findNodeRow) : usages en corps de fonction uniquement.
+
+import { db, withRepo, nowIso, nextRef } from "./connection.js";
+import { resolveRepoId } from "./registry.js";
+import {
+  NODE_STATUS_SET,
+  NODE_COLOR_SET,
+  MAX_DEPTH,
+  MAX_NODES_PER_SUBTREE,
+  MAX_NODES_PER_REPO,
+  MAX_ACTIONS,
+} from "./constants.js";
+import { clampStr, clampEmoji, parseNotes, normalizeNotesInput, validDateOrNull } from "./helpers.js";
+import { listNodeMessages } from "./messages.js";
+
+// ── Sérialisation ────────────────────────────────────────────────────────────
+function childCountOf(id) {
+  return db.prepare("SELECT COUNT(*) c FROM nodes WHERE parent_id = ?").get(id).c;
+}
+
+function rowToNode(r, { childCount } = {}) {
+  if (!r) return null;
+  const pct = Math.max(0, Math.min(100, r.progress | 0));
+  return {
+    id: r.id,
+    repoId: r.repo_id,
+    ref: r.ref,
+    parentId: r.parent_id,
+    rootId: r.root_id,
+    depth: r.depth,
+    title: r.title,
+    description: r.description,
+    notes: parseNotes(r.notes),
+    status: r.status,
+    color: r.color,
+    emoji: r.emoji,
+    targetDate: r.target_date,
+    progress: pct,
+    position: r.position,
+    posX: r.pos_x != null ? r.pos_x : null,
+    posY: r.pos_y != null ? r.pos_y : null,
+    version: r.version,
+    childCount: childCount != null ? childCount : childCountOf(r.id),
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    doneAt: r.done_at,
+  };
+}
+
+// ── Primitives subtree / ancestors (via `path`, zéro CTE) ────────────────────
+// Résout par id numérique (repo ignoré) ou par code (exige repoId).
+export function findNodeRow(refOrId, repoId = null) {
+  if (refOrId == null) return null;
+  if (typeof refOrId === "number" || /^\d+$/.test(String(refOrId)))
+    return db.prepare("SELECT * FROM nodes WHERE id = ?").get(Number(refOrId));
+  if (repoId == null) throw new Error("repo requis pour résoudre un code de nœud");
+  return db.prepare("SELECT * FROM nodes WHERE repo_id = ? AND ref = ? COLLATE NOCASE").get(repoId, String(refOrId));
+}
+
+function ancestorIds(row) {
+  const ids = String(row.path || "").split("/").filter(Boolean).map(Number);
+  return ids.slice(0, -1);
+}
+
+function loadSubtreeRows(rootRow) {
+  return db.prepare("SELECT * FROM nodes WHERE path LIKE ? ORDER BY depth, position, id").all(rootRow.path + "%");
+}
+
+function descendantCount(row) {
+  return db.prepare("SELECT COUNT(*) c FROM nodes WHERE path LIKE ?").get(row.path + "%").c - 1;
+}
+
+function isInSubtree(rootId, targetId) {
+  const root = findNodeRow(rootId);
+  const target = findNodeRow(targetId);
+  if (!root || !target) return false;
+  return target.path.startsWith(root.path);
+}
+
+function buildTree(rows, rootId) {
+  const byId = new Map();
+  for (const r of rows) byId.set(r.id, { ...rowToNode(r, { childCount: 0 }), children: [] });
+  let root = null;
+  for (const r of rows) {
+    const n = byId.get(r.id);
+    if (r.id === rootId) {
+      root = n;
+      continue;
+    }
+    const parent = byId.get(r.parent_id);
+    if (parent) parent.children.push(n);
+  }
+  for (const n of byId.values()) n.childCount = n.children.length;
+  return root || { children: [] };
+}
+
+// ── Lecture ──────────────────────────────────────────────────────────────────
+export function getNode(refOrId, { withMessages = false, withTree = false, repoId = null } = {}) {
+  return withRepo(repoId, () => {
+    const row = findNodeRow(refOrId, repoId);
+    if (!row) return null;
+    const node = rowToNode(row);
+    if (withTree) node.children = buildTree(loadSubtreeRows(row), row.id).children;
+    if (withMessages) node.messages = listNodeMessages(row.id);
+    return node;
+  });
+}
+
+export function getSubtree(refOrId, { maxNodes = MAX_NODES_PER_SUBTREE, repoId = null } = {}) {
+  return withRepo(repoId, () => {
+    const row = findNodeRow(refOrId, repoId);
+    if (!row) return null;
+    const rows = loadSubtreeRows(row).slice(0, maxNodes);
+    const counts = new Map();
+    for (const r of rows) if (r.parent_id != null) counts.set(r.parent_id, (counts.get(r.parent_id) || 0) + 1);
+    const toN = (r) => rowToNode(r, { childCount: counts.get(r.id) || 0 });
+    return { node: toN(row), descendants: rows.filter((r) => r.id !== row.id).map(toN) };
+  });
+}
+
+export function listRootNodes(repoId, filter = {}) {
+  if (repoId == null) throw new Error("repoId requis");
+  return withRepo(repoId, () => {
+  const where = ["parent_id IS NULL", "repo_id = ?"];
+  const vals = [repoId];
+  if (filter.status) {
+    where.push("status = ?");
+    vals.push(filter.status);
+  }
+  if (filter.text) {
+    where.push("(title LIKE ? OR description LIKE ? OR ref LIKE ?)");
+    const l = `%${filter.text}%`;
+    vals.push(l, l, l);
+  }
+  const rows = db.prepare("SELECT * FROM nodes WHERE " + where.join(" AND ") + " ORDER BY position, id").all(...vals);
+  const limit = filter.limit ? Math.max(1, Math.min(500, filter.limit)) : 200;
+  return rows.slice(0, limit).map((r) => rowToNode(r));
+  });
+}
+
+// Forêt entière d'un repo à plat (graphe). childCount dérivé en un passage.
+export function listForest(repoId) {
+  if (repoId == null) throw new Error("repoId requis");
+  return withRepo(repoId, () => {
+  const rows = db.prepare("SELECT * FROM nodes WHERE repo_id = ? ORDER BY depth, position, id").all(repoId);
+  const counts = new Map();
+  for (const r of rows) if (r.parent_id != null) counts.set(r.parent_id, (counts.get(r.parent_id) || 0) + 1);
+  return rows.map((r) => rowToNode(r, { childCount: counts.get(r.id) || 0 }));
+  });
+}
+
+export function listChildren(parentRefOrId, repoId = null) {
+  return withRepo(repoId, () => {
+    const p = findNodeRow(parentRefOrId, repoId);
+    if (!p) return [];
+    return db.prepare("SELECT * FROM nodes WHERE parent_id = ? ORDER BY position, id").all(p.id).map((r) => rowToNode(r));
+  });
+}
+
+export function nodePathIds(refOrId, repoId = null) {
+  return withRepo(repoId, () => {
+    const row = findNodeRow(refOrId, repoId);
+    if (!row) return [];
+    return String(row.path || "").split("/").filter(Boolean).map(Number);
+  });
+}
+
+// ── Rollup de progression + concurrence ──────────────────────────────────────
+function recomputeAncestorProgress(nodeId, { bumpSelf = true } = {}) {
+  const start = findNodeRow(nodeId);
+  if (!start) return [];
+  const chain = [start.id, ...ancestorIds(start).reverse()];
+  const out = [];
+  const ts = nowIso();
+  const selKids = db.prepare("SELECT status, progress FROM nodes WHERE parent_id = ?");
+  const upd = db.prepare("UPDATE nodes SET progress = ?, version = version + 1, updated_at = ? WHERE id = ?");
+  const sel = db.prepare("SELECT * FROM nodes WHERE id = ?");
+  for (let i = 0; i < chain.length; i++) {
+    const row = sel.get(chain[i]);
+    if (!row) continue;
+    const kids = selKids.all(row.id);
+    let prog;
+    if (kids.length) prog = Math.round(kids.reduce((a, k) => a + (k.status === "done" ? 100 : k.progress), 0) / kids.length);
+    else prog = row.status === "done" ? 100 : 0;
+    const isSelf = i === 0;
+    if ((isSelf && bumpSelf) || prog !== row.progress) {
+      upd.run(prog, ts, row.id);
+      out.push(sel.get(row.id));
+    } else if (isSelf) {
+      out.push(row);
+    }
+  }
+  return out;
+}
+
+// ── Helpers de mutation internes (SANS bump : l'appelant rollup ensuite) ─────
+function _setNodeFields(id, fields = {}) {
+  const row = db.prepare("SELECT status FROM nodes WHERE id = ?").get(id);
+  if (!row) throw new Error(`Nœud introuvable : ${id}`);
+  const sets = [];
+  const vals = [];
+  if (fields.title != null) {
+    const t = String(fields.title).trim().slice(0, 200);
+    if (t) {
+      sets.push("title = ?");
+      vals.push(t);
+    }
+  }
+  if (fields.description != null) {
+    sets.push("description = ?");
+    vals.push(clampStr(fields.description, 4000));
+  }
+  if (fields.notes != null) {
+    sets.push("notes = ?");
+    vals.push(normalizeNotesInput(fields.notes));
+  }
+  if ("posX" in fields) {
+    sets.push("pos_x = ?");
+    vals.push(fields.posX == null ? null : Number(fields.posX));
+  }
+  if ("posY" in fields) {
+    sets.push("pos_y = ?");
+    vals.push(fields.posY == null ? null : Number(fields.posY));
+  }
+  if (fields.status != null) {
+    if (!NODE_STATUS_SET.has(fields.status)) throw new Error(`Statut invalide : ${fields.status}`);
+    sets.push("status = ?");
+    vals.push(fields.status);
+    if (fields.status === "done" && row.status !== "done") {
+      sets.push("done_at = ?");
+      vals.push(nowIso());
+    } else if (fields.status !== "done") {
+      sets.push("done_at = ?");
+      vals.push(null);
+    }
+  }
+  if (fields.color != null) {
+    if (!NODE_COLOR_SET.has(fields.color)) throw new Error(`Couleur invalide : ${fields.color}`);
+    sets.push("color = ?");
+    vals.push(fields.color);
+  }
+  if (fields.emoji != null) {
+    sets.push("emoji = ?");
+    vals.push(clampEmoji(fields.emoji));
+  }
+  if ("targetDate" in fields || "dueDate" in fields) {
+    sets.push("target_date = ?");
+    vals.push(validDateOrNull("targetDate" in fields ? fields.targetDate : fields.dueDate));
+  }
+  if (!sets.length) return 0;
+  db.prepare(`UPDATE nodes SET ${sets.join(", ")} WHERE id = ?`).run(...vals, id);
+  return sets.length;
+}
+
+// Insère un enfant sous parentId (depth+1, root_id, path, repo_id hérités). throw>MAX_DEPTH.
+function _insertChild(parentId, input = {}) {
+  const parent = db.prepare("SELECT * FROM nodes WHERE id = ?").get(parentId);
+  if (!parent) throw new Error("Parent introuvable");
+  if (parent.depth + 1 > MAX_DEPTH) throw new Error("Profondeur maximale atteinte");
+  const title = String(input.title || "").trim().slice(0, 200);
+  if (!title) throw new Error("Titre de nœud requis");
+  const status = NODE_STATUS_SET.has(input.status) ? input.status : "active";
+  const color = NODE_COLOR_SET.has(input.color) ? input.color : parent.color || "accent";
+  const emoji = clampEmoji(input.emoji);
+  const description = clampStr(input.description != null ? input.description : input.detail || "", 4000);
+  const notes = normalizeNotesInput(input.notes != null ? input.notes : "");
+  const targetDate = validDateOrNull(input.targetDate != null ? input.targetDate : input.dueDate);
+  const ref = nextRef(parent.repo_id, "node");
+  const nextPos = db.prepare("SELECT COALESCE(MAX(position), -1) + 1 AS p FROM nodes WHERE parent_id = ?").get(parentId).p;
+  const position = Number.isFinite(input.position) ? input.position : nextPos;
+  const res = db
+    .prepare(
+      `INSERT INTO nodes(repo_id, ref, parent_id, root_id, depth, path, title, description, notes, status, color, emoji, target_date, progress, position)
+       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    )
+    .run(parent.repo_id, ref, parentId, parent.root_id, parent.depth + 1, "", title, description, notes, status, color, emoji, targetDate, status === "done" ? 100 : 0, position);
+  const newId = Number(res.lastInsertRowid);
+  db.prepare("UPDATE nodes SET path = ?, done_at = ? WHERE id = ?").run(parent.path + newId + "/", status === "done" ? nowIso() : null, newId);
+  return newId;
+}
+
+// Insère un nœud RACINE (parent_id NULL, root_id=lui-même, path "/id/"). Non
+// transactionnel (le caller enveloppe) — pendant de _insertChild pour les racines.
+function _insertRoot(repoId, input = {}) {
+  if (repoId == null) throw new Error("repoId requis pour un nœud racine");
+  const title = String(input.title || "").trim().slice(0, 200);
+  if (!title) throw new Error("Titre requis");
+  const status = NODE_STATUS_SET.has(input.status) ? input.status : "active";
+  const color = NODE_COLOR_SET.has(input.color) ? input.color : "accent";
+  const emoji = clampEmoji(input.emoji);
+  const description = clampStr(input.description != null ? input.description : input.detail || "", 4000);
+  const notes = normalizeNotesInput(input.notes != null ? input.notes : "");
+  const targetDate = validDateOrNull(input.targetDate != null ? input.targetDate : input.dueDate);
+  const ref = nextRef(repoId, "node");
+  const nextPos = db.prepare("SELECT COALESCE(MAX(position), -1) + 1 AS p FROM nodes WHERE parent_id IS NULL AND repo_id = ?").get(repoId).p;
+  const position = Number.isFinite(input.position) ? input.position : nextPos;
+  const res = db
+    .prepare(
+      `INSERT INTO nodes(repo_id, ref, parent_id, root_id, depth, path, title, description, notes, status, color, emoji, target_date, progress, position)
+       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+    )
+    .run(repoId, ref, null, 0, 0, "", title, description, notes, status, color, emoji, targetDate, status === "done" ? 100 : 0, position);
+  const newId = Number(res.lastInsertRowid);
+  db.prepare("UPDATE nodes SET root_id = ?, path = ?, done_at = ? WHERE id = ?").run(newId, "/" + newId + "/", status === "done" ? nowIso() : null, newId);
+  return newId;
+}
+
+function _reparentSubtree(id, newParentId, position) {
+  const row = db.prepare("SELECT * FROM nodes WHERE id = ?").get(id);
+  if (!row) throw new Error("Nœud introuvable");
+  const newParent = newParentId == null ? null : db.prepare("SELECT * FROM nodes WHERE id = ?").get(newParentId);
+  if (newParentId != null && !newParent) throw new Error("Nouveau parent introuvable");
+  // Un arbre ne traverse jamais 2 repos.
+  if (newParent && newParent.repo_id !== row.repo_id) throw new Error("Reparentage inter-repos interdit");
+  const newDepth = newParent ? newParent.depth + 1 : 0;
+  const newRoot = newParent ? newParent.root_id : id;
+  const newPath = (newParent ? newParent.path : "/") + id + "/";
+  const oldPath = row.path;
+  const subMaxDepth = db.prepare("SELECT MAX(depth) m FROM nodes WHERE path LIKE ?").get(oldPath + "%").m || row.depth;
+  const depthDelta = newDepth - row.depth;
+  if (subMaxDepth + depthDelta > MAX_DEPTH) throw new Error("Profondeur maximale dépassée");
+  const pos =
+    position != null
+      ? position
+      : newParentId == null
+      ? db.prepare("SELECT COALESCE(MAX(position), -1) + 1 AS p FROM nodes WHERE parent_id IS NULL AND repo_id = ?").get(row.repo_id).p
+      : db.prepare("SELECT COALESCE(MAX(position), -1) + 1 AS p FROM nodes WHERE parent_id = ?").get(newParentId).p;
+  db.prepare("UPDATE nodes SET parent_id = ?, position = ? WHERE id = ?").run(newParentId, pos, id);
+  const rows = db.prepare("SELECT id, depth, path FROM nodes WHERE path LIKE ?").all(oldPath + "%");
+  // Reparenter = changement structurel : on PURGE les positions manuelles (pos_x/pos_y)
+  // du nœud et de tout son sous-arbre. Sinon le sous-arbre resterait figé à ses anciennes
+  // coordonnées absolues (ancien emplacement) ; remis à NULL, il reflue en auto-layout
+  // sous son nouveau parent.
+  const upd = db.prepare("UPDATE nodes SET depth = ?, root_id = ?, path = ?, pos_x = NULL, pos_y = NULL WHERE id = ?");
+  for (const r of rows) upd.run(r.depth + depthDelta, newRoot, newPath + r.path.slice(oldPath.length), r.id);
+}
+
+function _reorderChildrenRows(parentId, orderedIds, repoId = null) {
+  let where, wargs;
+  if (parentId == null) {
+    where = "parent_id IS NULL AND repo_id = ?";
+    wargs = [repoId];
+  } else {
+    where = "parent_id = ?";
+    wargs = [parentId];
+  }
+  const existing = db.prepare(`SELECT id FROM nodes WHERE ${where} ORDER BY position, id`).all(...wargs).map((r) => r.id);
+  const set = new Set(existing);
+  const seen = new Set();
+  let pos = 0;
+  const upd = db.prepare("UPDATE nodes SET position = ? WHERE id = ?");
+  for (const raw of orderedIds) {
+    const n = Number(raw);
+    if (set.has(n) && !seen.has(n)) {
+      seen.add(n);
+      upd.run(pos++, n);
+    }
+  }
+  for (const id of existing) if (!seen.has(id)) upd.run(pos++, id);
+}
+
+// ── CRUD public (chaque mutation → rollup ascendant) ─────────────────────────
+export function createNode(repoId, parentRefOrId, input = {}) {
+  return withRepo(repoId, () => {
+    // Id numérique du dépôt courant (repoId peut être null = défaut, ou un slug).
+    const rid = resolveRepoId(repoId);
+    if (parentRefOrId != null) {
+      // L'enfant hérite du repo de son parent (repoId ignoré si incohérent).
+      const parent = findNodeRow(parentRefOrId, rid);
+      if (!parent) throw new Error(`Parent introuvable : ${parentRefOrId}`);
+      let id;
+      db.transaction(() => {
+        id = _insertChild(parent.id, input);
+        recomputeAncestorProgress(id, { bumpSelf: false });
+      })();
+      return getNode(id);
+    }
+    // Racine.
+    const id = db.transaction(() => _insertRoot(rid, input))();
+    return getNode(id);
+  });
+}
+
+export function updateNode(refOrId, fields = {}, expectedVersion, repoId = null) {
+  return withRepo(repoId, () => {
+  const row = findNodeRow(refOrId, repoId);
+  if (!row) throw new Error(`Nœud introuvable : ${refOrId}`);
+  const tx = db.transaction(() => {
+    if (expectedVersion != null && expectedVersion !== "") {
+      const cur = db.prepare("SELECT version FROM nodes WHERE id = ?").get(row.id).version;
+      if (cur !== Number(expectedVersion)) {
+        const err = new Error("version_conflict");
+        err.code = "version_conflict";
+        err.node = getNode(row.id);
+        throw err;
+      }
+    }
+    const changed = _setNodeFields(row.id, fields);
+    recomputeAncestorProgress(row.id, { bumpSelf: changed > 0 });
+  });
+  tx();
+  return getNode(row.id);
+  });
+}
+
+export function deleteNode(refOrId, repoId = null) {
+  return withRepo(repoId, () => {
+  const row = findNodeRow(refOrId, repoId);
+  if (!row) return { deleted: false };
+  const parentId = row.parent_id;
+  db.transaction(() => {
+    db.prepare("DELETE FROM nodes WHERE id = ?").run(row.id); // cascade sous-arbre + messages
+    if (parentId != null) recomputeAncestorProgress(parentId, { bumpSelf: true });
+  })();
+  return { deleted: true, id: row.id, parentId, rootId: row.root_id };
+  });
+}
+
+export function moveNode(refOrId, newParentRefOrId, position, repoId = null) {
+  return withRepo(repoId, () => {
+  const row = findNodeRow(refOrId, repoId);
+  if (!row) throw new Error(`Nœud introuvable : ${refOrId}`);
+  const newParent = newParentRefOrId == null ? null : findNodeRow(newParentRefOrId, repoId);
+  if (newParentRefOrId != null && !newParent) throw new Error("Nouveau parent introuvable");
+  if (newParent) {
+    if (newParent.id === row.id) throw new Error("Un nœud ne peut pas être son propre parent");
+    if (newParent.repo_id !== row.repo_id) throw new Error("Déplacement inter-repos interdit");
+    if (newParent.path.startsWith(row.path)) throw new Error("Cycle : le nouveau parent est dans le sous-arbre déplacé");
+  }
+  const oldParentId = row.parent_id;
+  const newParentId = newParent ? newParent.id : null;
+  db.transaction(() => {
+    _reparentSubtree(row.id, newParentId, Number.isFinite(position) ? position : null);
+    recomputeAncestorProgress(row.id, { bumpSelf: true });
+    if (oldParentId != null && oldParentId !== newParentId) recomputeAncestorProgress(oldParentId, { bumpSelf: true });
+  })();
+  return getNode(row.id);
+  });
+}
+
+export function reorderChildren(parentRefOrId, orderedIds = [], repoId = null) {
+  return withRepo(repoId, () => {
+  let pId = null;
+  let rId = repoId != null ? resolveRepoId(repoId) : null;
+  if (parentRefOrId != null) {
+    const p = findNodeRow(parentRefOrId, repoId);
+    if (!p) throw new Error(`Nœud introuvable : ${parentRefOrId}`);
+    pId = p.id;
+    rId = p.repo_id;
+  }
+  if (pId == null && rId == null) throw new Error("repoId requis pour réordonner des racines");
+  db.transaction(() => {
+    _reorderChildrenRows(pId, orderedIds, rId);
+    if (pId != null) recomputeAncestorProgress(pId, { bumpSelf: true });
+  })();
+  return pId != null ? getNode(pId, { withTree: true }) : listRootNodes(rId);
+  });
+}
+
+export function setNodePositions(positions = [], repoId = null) {
+  return withRepo(repoId, () => {
+  const upd = db.prepare("UPDATE nodes SET pos_x = ?, pos_y = ? WHERE id = ?");
+  db.transaction(() => {
+    for (const p of positions || []) {
+      const row = findNodeRow(p && p.id, repoId);
+      if (row) upd.run(p.x == null ? null : Number(p.x), p.y == null ? null : Number(p.y), row.id);
+    }
+  })();
+  return (positions || []).length;
+  });
+}
+
+// ── Application des actions IA (cœur sécurité — catalogue scopé subtree) ──────
+export function applyNodeActions(scopeNodeId, actions = [], repoId = null) {
+  return withRepo(repoId, () => {
+  const scope = findNodeRow(scopeNodeId, repoId);
+  if (!scope) throw new Error(`Nœud introuvable : ${scopeNodeId}`);
+  const applied = [];
+  const rejected = [];
+  const list = Array.isArray(actions) ? actions.slice(0, MAX_ACTIONS) : [];
+  const touched = new Set();
+  const affected = new Set();
+  const roots = new Set();
+
+  const tx = db.transaction(() => {
+    const tmpMap = new Map();
+    const resolve = (x) => {
+      if (x == null) return null;
+      const s = String(x);
+      if (tmpMap.has(s)) return tmpMap.get(s);
+      const n = Number(x);
+      return Number.isFinite(n) ? n : null;
+    };
+    const inScope = (id) => id != null && isInSubtree(scope.id, id);
+    for (const a of list) {
+      const op = a && a.op;
+      try {
+        switch (op) {
+          case "set_node_fields":
+          case "update_node": {
+            const id = op === "set_node_fields" && a.id == null ? scope.id : resolve(a.id);
+            if (!inScope(id)) {
+              rejected.push({ op, reason: "hors_scope" });
+              break;
+            }
+            const n = _setNodeFields(id, a);
+            if (n) {
+              applied.push({ op, id });
+              touched.add(id);
+            } else rejected.push({ op, id, reason: "aucun_champ" });
+            break;
+          }
+          case "add_node": {
+            const pid = a.parentId == null ? scope.id : resolve(a.parentId);
+            if (!inScope(pid)) {
+              rejected.push({ op, reason: "parent_hors_scope" });
+              break;
+            }
+            if (descendantCount(findNodeRow(scope.id)) >= MAX_NODES_PER_SUBTREE) {
+              rejected.push({ op, reason: "quota_sous_arbre" });
+              break;
+            }
+            const newId = _insertChild(pid, a);
+            if (a.tmpKey != null) tmpMap.set(String(a.tmpKey), newId);
+            applied.push({ op, id: newId, parentId: pid, title: String(a.title || "").slice(0, 200) });
+            touched.add(newId);
+            touched.add(pid);
+            break;
+          }
+          case "delete_node": {
+            const id = resolve(a.id);
+            if (!inScope(id)) {
+              rejected.push({ op, reason: "hors_scope" });
+              break;
+            }
+            if (id === scope.id) {
+              rejected.push({ op, reason: "auto_suppression_racine_interdite" });
+              break;
+            }
+            const node = findNodeRow(id);
+            const parentId = node ? node.parent_id : null;
+            const ch = db.prepare("DELETE FROM nodes WHERE id = ?").run(id).changes;
+            if (ch) {
+              applied.push({ op, id });
+              if (parentId != null) touched.add(parentId);
+            } else rejected.push({ op, id, reason: "introuvable" });
+            break;
+          }
+          case "move_node": {
+            const id = resolve(a.id);
+            const newParent = a.parentId == null ? scope.id : resolve(a.parentId);
+            if (!inScope(id)) {
+              rejected.push({ op, reason: "source_hors_scope" });
+              break;
+            }
+            if (!inScope(newParent)) {
+              rejected.push({ op, reason: "cible_hors_scope" });
+              break;
+            }
+            if (id === newParent || isInSubtree(id, newParent)) {
+              rejected.push({ op, reason: "cycle" });
+              break;
+            }
+            const oldParent = findNodeRow(id)?.parent_id ?? null;
+            _reparentSubtree(id, newParent, Number.isFinite(a.position) ? a.position : null);
+            applied.push({ op, id, parentId: newParent });
+            touched.add(id);
+            if (oldParent != null) touched.add(oldParent);
+            touched.add(newParent);
+            break;
+          }
+          case "reorder_children": {
+            const pid = a.parentId == null ? scope.id : resolve(a.parentId);
+            if (!inScope(pid)) {
+              rejected.push({ op, reason: "parent_hors_scope" });
+              break;
+            }
+            const ids = (a.order || []).map(resolve).filter((x) => x != null && inScope(x));
+            _reorderChildrenRows(pid, ids);
+            applied.push({ op, parentId: pid });
+            touched.add(pid);
+            break;
+          }
+          default:
+            rejected.push({ op: op || "?", reason: "op_inconnu" });
+        }
+      } catch (e) {
+        rejected.push({ op: op || "?", reason: e.message || String(e) });
+      }
+    }
+    for (const id of touched) {
+      affected.add(id);
+      for (const r of recomputeAncestorProgress(id, { bumpSelf: true })) {
+        affected.add(r.id);
+        roots.add(r.root_id);
+      }
+    }
+  });
+  tx();
+  return { applied, rejected, affectedNodeIds: [...affected], roots: [...roots] };
+  });
+}
+
+// ── Application des actions IA « top level » (scope = repo entier) ─────────────
+// Pendant de applyNodeActions, mais la garde est l'appartenance au repo (et non un
+// sous-arbre) : add_node sans parentId crée un OBJECTIF RACINE. Tout id cible doit
+// appartenir au repo ; cap global par repo. Reste fail-closed et transactionnel.
+export function applyForestActions(repoIdParam, actions = []) {
+  if (repoIdParam == null) throw new Error("repoId requis");
+  return withRepo(repoIdParam, () => {
+  const repoId = resolveRepoId(repoIdParam);
+  const applied = [];
+  const rejected = [];
+  const list = Array.isArray(actions) ? actions.slice(0, MAX_ACTIONS) : [];
+  const touched = new Set();
+  const affected = new Set();
+  const roots = new Set();
+
+  const inRepo = (id) => {
+    if (id == null) return false;
+    const n = findNodeRow(id);
+    return !!n && n.repo_id === repoId;
+  };
+
+  const tx = db.transaction(() => {
+    const tmpMap = new Map();
+    const resolve = (x) => {
+      if (x == null) return null;
+      const s = String(x);
+      if (tmpMap.has(s)) return tmpMap.get(s);
+      const n = Number(x);
+      return Number.isFinite(n) ? n : null;
+    };
+    const repoCount = () => db.prepare("SELECT COUNT(*) c FROM nodes WHERE repo_id = ?").get(repoId).c;
+    for (const a of list) {
+      const op = a && a.op;
+      try {
+        switch (op) {
+          case "set_node_fields":
+          case "update_node": {
+            const id = resolve(a.id);
+            if (!inRepo(id)) {
+              rejected.push({ op, reason: "hors_repo" });
+              break;
+            }
+            const n = _setNodeFields(id, a);
+            if (n) {
+              applied.push({ op, id });
+              touched.add(id);
+            } else rejected.push({ op, id, reason: "aucun_champ" });
+            break;
+          }
+          case "add_node": {
+            if (repoCount() >= MAX_NODES_PER_REPO) {
+              rejected.push({ op, reason: "quota_repo" });
+              break;
+            }
+            let newId;
+            let parentId = null;
+            if (a.parentId == null) {
+              newId = _insertRoot(repoId, a); // objectif racine
+            } else {
+              parentId = resolve(a.parentId);
+              if (!inRepo(parentId)) {
+                rejected.push({ op, reason: "parent_hors_repo" });
+                break;
+              }
+              newId = _insertChild(parentId, a);
+              touched.add(parentId);
+            }
+            if (a.tmpKey != null) tmpMap.set(String(a.tmpKey), newId);
+            applied.push({ op, id: newId, parentId, title: String(a.title || "").slice(0, 200) });
+            touched.add(newId);
+            break;
+          }
+          case "delete_node": {
+            const id = resolve(a.id);
+            if (!inRepo(id)) {
+              rejected.push({ op, reason: "hors_repo" });
+              break;
+            }
+            const node = findNodeRow(id);
+            const parentId = node ? node.parent_id : null;
+            const ch = db.prepare("DELETE FROM nodes WHERE id = ?").run(id).changes;
+            if (ch) {
+              applied.push({ op, id });
+              if (parentId != null) touched.add(parentId);
+            } else rejected.push({ op, id, reason: "introuvable" });
+            break;
+          }
+          case "move_node": {
+            const id = resolve(a.id);
+            const newParent = a.parentId == null ? null : resolve(a.parentId); // null = devient racine
+            if (!inRepo(id)) {
+              rejected.push({ op, reason: "source_hors_repo" });
+              break;
+            }
+            if (newParent != null && !inRepo(newParent)) {
+              rejected.push({ op, reason: "cible_hors_repo" });
+              break;
+            }
+            if (newParent != null && (id === newParent || isInSubtree(id, newParent))) {
+              rejected.push({ op, reason: "cycle" });
+              break;
+            }
+            const oldParent = findNodeRow(id)?.parent_id ?? null;
+            _reparentSubtree(id, newParent, Number.isFinite(a.position) ? a.position : null);
+            applied.push({ op, id, parentId: newParent });
+            touched.add(id);
+            if (oldParent != null) touched.add(oldParent);
+            if (newParent != null) touched.add(newParent);
+            break;
+          }
+          case "reorder_children": {
+            const pid = a.parentId == null ? null : resolve(a.parentId); // null = racines du repo
+            if (pid != null && !inRepo(pid)) {
+              rejected.push({ op, reason: "parent_hors_repo" });
+              break;
+            }
+            const ids = (a.order || []).map(resolve).filter((x) => x != null && inRepo(x));
+            _reorderChildrenRows(pid, ids, repoId);
+            applied.push({ op, parentId: pid });
+            if (pid != null) touched.add(pid);
+            break;
+          }
+          default:
+            rejected.push({ op: op || "?", reason: "op_inconnu" });
+        }
+      } catch (e) {
+        rejected.push({ op: op || "?", reason: e.message || String(e) });
+      }
+    }
+    for (const id of touched) {
+      affected.add(id);
+      for (const r of recomputeAncestorProgress(id, { bumpSelf: true })) {
+        affected.add(r.id);
+        roots.add(r.root_id);
+      }
+    }
+  });
+  tx();
+  return { applied, rejected, affectedNodeIds: [...affected], roots: [...roots] };
+  });
+}
