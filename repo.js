@@ -94,11 +94,12 @@ export function cloneInto(url, root) {
   return gitRun(["-c", "protocol.ext.allow=never", "clone", "--", u, root], dirname(root));
 }
 
-// Pull (fetch + merge ff-only) du clone `root`. Renvoie {ok, output}.
-export function pull(root) {
+// Pull (fetch + intégration) du clone `root`. `rebase` : rebase la branche locale au
+// lieu du merge ff-only (utile quand local ET distant ont avancé). Renvoie {ok, output}.
+export function pull(root, { rebase = false } = {}) {
   const fetch = gitRun(["fetch", "--all", "--prune"], root);
-  const pulled = gitRun(["pull", "--ff-only"], root);
-  return { ok: fetch.ok && pulled.ok, pulled: pulled.ok, output: [fetch.output, pulled.output].filter(Boolean).join("\n") };
+  const pulled = rebase ? gitRun(["-c", "core.editor=true", "pull", "--rebase"], root) : gitRun(["pull", "--ff-only"], root);
+  return { ok: fetch.ok && pulled.ok, pulled: pulled.ok, rebase, output: [fetch.output, pulled.output].filter(Boolean).join("\n") };
 }
 
 // Normalise un chemin saisi par l'utilisateur en chemin relatif repo, à slashes
@@ -262,12 +263,53 @@ const isValidRemoteName = (n) => /^[A-Za-z0-9._\/-]{1,100}$/.test(String(n || ""
 
 // ── Lecture ──────────────────────────────────────────────────────────────────
 
+// Opération git EN COURS (laissée par un merge/cherry-pick/revert/rebase conflictuel).
+// Détecte les fichiers sentinelles sous le dossier .git. Renvoie { type } (null si aucune).
+// Sert à proposer Interrompre (--abort) / Continuer (--continue) dans l'UI : sans ça,
+// un conflit laisse le dépôt dans un état dont on ne peut PAS sortir depuis le dashboard.
+export function operationState(root) {
+  if (!isGitClone(root)) return { type: null };
+  const gitDir = git(["rev-parse", "--absolute-git-dir"], root);
+  if (!gitDir) return { type: null };
+  const has = (f) => existsSync(join(gitDir, f));
+  let type = null;
+  if (has("rebase-merge") || has("rebase-apply")) type = "rebase";
+  else if (has("MERGE_HEAD")) type = "merge";
+  else if (has("CHERRY_PICK_HEAD")) type = "cherry-pick";
+  else if (has("REVERT_HEAD")) type = "revert";
+  return { type };
+}
+
+// Interrompt l'opération en cours (--abort), quelle qu'elle soit. Restaure l'état d'avant.
+export function abortOperation(root) {
+  if (!isGitClone(root)) return { ok: false, output: "Pas un clone git" };
+  const { type } = operationState(root);
+  if (!type) return { ok: false, output: "Aucune opération en cours à interrompre." };
+  const cmd = { merge: ["merge", "--abort"], "cherry-pick": ["cherry-pick", "--abort"], revert: ["revert", "--abort"], rebase: ["rebase", "--abort"] }[type];
+  return { ...gitRun(cmd, root), op: type };
+}
+
+// Poursuit l'opération après résolution des conflits. Refuse tant qu'il reste des
+// fichiers en conflit. `-c core.editor=true` accepte le message par défaut (pas de TTY
+// côté serveur) ; un merge se conclut par un simple commit --no-edit.
+export function continueOperation(root) {
+  if (!isGitClone(root)) return { ok: false, output: "Pas un clone git" };
+  const { type } = operationState(root);
+  if (!type) return { ok: false, output: "Aucune opération en cours." };
+  const st = status(root);
+  if ((st.files || []).some((f) => f.conflicted))
+    return { ok: false, output: "Des conflits subsistent. Résous-les, indexe les fichiers, puis recommence." };
+  const cmd = type === "merge" ? ["commit", "--no-edit"] : ["-c", "core.editor=true", type, "--continue"];
+  return { ...gitRun(cmd, root), op: type };
+}
+
 // État du working tree : branche, upstream, ahead/behind + liste de fichiers avec
 // leur statut index (x) / worktree (y). Parse `git status --porcelain=v1 -z -b`.
+// `op` : opération en cours (merge/cherry-pick/revert/rebase conflictuel) → bandeau UI.
 export function status(root) {
-  if (!isGitClone(root)) return { ok: false, output: `Pas un clone git : ${root}`, files: [] };
+  if (!isGitClone(root)) return { ok: false, output: `Pas un clone git : ${root}`, files: [], op: { type: null } };
   const raw = git(["status", "--porcelain=v1", "-z", "--branch", "--untracked-files=all"], root);
-  if (raw == null) return { ok: false, output: "git status a échoué", files: [] };
+  if (raw == null) return { ok: false, output: "git status a échoué", files: [], op: { type: null } };
   const parts = raw.split("\0");
   let branch = null;
   let upstream = null;
@@ -314,7 +356,7 @@ export function status(root) {
       conflicted: x === "U" || y === "U" || (x === "A" && y === "A") || (x === "D" && y === "D"),
     });
   }
-  return { ok: true, branch, upstream, ahead, behind, detached, files };
+  return { ok: true, branch, upstream, ahead, behind, detached, files, op: operationState(root) };
 }
 
 // Décore un commit : parse la sortie `%D` ("HEAD -> main, origin/main, tag: v1").
@@ -444,6 +486,73 @@ export function commitDetail(root, hash) {
   return { ok: true, hash: H, author: an, email: ae, dateIso: ci, date: cr, parents: P.trim() ? P.trim().split(/\s+/) : [], subject, body, files };
 }
 
+// Reflog (HEAD@{n}) : journal des positions de HEAD — filet de sécurité après un
+// reset --hard / rebase (retrouver un commit « perdu »). Renvoie une liste d'entrées.
+export function reflog(root, { limit = 100 } = {}) {
+  if (!isGitClone(root)) return { ok: false, entries: [] };
+  const fmt = ["%H", "%h", "%gd", "%gs", "%cr", "%cI", "%an"].join(FS) + RS;
+  const raw = git(["reflog", `--max-count=${Math.max(1, Math.min(1000, limit))}`, `--format=${fmt}`], root);
+  if (raw == null) return { ok: false, entries: [] };
+  const entries = [];
+  for (const rec of raw.split(RS)) {
+    const r = rec.replace(/^\n/, "");
+    if (!r.trim()) continue;
+    const f = r.split(FS);
+    if (f.length < 7) continue;
+    const [hash, short, selector, subject, date, dateIso, author] = f;
+    entries.push({ hash, short, selector, subject, date, dateIso, author });
+  }
+  return { ok: true, entries };
+}
+
+// Diff entre deux réfs (`a..b`), optionnellement limité à un chemin. Réfs validées
+// (hash hex, nom de branche/tag, ou HEAD) — anti option-injection. `a..b` est construit
+// ici (les réfs elles-mêmes ne peuvent pas contenir « .. », rejeté par isValidRef).
+export function diffRefs(root, a, b, relPath = null) {
+  if (!isGitClone(root)) return { ok: false, output: "Pas un clone git" };
+  const okRef = (r) => r === "HEAD" || isHash(r) || isValidRef(r);
+  if (!okRef(a) || !okRef(b)) return { ok: false, output: "Réf invalide" };
+  const args = ["diff", "--no-color", `${a}..${b}`];
+  if (relPath) {
+    const rel = normalizePath(root, relPath);
+    if (!rel) return { ok: false, output: "Chemin invalide" };
+    args.push("--", rel);
+  }
+  const out = git(args, root);
+  return { ok: out != null, a, b, diff: out || "" };
+}
+
+// Blame d'un fichier (qui a écrit chaque ligne). `--line-porcelain` répète l'auteur par
+// ligne → parsing simple. `branch` optionnel (sinon HEAD). Lecture seule.
+export function blame(root, relPath, branch = null) {
+  if (!isGitClone(root)) return { ok: false, output: "Pas un clone git" };
+  const rel = normalizePath(root, relPath);
+  if (!rel) return { ok: false, output: "Chemin invalide" };
+  const args = ["blame", "--line-porcelain"];
+  if (branch) {
+    if (!isValidRef(branch)) return { ok: false, output: "Branche invalide" };
+    args.push(branch);
+  }
+  args.push("--", rel);
+  const raw = git(args, root);
+  if (raw == null) return { ok: false, output: "blame indisponible (fichier binaire ou non suivi ?)" };
+  const lines = [];
+  let cur = null;
+  for (const line of raw.split("\n")) {
+    const m = /^([0-9a-f]{40})\s+\d+\s+\d+/.exec(line);
+    if (m) {
+      cur = { hash: m[1], short: m[1].slice(0, 8), author: "", content: "" };
+    } else if (cur && line.startsWith("author ")) {
+      cur.author = line.slice("author ".length);
+    } else if (cur && line.startsWith("\t")) {
+      cur.content = line.slice(1);
+      lines.push(cur);
+      cur = null;
+    }
+  }
+  return { ok: true, path: rel, lines };
+}
+
 // Config git du repo + remotes (pour la page de configuration).
 const ALLOWED_CONFIG = new Set(["user.name", "user.email", "core.autocrlf", "pull.rebase", "commit.gpgsign"]);
 export function getGitConfig(root) {
@@ -508,11 +617,29 @@ export function discard(root, paths) {
 }
 
 // Commit des fichiers indexés. Message via stdin (`-F -`) → aucun souci de quoting.
-export function commit(root, message) {
+// `amend` : réécrit le DERNIER commit (corriger message / ajouter un fichier oublié).
+// Message vide + amend → garde le message existant (--no-edit).
+export function commit(root, message, { amend = false } = {}) {
   if (!isGitClone(root)) return { ok: false, output: "Pas un clone git" };
   const msg = String(message || "").trim();
+  if (amend) return msg ? gitRun(["commit", "--amend", "-F", "-"], root, msg + "\n") : gitRun(["commit", "--amend", "--no-edit"], root);
   if (!msg) return { ok: false, output: "Message de commit vide" };
   return gitRun(["commit", "-F", "-"], root, msg + "\n");
+}
+
+// Applique un patch unifié (un ou plusieurs hunks) reçu du client → staging/abandon
+// PARTIEL (au niveau du hunk). `cached` : applique à l'index (indexer un hunk) ;
+// `reverse` : inverse le patch (désindexer un hunk, ou abandonner dans le working tree).
+// Le patch transite par stdin. git apply refuse par défaut tout chemin hors du dépôt
+// (pas de --unsafe-paths) → pas d'évasion possible.
+export function applyPatch(root, patch, { cached = false, reverse = false } = {}) {
+  if (!isGitClone(root)) return { ok: false, output: "Pas un clone git" };
+  const p = String(patch || "");
+  if (!p.trim() || !/^diff --git /m.test(p)) return { ok: false, output: "Patch invalide" };
+  const args = ["apply", "--whitespace=nowarn"];
+  if (cached) args.push("--cached");
+  if (reverse) args.push("--reverse");
+  return gitRun(args, root, p.endsWith("\n") ? p : p + "\n");
 }
 
 // ── Sync distant ──────────────────────────────────────────────────────────────
@@ -577,6 +704,14 @@ export function merge(root, name) {
   return gitRun(["merge", "--no-edit", name], root);
 }
 
+// Rebase la branche courante sur `onto` (branche ou commit). En cas de conflit, laisse
+// l'opération en cours (operationState → "rebase") → l'UI propose continue/abort.
+export function rebase(root, onto) {
+  if (!isGitClone(root)) return { ok: false, output: "Pas un clone git" };
+  if (!isHash(onto) && !isValidRef(onto)) return { ok: false, output: `Réf invalide : ${onto}` };
+  return gitRun(["-c", "core.editor=true", "rebase", onto], root);
+}
+
 // ── Opérations ciblées sur un commit (hash hex strict) ────────────────────────
 
 export function cherryPick(root, hash) {
@@ -627,8 +762,35 @@ export function stashSave(root, { message = "", includeUntracked = true } = {}) 
   return gitRun(args, root);
 }
 
-export function stashPop(root) {
-  return isGitClone(root) ? gitRun(["stash", "pop"], root) : { ok: false, output: "Pas un clone git" };
+// Réf de remise stricte : stash@{N} (anti option-injection / pathspec). Vide → HEAD (dernière).
+const isStashRef = (r) => /^stash@\{\d+\}$/.test(String(r || ""));
+
+export function stashPop(root, ref = null) {
+  if (!isGitClone(root)) return { ok: false, output: "Pas un clone git" };
+  if (ref && !isStashRef(ref)) return { ok: false, output: "Réf de remise invalide" };
+  return gitRun(ref ? ["stash", "pop", ref] : ["stash", "pop"], root);
+}
+
+// Applique une remise SANS la retirer de la pile (contrairement à pop).
+export function stashApply(root, ref = null) {
+  if (!isGitClone(root)) return { ok: false, output: "Pas un clone git" };
+  if (ref && !isStashRef(ref)) return { ok: false, output: "Réf de remise invalide" };
+  return gitRun(ref ? ["stash", "apply", ref] : ["stash", "apply"], root);
+}
+
+// Jette une remise (git stash drop). Réf obligatoire (pas de drop « par défaut » ambigu).
+export function stashDrop(root, ref) {
+  if (!isGitClone(root)) return { ok: false, output: "Pas un clone git" };
+  if (!isStashRef(ref)) return { ok: false, output: "Réf de remise invalide" };
+  return gitRun(["stash", "drop", ref], root);
+}
+
+// Diff d'une remise (git stash show -p). Lecture seule.
+export function stashShow(root, ref) {
+  if (!isGitClone(root)) return { ok: false, output: "Pas un clone git" };
+  if (ref && !isStashRef(ref)) return { ok: false, output: "Réf de remise invalide" };
+  const out = git(["stash", "show", "-p", "--no-color", ...(ref ? [ref] : [])], root);
+  return { ok: out != null, ref: ref || "stash@{0}", diff: out || "" };
 }
 
 export function stashList(root) {
