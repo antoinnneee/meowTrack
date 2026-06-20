@@ -546,4 +546,43 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
     },
     guard(async ({ repo, ref }) => apiFetch("DELETE", "/api/nodes/" + encodeURIComponent(ref) + qs({ repo: repoOf(repo) })))
   );
+
+  // ── meowtrack_node_link_add (prérequis) ──────────────────────────────────────
+  server.registerTool(
+    "meowtrack_node_link_add",
+    {
+      title: "Lier un prérequis entre nœuds",
+      description:
+        "Crée un lien de PRÉREQUIS hors hiérarchie : « `from` dépend de `to` » (from = le dépendant, to = le " +
+        "prérequis). Sert quand une même brique est requise par plusieurs nœuds (ne pas dupliquer le nœud : le " +
+        "créer une fois puis le relier). N'affecte NI la hiérarchie NI la progression ; pilote le signal « bloqué ». " +
+        "Refusé si auto-lien, inter-repos, ou cycle de prérequis. Idempotent.",
+      inputSchema: { repo: repoParam, from: nodeRefSchema.describe("Le nœud dépendant."), to: nodeRefSchema.describe("Le prérequis dont il dépend.") },
+    },
+    guard(async ({ repo, from, to }) => apiFetch("POST", "/api/nodes/links" + qs({ repo: repoOf(repo) }), { fromId: from, toId: to }))
+  );
+
+  // ── meowtrack_node_link_remove ───────────────────────────────────────────────
+  server.registerTool(
+    "meowtrack_node_link_remove",
+    {
+      title: "Retirer un prérequis",
+      description: "Supprime le lien de prérequis « `from` dépend de `to` ». Idempotent (sans effet si absent).",
+      inputSchema: { repo: repoParam, from: nodeRefSchema.describe("Le nœud dépendant."), to: nodeRefSchema.describe("Le prérequis à délier.") },
+    },
+    guard(async ({ repo, from, to }) => apiFetch("DELETE", "/api/nodes/links" + qs({ repo: repoOf(repo) }), { fromId: from, toId: to }))
+  );
+
+  // ── meowtrack_node_links (liste) ─────────────────────────────────────────────
+  server.registerTool(
+    "meowtrack_node_links",
+    {
+      title: "Lister les liens de prérequis",
+      description:
+        "Retourne tous les liens de prérequis du repo : [{id, fromId, toId, kind}] (from dépend de to). Pour les " +
+        "prérequis d'UN nœud précis, meowtrack_node_get renvoie aussi ses champs `requires` / `requiredBy`.",
+      inputSchema: { repo: repoParam },
+    },
+    guard(async ({ repo }) => apiGet("/api/nodes/links" + qs({ repo: repoOf(repo) })))
+  );
 }

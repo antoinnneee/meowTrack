@@ -197,6 +197,13 @@ graphe : arête **pointillée orangée fléchée** (dépendant → prérequis), 
 hiérarchie ; clic droit sur un nœud → « 🔒 Marquer un prérequis… », double-clic/clic droit sur l'arête pour
 la retirer. En vue détail : sections **« Dépend de »** / **« Requis par »** + bouton **« ＋ Prérequis »**.
 
+**L'IA et le MCP peuvent aussi gérer les prérequis.** Le catalogue d'actions du chat gagne `add_link` /
+`remove_link` (`{from, to}` ; `from` dépend de `to`) : **scopé au sous-arbre** dans le chat d'un nœud,
+**au dépôt** dans le chat « top level » ; non destructifs (auto-appliqués, mêmes garde-fous cycle/cap/auto-
+lien). Le prompt liste ces actions et les **prérequis existants**, et conseille de ne pas dupliquer une
+brique partagée mais de la relier. Côté MCP : `meowtrack_node_link_add`, `meowtrack_node_link_remove`,
+`meowtrack_node_links` (et `meowtrack_node_get` renvoie aussi `requires` / `requiredBy`).
+
 ### Visualisation : graphe ↔ grille
 
 Bascule (segment dans la barre) entre un **graphe organique** (SVG radial : nœuds colorés reliés par des

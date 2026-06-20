@@ -78,13 +78,17 @@ export function actionStatusLabel(ops) {
     delete_node: "Suppression",
     move_node: "Déplacement",
     reorder_children: "Réorganisation",
+    add_link: "Lien de prérequis",
+    remove_link: "Retrait de prérequis",
   };
+  // Les actions de lien se comptent en « liens » ; les autres en « nœuds ».
+  const unit = (name) => (name === "Lien de prérequis" || name === "Retrait de prérequis" ? "lien" : "nœud");
   const byName = new Map();
   for (const op of ops) {
     const name = names[op] || "Action";
     byName.set(name, (byName.get(name) || 0) + 1);
   }
-  const parts = [...byName].map(([name, n]) => `${name} de ${n} nœud${n > 1 ? "s" : ""}`);
+  const parts = [...byName].map(([name, n]) => `${name} de ${n} ${unit(name)}${n > 1 ? "s" : ""}`);
   return "⚙️ " + parts.join(" · ") + " en cours…";
 }
 

@@ -560,6 +560,22 @@ function requiresReaches(startId, targetId) {
   return false;
 }
 
+// Cœur d'insertion d'un lien PAR IDS (suppose les deux ids résolus + même repo
+// déjà garanti par l'appelant). Garde : anti-auto-lien, anti-cycle, cap par nœud.
+// Idempotent (INSERT OR IGNORE). Utilisé par addNodeLink ET les actions IA — à
+// appeler dans un contexte `withRepo` actif (ambient `db`).
+function _linkInsert(fromId, toId, kind) {
+  if (fromId === toId) throw new Error("Un nœud ne peut pas être son propre prérequis");
+  if (kind === "requires" && requiresReaches(toId, fromId)) throw new Error("Cycle de prérequis interdit");
+  const n = db.prepare("SELECT COUNT(*) c FROM node_links WHERE from_id = ? AND kind = ?").get(fromId, kind).c;
+  if (n >= MAX_LINKS_PER_NODE) throw new Error("Trop de prérequis sur ce nœud");
+  const res = db.prepare("INSERT OR IGNORE INTO node_links(from_id, to_id, kind) VALUES(?,?,?)").run(fromId, toId, kind);
+  return { id: Number(res.lastInsertRowid) || null, created: res.changes > 0 };
+}
+function _linkDelete(fromId, toId, kind) {
+  return db.prepare("DELETE FROM node_links WHERE from_id = ? AND to_id = ? AND kind = ?").run(fromId, toId, kind).changes > 0;
+}
+
 // Crée un lien « from dépend de to ». Fail-closed : extrémités du même repo, pas
 // d'auto-lien, type connu, anti-cycle, cap par nœud. Idempotent (UNIQUE).
 export function addNodeLink(fromRefOrId, toRefOrId, { kind = "requires", repoId = null } = {}) {
@@ -569,20 +585,10 @@ export function addNodeLink(fromRefOrId, toRefOrId, { kind = "requires", repoId 
     const to = findNodeRow(toRefOrId, repoId);
     if (!from) throw new Error(`Nœud introuvable : ${fromRefOrId}`);
     if (!to) throw new Error(`Nœud introuvable : ${toRefOrId}`);
-    if (from.id === to.id) throw new Error("Un nœud ne peut pas être son propre prérequis");
     if (from.repo_id !== to.repo_id) throw new Error("Lien inter-repos interdit");
-    let link;
-    db.transaction(() => {
-      // Cycle : to atteint-il déjà from via 'requires' ? (le nouveau lien from→to bouclerait)
-      if (requiresReaches(to.id, from.id)) throw new Error("Cycle de prérequis interdit");
-      const n = db.prepare("SELECT COUNT(*) c FROM node_links WHERE from_id = ? AND kind = ?").get(from.id, kind).c;
-      if (n >= MAX_LINKS_PER_NODE) throw new Error("Trop de prérequis sur ce nœud");
-      const res = db
-        .prepare("INSERT OR IGNORE INTO node_links(from_id, to_id, kind) VALUES(?,?,?)")
-        .run(from.id, to.id, kind);
-      link = { id: Number(res.lastInsertRowid) || null, fromId: from.id, toId: to.id, kind, created: res.changes > 0 };
-    })();
-    return { link, fromId: from.id, toId: to.id, repoId: from.repo_id };
+    let r;
+    db.transaction(() => { r = _linkInsert(from.id, to.id, kind); })();
+    return { link: { id: r.id, fromId: from.id, toId: to.id, kind, created: r.created }, fromId: from.id, toId: to.id, repoId: from.repo_id };
   });
 }
 
@@ -592,8 +598,8 @@ export function removeNodeLink(fromRefOrId, toRefOrId, { kind = "requires", repo
     const from = findNodeRow(fromRefOrId, repoId);
     const to = findNodeRow(toRefOrId, repoId);
     if (!from || !to) return { removed: false };
-    const ch = db.prepare("DELETE FROM node_links WHERE from_id = ? AND to_id = ? AND kind = ?").run(from.id, to.id, kind).changes;
-    return { removed: ch > 0, fromId: from.id, toId: to.id, repoId: from.repo_id };
+    const removed = _linkDelete(from.id, to.id, kind);
+    return { removed, fromId: from.id, toId: to.id, repoId: from.repo_id };
   });
 }
 
@@ -608,6 +614,7 @@ export function applyNodeActions(scopeNodeId, actions = [], repoId = null) {
   const touched = new Set();
   const affected = new Set();
   const roots = new Set();
+  let linksChanged = false;
 
   const tx = db.transaction(() => {
     const tmpMap = new Map();
@@ -708,6 +715,34 @@ export function applyNodeActions(scopeNodeId, actions = [], repoId = null) {
             touched.add(pid);
             break;
           }
+          case "add_link": {
+            // Prérequis : `from` dépend de `to`. Les DEUX extrémités doivent être dans
+            // le sous-arbre du scope (un lien hors scope passe par le chat « top level »).
+            const kind = NODE_LINK_KIND_SET.has(a.kind) ? a.kind : "requires";
+            const from = a.from == null ? scope.id : resolve(a.from);
+            const to = resolve(a.to);
+            if (!inScope(from) || !inScope(to)) {
+              rejected.push({ op, reason: "hors_scope" });
+              break;
+            }
+            const r = _linkInsert(from, to, kind); // throw → catch (cycle/cap/auto-lien)
+            applied.push({ op, from, to, created: r.created });
+            if (r.created) { linksChanged = true; touched.add(from); touched.add(to); }
+            break;
+          }
+          case "remove_link": {
+            const kind = NODE_LINK_KIND_SET.has(a.kind) ? a.kind : "requires";
+            const from = a.from == null ? scope.id : resolve(a.from);
+            const to = resolve(a.to);
+            if (!inScope(from) || !inScope(to)) {
+              rejected.push({ op, reason: "hors_scope" });
+              break;
+            }
+            const removed = _linkDelete(from, to, kind);
+            applied.push({ op, from, to, removed });
+            if (removed) { linksChanged = true; touched.add(from); touched.add(to); }
+            break;
+          }
           default:
             rejected.push({ op: op || "?", reason: "op_inconnu" });
         }
@@ -724,7 +759,7 @@ export function applyNodeActions(scopeNodeId, actions = [], repoId = null) {
     }
   });
   tx();
-  return { applied, rejected, affectedNodeIds: [...affected], roots: [...roots] };
+  return { applied, rejected, affectedNodeIds: [...affected], roots: [...roots], linksChanged };
   });
 }
 
@@ -742,6 +777,7 @@ export function applyForestActions(repoIdParam, actions = []) {
   const touched = new Set();
   const affected = new Set();
   const roots = new Set();
+  let linksChanged = false;
 
   const inRepo = (id) => {
     if (id == null) return false;
@@ -850,6 +886,34 @@ export function applyForestActions(repoIdParam, actions = []) {
             if (pid != null) touched.add(pid);
             break;
           }
+          case "add_link": {
+            // Prérequis « from dépend de to ». Au niveau forêt, les deux extrémités
+            // doivent juste appartenir au repo (pas de scope sous-arbre). `from` requis.
+            const kind = NODE_LINK_KIND_SET.has(a.kind) ? a.kind : "requires";
+            const from = resolve(a.from);
+            const to = resolve(a.to);
+            if (!inRepo(from) || !inRepo(to)) {
+              rejected.push({ op, reason: "hors_repo" });
+              break;
+            }
+            const r = _linkInsert(from, to, kind); // throw → catch (cycle/cap/auto-lien)
+            applied.push({ op, from, to, created: r.created });
+            if (r.created) { linksChanged = true; touched.add(from); touched.add(to); }
+            break;
+          }
+          case "remove_link": {
+            const kind = NODE_LINK_KIND_SET.has(a.kind) ? a.kind : "requires";
+            const from = resolve(a.from);
+            const to = resolve(a.to);
+            if (!inRepo(from) || !inRepo(to)) {
+              rejected.push({ op, reason: "hors_repo" });
+              break;
+            }
+            const removed = _linkDelete(from, to, kind);
+            applied.push({ op, from, to, removed });
+            if (removed) { linksChanged = true; touched.add(from); touched.add(to); }
+            break;
+          }
           default:
             rejected.push({ op: op || "?", reason: "op_inconnu" });
         }
@@ -866,6 +930,6 @@ export function applyForestActions(repoIdParam, actions = []) {
     }
   });
   tx();
-  return { applied, rejected, affectedNodeIds: [...affected], roots: [...roots] };
+  return { applied, rejected, affectedNodeIds: [...affected], roots: [...roots], linksChanged };
   });
 }

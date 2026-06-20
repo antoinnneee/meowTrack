@@ -1696,6 +1696,8 @@ function opLabel(o) {
     case "delete_node": return "🗑 nœud supprimé";
     case "move_node": return "↦ déplacé";
     case "reorder_children": return "↕ réordonné";
+    case "add_link": return "🔒 prérequis lié";
+    case "remove_link": return "🔓 prérequis retiré";
     default: return o.op || "action";
   }
 }

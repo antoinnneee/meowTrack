@@ -19,6 +19,8 @@ const {
   removeNodeLink,
   listNodeLinks,
   listForestLinks,
+  applyNodeActions,
+  applyForestActions,
 } = await import("../db.js");
 
 let pass = 0, fail = 0;
@@ -81,6 +83,36 @@ try {
   deleteNode(reseau.id, rid);
   check("cascade : liens purgés", listForestLinks(rid).length === 0);
   check("chat sans prérequis après cascade", listNodeLinks(chat.id, rid).requires.length === 0);
+
+  // ── Actions IA : add_link / remove_link (chat par nœud + chat forêt) ──────────
+  const root = createNode(rid, null, { title: "Feature" });
+  const a = createNode(rid, root.id, { title: "A" });
+  const b = createNode(rid, root.id, { title: "B" });
+  const outside = createNode(rid, null, { title: "Ailleurs" });
+
+  // applyNodeActions : lien interne au sous-arbre du scope OK + linksChanged.
+  let res = applyNodeActions(root.id, [{ op: "add_link", from: a.id, to: b.id }], rid);
+  check("action add_link interne OK", res.applied.some((x) => x.op === "add_link" && x.created) && res.linksChanged === true);
+
+  // Lien vers un nœud HORS du sous-arbre du scope refusé.
+  res = applyNodeActions(root.id, [{ op: "add_link", from: a.id, to: outside.id }], rid);
+  check("action add_link hors-scope refusée", res.applied.length === 0 && res.rejected.some((x) => x.reason === "hors_scope") && res.linksChanged === false);
+
+  // Cycle refusé (a→b existe déjà ; b→a bouclerait).
+  res = applyNodeActions(root.id, [{ op: "add_link", from: b.id, to: a.id }], rid);
+  check("action add_link cycle refusée", res.rejected.some((x) => /cycle/i.test(x.reason)) && res.linksChanged === false);
+
+  // remove_link via action.
+  res = applyNodeActions(root.id, [{ op: "remove_link", from: a.id, to: b.id }], rid);
+  check("action remove_link OK", res.applied.some((x) => x.op === "remove_link" && x.removed) && res.linksChanged === true);
+
+  // applyForestActions : lien inter-arbres (outside dépend de a) OK.
+  res = applyForestActions(rid, [{ op: "add_link", from: outside.id, to: a.id }]);
+  check("forest add_link inter-arbres OK", res.applied.some((x) => x.op === "add_link" && x.created) && res.linksChanged === true);
+
+  // forest add_link sans `from` → refusé (résolution null → hors_repo).
+  res = applyForestActions(rid, [{ op: "add_link", to: a.id }]);
+  check("forest add_link sans from refusé", res.applied.length === 0 && res.linksChanged === false);
 
   console.log(`\n${pass} OK, ${fail} échec(s)`);
 } finally {

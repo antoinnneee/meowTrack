@@ -13,6 +13,7 @@ import {
   getSubtree,
   getRepo,
   listForest,
+  listForestLinks,
   addNodeMessage,
   updateNodeMessage,
   getNodeMessage,
@@ -73,8 +74,15 @@ function aiErrorMessage(e) {
     : (e && e.message) || "Erreur lors de l'appel à l'IA.";
 }
 
+// Diffuse l'event « liens de prérequis modifiés » : le graphe recharge ses liens,
+// et la vue détail du nœud rafraîchit « Dépend de / Requis par ».
+function broadcastLinksChanged(repoId, nodeId) {
+  broadcast(forestKey(repoId), "links:changed", { repoId });
+  if (nodeId != null) broadcast(nodeKey(repoId, nodeId), "links:changed", { repoId, nodeId });
+}
+
 // ── Tour de chat IA STREAMING (async, détaché ; le HTTP a déjà répondu 202) ──
-async function runNodeTurn(repoId, nodeId, scopeSnapshot, descendants, history, userText, author, model, pendingId, root, repo) {
+async function runNodeTurn(repoId, nodeId, scopeSnapshot, descendants, history, userText, author, model, pendingId, root, repo, links) {
   const batcher = makeStreamBatcher(nodeKey(repoId, nodeId), pendingId);
   let reasoning = "";
   let answer = "";
@@ -133,7 +141,7 @@ async function runNodeTurn(repoId, nodeId, scopeSnapshot, descendants, history, 
     broadcastMessage(repoId, nodeId, m);
   };
   try {
-    const prompt = buildNodePrompt(scopeSnapshot, descendants, history, userText, author, repo);
+    const prompt = buildNodePrompt(scopeSnapshot, descendants, history, userText, author, repo, links);
     const result = await runClaudeStreaming(prompt, model, root, {
       onChild: (child) => { const l = aiLocks.get(nodeId); if (l) l.child = child; },
       onThinking: (d) => {
@@ -180,6 +188,7 @@ async function runNodeTurn(repoId, nodeId, scopeSnapshot, descendants, history, 
     const msg = updateNodeMessage(pendingId, { body, reasoning, state: "complete", actions: summary }, repoId);
     broadcastMessage(repoId, nodeId, msg);
     broadcastAffected(repoId, applied.affectedNodeIds);
+    if (applied.linksChanged) broadcastLinksChanged(repoId, nodeId); // l'IA a (dé)lié des prérequis
   } catch (e) {
     batcher.end();
     const emsg = aiErrorMessage(e);
@@ -220,6 +229,12 @@ export async function handleNodeChat(req, res, node) {
   const sub = getSubtree(node.id, { repoId });
   const snapshot = sub ? sub.node : getNode(node.id, { repoId });
   const descendants = sub ? sub.descendants : [];
+  // Liens de prérequis internes au sous-arbre (contexte du prompt).
+  const subtreeIds = new Set([snapshot.id, ...descendants.map((d) => d.id)]);
+  let links = [];
+  try {
+    links = listForestLinks(repoId).filter((l) => subtreeIds.has(l.fromId) && subtreeIds.has(l.toId));
+  } catch { /* pas de liens → prompt sans bloc */ }
   const history = listNodeMessages(node.id, { limit: 1000, repoId }).filter((m) => m.state === "complete" && m.id !== userMessage.id);
 
   aiLocks.set(node.id, { child: null }); // atomique (pas d'await entre check et set)
@@ -241,7 +256,7 @@ export async function handleNodeChat(req, res, node) {
     /* repo introuvable → libellé générique dans le prompt */
   }
   send(res, 202, { userMessage, pendingMessage });
-  runNodeTurn(repoId, node.id, snapshot, descendants, history, text, author, model, pendingMessage.id, root, repo).catch(() => {});
+  runNodeTurn(repoId, node.id, snapshot, descendants, history, text, author, model, pendingMessage.id, root, repo, links).catch(() => {});
 }
 
 // POST /api/nodes/:ref/chat/confirm { messageId } — applique une proposition
@@ -261,6 +276,7 @@ export function handleNodeChatConfirm(req, res, node, body) {
   }, repoId);
   broadcastMessage(repoId, node.id, updated);
   broadcastAffected(repoId, result.affectedNodeIds);
+  if (result.linksChanged) broadcastLinksChanged(repoId, node.id);
   return send(res, 200, { ok: true, applied: result.applied });
 }
 
@@ -276,7 +292,7 @@ function forestStructuralChange(applied) {
   return (applied || []).some((a) => a && (a.op === "delete_node" || a.op === "move_node" || a.op === "reorder_children"));
 }
 
-async function runForestTurn(repoId, forestSnapshot, history, userText, author, model, pendingId, root) {
+async function runForestTurn(repoId, forestSnapshot, history, userText, author, model, pendingId, root, links) {
   const room = forestKey(repoId);
   const batcher = makeStreamBatcher(room, pendingId);
   let reasoning = "";
@@ -337,7 +353,7 @@ async function runForestTurn(repoId, forestSnapshot, history, userText, author, 
     /* repo introuvable → libellé générique */
   }
   try {
-    const prompt = buildForestPrompt(forestSnapshot, history, userText, author, repo);
+    const prompt = buildForestPrompt(forestSnapshot, history, userText, author, repo, links);
     const result = await runClaudeStreaming(prompt, model, root, {
       onChild: (child) => { const l = aiLocks.get(forestLockKey(repoId)); if (l) l.child = child; },
       onThinking: (d) => {
@@ -384,6 +400,7 @@ async function runForestTurn(repoId, forestSnapshot, history, userText, author, 
     broadcastForestMessage(repoId, msg);
     broadcastAffected(repoId, applied.affectedNodeIds);
     if (forestStructuralChange(applied.applied)) broadcast(room, "nodes:reordered", { forest: true });
+    if (applied.linksChanged) broadcast(room, "links:changed", { repoId });
   } catch (e) {
     batcher.end();
     const emsg = aiErrorMessage(e);
@@ -420,8 +437,10 @@ export function handleForestChat(res, repoId, body) {
   const pendingMessage = addForestMessage(repoId, { role: "assistant", author: "claude", model, body: "", state: "pending" });
   broadcastForestMessage(repoId, pendingMessage);
 
-  // Snapshot (toute la forêt) + historique FIGÉS avant lock/202.
+  // Snapshot (toute la forêt + liens) + historique FIGÉS avant lock/202.
   const forestSnapshot = listForest(repoId);
+  let forestLinks = [];
+  try { forestLinks = listForestLinks(repoId); } catch { /* pas de liens */ }
   const history = listForestMessages(repoId, { limit: 1000 }).filter((m) => m.state === "complete" && m.id !== userMessage.id);
 
   aiLocks.set(lockKey, { child: null });
@@ -435,7 +454,7 @@ export function handleForestChat(res, repoId, body) {
     /* repo sans clone résolvable → IA sans accès fichiers */
   }
   send(res, 202, { userMessage, pendingMessage });
-  runForestTurn(repoId, forestSnapshot, history, text, author, model, pendingMessage.id, root).catch(() => {});
+  runForestTurn(repoId, forestSnapshot, history, text, author, model, pendingMessage.id, root, forestLinks).catch(() => {});
 }
 
 // POST /api/forest/chat/confirm { messageId } — confirme une proposition destructive
@@ -455,5 +474,6 @@ export function handleForestChatConfirm(req, res, repoId, body) {
   broadcastForestMessage(repoId, updated);
   broadcastAffected(repoId, result.affectedNodeIds);
   if (forestStructuralChange(result.applied)) broadcast(forestKey(repoId), "nodes:reordered", { forest: true });
+  if (result.linksChanged) broadcast(forestKey(repoId), "links:changed", { repoId });
   return send(res, 200, { ok: true, applied: result.applied });
 }

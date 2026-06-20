@@ -65,6 +65,18 @@ function historyBlockOf(history) {
   return lines.join("\n");
 }
 
+// Rend la liste des liens de prérequis existants (« A dépend de B ») en texte
+// compact, avec titres quand connus. Vide → message « aucun ».
+function linksBlockOf(links, titleById) {
+  const list = Array.isArray(links) ? links.filter((l) => l && l.kind === "requires") : [];
+  if (!list.length) return "(aucun lien de prérequis pour l'instant)";
+  const label = (id) => {
+    const t = titleById && titleById.get(id);
+    return t ? `${id} (${stripUntrustedMarkers(t).slice(0, 60)})` : String(id);
+  };
+  return list.slice(0, 200).map((l) => `- ${label(l.fromId)} dépend de ${label(l.toId)}`).join("\n");
+}
+
 // Bloc commun « accès LECTURE SEULE au code source » (ou non) selon AI_REPO_ACCESS.
 function repoAccessLine(repoLabel) {
   return AI_REPO_ACCESS
@@ -78,7 +90,7 @@ function repoAccessLine(repoLabel) {
 // Construit le prompt scopé : préambule + état du nœud + SON SOUS-ARBRE (UNTRUSTED)
 // + historique du chat de CE nœud + dernier message. Le scope (nœud) vient de la
 // route ; l'IA ne peut agir que dans subtree(scope) (validé en base à l'apply).
-export function buildNodePrompt(scopeNode, descendants, history, userMessage, author, repo) {
+export function buildNodePrompt(scopeNode, descendants, history, userMessage, author, repo, links) {
   const repoLabel = (repo && (repo.name || repo.slug)) || "ce dépôt";
   const stateJson = JSON.stringify(
     {
@@ -89,6 +101,8 @@ export function buildNodePrompt(scopeNode, descendants, history, userMessage, au
     null,
     2
   );
+  const titleById = new Map([scopeNode, ...(descendants || [])].map((n) => [n.id, n.title]));
+  const linksBlock = linksBlockOf(links, titleById);
   const historyBlock = historyBlockOf(history);
 
   return [
@@ -123,11 +137,18 @@ export function buildNodePrompt(scopeNode, descendants, history, userMessage, au
     '- {"op":"delete_node","id":<id>}  (un descendant ; PAS le nœud courant)',
     '- {"op":"move_node","id":<id>,"parentId":<id>,"position?":<n>}',
     '- {"op":"reorder_children","parentId?":<id>,"order":[<id|tmpKey>,…]}',
+    '- {"op":"add_link","from?":<id|tmpKey|défaut=courant>,"to":<id|tmpKey>}  (PRÉREQUIS hors hiérarchie : « from dépend de to ». Les deux DOIVENT être dans ce sous-arbre. N\'affecte pas la progression ; sert au blocage.)',
+    '- {"op":"remove_link","from?":<id|défaut=courant>,"to":<id>}  (retire un prérequis)',
     "Crée des sous-jalons avec add_node. Pour un nœud créé ET réordonné dans le même tour, donne-lui un tmpKey.",
+    "Un PRÉREQUIS (add_link) sert quand un même nœud est requis par plusieurs autres : ne duplique pas le nœud,",
+    "crée-le une fois puis relie les dépendants avec add_link. Refusé si cela crée un cycle de prérequis.",
     "",
     "<<<UNTRUSTED>>>",
     "ÉTAT DU NŒUD COURANT + SOUS-ARBRE (JSON) :",
     stateJson,
+    "",
+    "LIENS DE PRÉREQUIS EXISTANTS (dans ce sous-arbre) :",
+    linksBlock,
     "",
     "HISTORIQUE DE LA CONVERSATION (de ce nœud) :",
     historyBlock || "(début de conversation)",
@@ -141,13 +162,15 @@ export function buildNodePrompt(scopeNode, descendants, history, userMessage, au
 // Construit le prompt du chat « top level » : préambule + TOUTE la forêt du repo
 // (UNTRUSTED, notes tronquées) + historique du chat de forêt + dernier message.
 // Le scope est le repo entier : add_node SANS parentId crée un OBJECTIF RACINE.
-export function buildForestPrompt(forestNodes, history, userMessage, author, repo) {
+export function buildForestPrompt(forestNodes, history, userMessage, author, repo, links) {
   const repoLabel = (repo && (repo.name || repo.slug)) || "ce dépôt";
   const stateJson = JSON.stringify(
     { scope: "forest", nodes: (forestNodes || []).map((n) => untrustedNode(n)) },
     null,
     2
   );
+  const titleById = new Map((forestNodes || []).map((n) => [n.id, n.title]));
+  const linksBlock = linksBlockOf(links, titleById);
   const historyBlock = historyBlockOf(history);
 
   return [
@@ -180,12 +203,19 @@ export function buildForestPrompt(forestNodes, history, userMessage, author, rep
     '- {"op":"delete_node","id":<id>}',
     '- {"op":"move_node","id":<id>,"parentId":<id|null>,"position?":<n>}  (parentId null = remonte en objectif racine)',
     '- {"op":"reorder_children","parentId?":<id|null>,"order":[<id|tmpKey>,…]}  (parentId null/omis = ordre des objectifs racines)',
+    '- {"op":"add_link","from":<id|tmpKey>,"to":<id|tmpKey>}  (PRÉREQUIS hors hiérarchie : « from dépend de to », n\'importe où dans le dépôt. N\'affecte pas la progression ; sert au blocage. `from` et `to` OBLIGATOIRES.)',
+    '- {"op":"remove_link","from":<id>,"to":<id>}  (retire un prérequis)',
     "Crée de NOUVEAUX objectifs avec add_node (sans parentId) et leurs sous-jalons (avec parentId/tmpKey).",
     "Pour un nœud créé ET réordonné dans le même tour, donne-lui un tmpKey.",
+    "Quand une brique sert à PLUSIEURS objectifs (ex. « réseau » requis par « chat » et « multijoueur »), ne la",
+    "duplique pas : crée-la une fois, puis relie chaque dépendant avec add_link. Cycle de prérequis refusé.",
     "",
     "<<<UNTRUSTED>>>",
     "ÉTAT DE LA FORÊT D'OBJECTIFS DU DÉPÔT (JSON, liste à plat ; parentId=null = objectif racine) :",
     stateJson,
+    "",
+    "LIENS DE PRÉREQUIS EXISTANTS (tout le dépôt) :",
+    linksBlock,
     "",
     "HISTORIQUE DE LA CONVERSATION (de cette forêt) :",
     historyBlock || "(début de conversation)",
