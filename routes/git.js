@@ -14,6 +14,8 @@ import {
   setGitConfigFor,
   diffFileFor,
   commitDetailFor,
+  listTreeFor,
+  fileContentFor,
   stageFor,
   unstageFor,
   discardFor,
@@ -109,6 +111,16 @@ export async function handle(ctx) {
   }
   if (method === "GET" && path === "/api/git/diff") {
     send(res, 200, diffFileFor(repoOf(q), q.get("path") || "", { staged: q.get("staged") === "true", untracked: q.get("untracked") === "true" }));
+    return true;
+  }
+  // Explorateur de fichiers : arbre complet + contenu d'un fichier (branche
+  // optionnelle). Lectures seules, non verrouillées.
+  if (method === "GET" && path === "/api/git/tree") {
+    send(res, 200, listTreeFor(repoOf(q), q.get("branch") || null));
+    return true;
+  }
+  if (method === "GET" && path === "/api/git/file") {
+    send(res, 200, fileContentFor(repoOf(q), q.get("path") || "", q.get("branch") || null));
     return true;
   }
   const gitCommitMatch = path.match(/^\/api\/git\/commit\/([0-9a-fA-F]{4,64})$/);

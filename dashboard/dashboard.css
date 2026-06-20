@@ -719,6 +719,31 @@ button.xs { padding: 3px 8px; font-size: 11px; }
 .diff-body .dl-hunk { color: var(--accent-2); }
 .diff-body .dl-meta { color: var(--text-dim); font-weight: 700; }
 
+/* Modale explorateur de fichiers : arbre (gauche) + contenu colorisé (droite) */
+.files-modal { width: min(1200px, 100%); }
+.files-branch { font-size: 12px; color: var(--text-dim); font-family: ui-monospace, monospace; }
+.files-body { display: flex; gap: 12px; margin-top: 12px; height: 72vh; }
+.files-sidebar { flex: 0 0 280px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.files-sidebar input { width: 100%; }
+.files-tree { flex: 1; overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 6px; font-size: 13px; }
+.files-tree .empty { padding: 16px; color: var(--text-dim); text-align: center; font-size: 12px; }
+.ftree-children { margin-left: 10px; border-left: 1px solid var(--border); padding-left: 2px; }
+.ftree-row { display: flex; align-items: center; gap: 2px; padding: 2px 6px; border-radius: 6px; cursor: pointer; white-space: nowrap; overflow: hidden; }
+.ftree-row:hover { background: color-mix(in srgb, var(--text) 8%, transparent); }
+.ftree-label { overflow: hidden; text-overflow: ellipsis; }
+.ftree-caret { display: inline-block; width: 12px; flex: 0 0 12px; text-align: center; transition: transform .12s; color: var(--text-dim); }
+.ftree-dir.open > .ftree-dirrow .ftree-caret { transform: rotate(90deg); }
+.ftree-dirrow .ftree-label { font-weight: 600; }
+.ftree-dirrow .ftree-label::before { content: "📁 "; }
+.ftree-file .ftree-label::before { content: "📄 "; }
+.ftree-file.active { background: var(--accent); color: #fff; }
+.files-view { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.files-path { font-family: ui-monospace, monospace; font-size: 12px; color: var(--text-dim); padding: 4px 2px 8px; word-break: break-all; }
+.files-scroll { flex: 1; display: flex; overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+.files-gutter { position: sticky; left: 0; margin: 0; padding: 12px 10px; text-align: right; color: var(--text-dim); border-right: 1px solid var(--border); user-select: none; font-family: ui-monospace, monospace; font-size: 12.5px; line-height: 1.5; background: var(--bg); }
+.files-code { margin: 0; flex: 1; padding: 0; overflow: visible; background: transparent; }
+.files-code code.hljs { padding: 12px; font-family: ui-monospace, monospace; font-size: 12.5px; line-height: 1.5; background: transparent; }
+
 /* Modale config : ajout de remote */
 .cfg-remote-add { display: flex; gap: 8px; margin-top: 8px; }
 .cfg-remote-add input { flex: 1; }
