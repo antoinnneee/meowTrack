@@ -8,6 +8,7 @@
 import { db, withRepo, nowIso, nextRef } from "./connection.js";
 import { TYPES, STATUSES, PRIORITIES } from "./constants.js";
 import { inspectPathFor, gitContextFor, branchContextFor, normalizePathFor } from "../repos.js";
+import { findNodeRow } from "./nodes.js"; // résolution code/id d'un jalon (cycle SÛR : corps de fonction uniquement)
 
 // Extrait les tokens `@chemin` d'un texte (description). Accepte lettres, chiffres,
 // `_ . / -`. Renvoie la liste dédupliquée (ordre d'apparition).
@@ -66,6 +67,7 @@ function rowToIssue(row, { withDetail = false } = {}) {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     references: listReferences(row.id),
+    nodes: listIssueNodes(row.id),
   };
   if (withDetail) issue.comments = listComments(row.id);
   return issue;
@@ -135,6 +137,58 @@ function setReferences(issueId, repoId, specs, branch = null) {
       "INSERT INTO refs(issue_id, path, kind, line_start, line_end, existed) VALUES(?,?,?,?,?,?)"
     ).run(issueId, norm, info.kind, lineStart, lineEnd, info.exists ? 1 : 0);
   }
+}
+
+// ── Jalons liés (nœuds Vibes) ────────────────────────────────────────────────
+// Lien VIVANT (pas de copie) issue → jalon : on relit toujours l'état courant du
+// nœud (titre/statut/progression). repoId omis quand l'appel hérite d'une portée
+// withRepo déjà ouverte (sous-appel de rowToIssue).
+export function listIssueNodes(issueId, repoId = null) {
+  return withRepo(repoId, () =>
+    db
+      .prepare(
+        `SELECT n.id, n.ref, n.title, n.status, n.color, n.emoji, n.progress
+           FROM issue_nodes il JOIN nodes n ON n.id = il.node_id
+          WHERE il.issue_id = ?
+          ORDER BY n.id`
+      )
+      .all(issueId)
+      .map((n) => ({
+        id: n.id,
+        ref: n.ref,
+        title: n.title,
+        status: n.status,
+        color: n.color,
+        emoji: n.emoji,
+        progress: Math.max(0, Math.min(100, n.progress | 0)),
+      }))
+  );
+}
+
+// Lie un jalon (code NODE-1 ou id) à une issue. Idempotent (UNIQUE). Les deux vivent
+// forcément dans le même dépôt (une seule base tracker) — on le vérifie par cohérence.
+export function linkIssueNode(repoId, issueRefOrId, nodeRefOrId) {
+  return withRepo(repoId, () => {
+    const issue = findRow(repoId, issueRefOrId);
+    if (!issue) throw new Error(`Issue introuvable : ${issueRefOrId}`);
+    const node = findNodeRow(nodeRefOrId, issue.repo_id);
+    if (!node) throw new Error(`Jalon introuvable : ${nodeRefOrId}`);
+    if (node.repo_id !== issue.repo_id) throw new Error("Jalon et issue de dépôts différents");
+    const res = db.prepare("INSERT OR IGNORE INTO issue_nodes(issue_id, node_id) VALUES(?, ?)").run(issue.id, node.id);
+    if (res.changes) touchIssue(issue.id);
+    return getIssueById(issue.id);
+  });
+}
+
+// Détache un jalon d'une issue (par id de nœud).
+export function unlinkIssueNode(repoId, issueRefOrId, nodeId) {
+  return withRepo(repoId, () => {
+    const issue = findRow(repoId, issueRefOrId);
+    if (!issue) throw new Error(`Issue introuvable : ${issueRefOrId}`);
+    const res = db.prepare("DELETE FROM issue_nodes WHERE issue_id = ? AND node_id = ?").run(issue.id, Number(nodeId));
+    if (res.changes) touchIssue(issue.id);
+    return getIssueById(issue.id);
+  });
 }
 
 // ── Commentaires ─────────────────────────────────────────────────────────────
