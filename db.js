@@ -18,21 +18,20 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 // Wrappers git PAR repoId (repos.js). Import circulaire SÛR : utilisés uniquement
 // dans le corps des fonctions, jamais à l'évaluation du module.
-import { inspectPathFor, gitContextFor, branchContextFor, normalizePathFor } from "./repos.js";
+import { inspectPathFor, gitContextFor, branchContextFor, normalizePathFor, trackerDbPathFor, removeTrackerStoreFor } from "./repos.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+// Base de REGISTRE (par machine, gitignorée) : UNIQUEMENT le registre des dépôts
+// (`repos`) et les réglages d'instance (`app_settings`). Les DONNÉES de tracking
+// (issues / nodes / messages…) ne vivent PAS ici : chaque dépôt a sa propre base
+// `tracker.db` (cf. trackerDbPathFor + pool), versionnée dans le dépôt lui-même.
 const DB_PATH = process.env.MEOWTRACK_DB || join(HERE, "meowtrack.db");
 
-const db = new Database(DB_PATH);
-db.pragma("journal_mode = WAL");
-db.pragma("synchronous = NORMAL");
-db.pragma("foreign_keys = ON");
-
-// ── Schéma (CREATE IF NOT EXISTS = nouveau schéma multi-repos) ────────────────
-// Sur une base VIERGE, ces tables naissent directement scopées par repo. Sur une
-// base PRÉ-EXISTANTE (ancien schéma mono-repo), le CREATE est sauté puis la
-// migration `migrateMultiRepo()` reconstruit issues/nodes/counters (cf. plus bas).
-db.exec(`
+const registry = new Database(DB_PATH);
+registry.pragma("journal_mode = WAL");
+registry.pragma("synchronous = NORMAL");
+registry.pragma("foreign_keys = ON");
+registry.exec(`
   CREATE TABLE IF NOT EXISTS repos (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     slug          TEXT UNIQUE NOT NULL,                 -- identifiant court stable (ex: 'meownopoly')
@@ -43,7 +42,82 @@ db.exec(`
     is_default    INTEGER NOT NULL DEFAULT 0,           -- repo utilisé quand le paramètre repo est omis
     created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
   );
+  -- Réglages globaux de l'instance (clé/valeur), ex. github_client_id éditable via l'UI.
+  CREATE TABLE IF NOT EXISTS app_settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT ''
+  );
+`);
 
+// ── Pool de connexions « tracker.db » par dépôt + connexion AMBIANTE ──────────
+// Une base SQLite PAR dépôt (cloisonnement total + versionnement git). Toutes les
+// requêtes de tracking passent par le proxy `db`, qui route vers la base du dépôt
+// COURANT — fixé à l'entrée de chaque fonction publique via withRepo(repoId, …).
+// Un arbre / une issue ne traverse jamais 2 dépôts : la connexion est donc stable
+// pendant toute une opération (transactions + sous-appels synchrones inclus).
+const _pool = new Map(); // repoId → Database (tracker.db)
+let _cx = null;          // connexion tracker active (ambiante)
+
+function cx() {
+  if (!_cx) throw new Error("Aucune connexion de dépôt active (withRepo manquant)");
+  return _cx;
+}
+// Proxy minimal : on conserve le nom `db` pour que les corps de fonctions de
+// tracking restent INCHANGÉS (db.prepare/exec/pragma/transaction → dépôt courant).
+const db = {
+  prepare: (sql) => cx().prepare(sql),
+  exec: (sql) => cx().exec(sql),
+  pragma: (p, o) => cx().pragma(p, o),
+  transaction: (fn) => cx().transaction(fn),
+};
+
+function ensureTrackerSchema(conn) {
+  conn.pragma("journal_mode = WAL");
+  conn.pragma("synchronous = NORMAL");
+  conn.pragma("foreign_keys = ON");
+  conn.exec(TRACKING_SCHEMA);
+  // Migrations additives idempotentes (bases tracker antérieures aux colonnes).
+  ensureColumn(conn, "nodes", "notes", "notes TEXT NOT NULL DEFAULT ''");
+  ensureColumn(conn, "nodes", "pos_x", "pos_x REAL");
+  ensureColumn(conn, "nodes", "pos_y", "pos_y REAL");
+}
+
+function trackDbFor(repoId) {
+  let conn = _pool.get(repoId);
+  if (conn) return conn;
+  const path = trackerDbPathFor(repoId); // crée le dossier au besoin (repos.js)
+  conn = new Database(path);
+  ensureTrackerSchema(conn);
+  _pool.set(repoId, conn);
+  return conn;
+}
+// Ferme et oublie la connexion d'un dépôt (suppression de dépôt).
+export function closeTrackerDb(repoId) {
+  const conn = _pool.get(repoId);
+  if (conn) {
+    try { conn.close(); } catch { /* ignore */ }
+    _pool.delete(repoId);
+  }
+}
+
+// Fixe la connexion ambiante sur le dépôt voulu pendant l'exécution de `fn`.
+// repoId null → si déjà dans une portée on HÉRITE (sous-appel même dépôt), sinon
+// dépôt par défaut. Réentrant (sauvegarde/restaure), sûr car tout est synchrone.
+function withRepo(repoId, fn) {
+  const target = repoId != null ? trackDbFor(resolveRepoId(repoId)) : _cx || trackDbFor(resolveRepoId(null));
+  const prev = _cx;
+  _cx = target;
+  try {
+    return fn();
+  } finally {
+    _cx = prev;
+  }
+}
+
+// ── Schéma des bases « tracker.db » (une par dépôt, sans table `repos`) ────────
+// repo_id est conservé (constant dans une base) pour limiter les changements de
+// requêtes, mais les FK vers `repos` sont retirées (la table n'existe pas ici).
+const TRACKING_SCHEMA = `
   CREATE TABLE IF NOT EXISTS issues (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     repo_id     INTEGER NOT NULL,
@@ -58,8 +132,7 @@ db.exec(`
     git_commit  TEXT,
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    UNIQUE(repo_id, ref),
-    FOREIGN KEY(repo_id) REFERENCES repos(id) ON DELETE CASCADE
+    UNIQUE(repo_id, ref)
   );
 
   CREATE TABLE IF NOT EXISTS refs (
@@ -88,8 +161,7 @@ db.exec(`
     repo_id INTEGER NOT NULL,
     prefix  TEXT NOT NULL,
     value   INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (repo_id, prefix),
-    FOREIGN KEY(repo_id) REFERENCES repos(id) ON DELETE CASCADE
+    PRIMARY KEY (repo_id, prefix)
   );
 
   -- ── Good Vibes v2 : arbre de NŒUDS récursif (objectifs = jalons = sous-jalons) ─
@@ -123,8 +195,7 @@ db.exec(`
     done_at     TEXT,
     CHECK (parent_id IS NULL OR parent_id <> id),     -- anti auto-parent direct
     UNIQUE(repo_id, ref),
-    FOREIGN KEY(parent_id) REFERENCES nodes(id) ON DELETE CASCADE,
-    FOREIGN KEY(repo_id) REFERENCES repos(id) ON DELETE CASCADE
+    FOREIGN KEY(parent_id) REFERENCES nodes(id) ON DELETE CASCADE
   );
   CREATE INDEX IF NOT EXISTS idx_nodes_parent ON nodes(parent_id, position, id);
   CREATE INDEX IF NOT EXISTS idx_nodes_root   ON nodes(root_id);
@@ -160,43 +231,38 @@ db.exec(`
     state        TEXT NOT NULL DEFAULT 'complete',     -- pending|streaming|complete|error
     actions      TEXT NOT NULL DEFAULT '[]',           -- JSON audit (appliquées/proposées)
     client_nonce TEXT,
-    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    FOREIGN KEY(repo_id) REFERENCES repos(id) ON DELETE CASCADE
+    created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
   );
   CREATE INDEX IF NOT EXISTS idx_forest_messages_repo ON forest_messages(repo_id, id);
-
-  -- Réglages globaux de l'instance (clé/valeur), ex. github_client_id éditable via l'UI.
-  CREATE TABLE IF NOT EXISTS app_settings (
-    key   TEXT PRIMARY KEY,
-    value TEXT NOT NULL DEFAULT ''
-  );
-`);
+`;
 
 // ── Migrations additives idempotentes (colonnes ajoutées sur bases existantes) ─
-function ensureColumn(table, column, ddl) {
-  const cols = db.prepare(`PRAGMA table_info(${table})`).all();
-  if (!cols.some((c) => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+// Paramétrées par connexion : appliquées au tracker COURANT (ensureTrackerSchema)
+// ou à la base de registre/legacy (migration). `db` n'est plus une connexion mais
+// un proxy vers le dépôt courant : ces helpers prennent donc `conn` explicitement.
+function ensureColumn(conn, table, column, ddl) {
+  const cols = conn.prepare(`PRAGMA table_info(${table})`).all();
+  if (!cols.some((c) => c.name === column)) conn.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
 }
-function tableHasColumn(table, column) {
-  return db.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column);
+function tableHasColumn(conn, table, column) {
+  return conn.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column);
+}
+function hasTable(conn, name) {
+  return !!conn.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?").get(name);
 }
 
-// ── Réglages globaux (clé/valeur) ──────────────────────────────────────────────
+// ── Réglages globaux (clé/valeur) — base de REGISTRE (instance, par machine) ───
 export function getSetting(key, fallback = "") {
-  const row = db.prepare("SELECT value FROM app_settings WHERE key = ?").get(key);
+  const row = registry.prepare("SELECT value FROM app_settings WHERE key = ?").get(key);
   return row ? row.value : fallback;
 }
 export function setSetting(key, value) {
-  db.prepare(
-    "INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
-  ).run(key, String(value ?? ""));
+  registry
+    .prepare("INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+    .run(key, String(value ?? ""));
   return getSetting(key);
 }
-ensureColumn("nodes", "notes", "notes TEXT NOT NULL DEFAULT ''"); // notes markdown par nœud (JSON liste)
-ensureColumn("nodes", "pos_x", "pos_x REAL"); // position manuelle graphe (drag & drop)
-ensureColumn("nodes", "pos_y", "pos_y REAL");
 
-// ── Migration mono-repo → multi-repos (idempotente, data-préservante) ─────────
 // Slug dérivé d'une URL git : dernier segment sans .git, normalisé.
 function deriveSlug(url) {
   if (!url) return null;
@@ -205,19 +271,19 @@ function deriveSlug(url) {
   if (!seg) return null;
   return seg.toLowerCase().replace(/[^a-z0-9._-]/g, "-") || null;
 }
-// Crée le repo par défaut (depuis l'env) si le registre est vide.
+// Crée le repo par défaut (depuis l'env) si le REGISTRE est vide.
 function bootstrapDefaultRepo() {
-  if (db.prepare("SELECT COUNT(*) c FROM repos").get().c > 0) return;
+  if (registry.prepare("SELECT COUNT(*) c FROM repos").get().c > 0) return;
   const url = (process.env.MEOWTRACK_REPO_URL || "").trim() || null;
   const localPath = (process.env.MEOWTRACK_REPO || "").trim() || null;
   const slug = deriveSlug(url) || "default";
-  db.prepare(
-    "INSERT INTO repos(slug, name, url, local_path, default_branch, is_default) VALUES(?,?,?,?,?,1)"
-  ).run(slug, slug, url, localPath, null);
+  registry
+    .prepare("INSERT INTO repos(slug, name, url, local_path, default_branch, is_default) VALUES(?,?,?,?,?,1)")
+    .run(slug, slug, url, localPath, null);
 }
-// Garantit que chaque compteur (repo, préfixe) est ≥ au plus grand suffixe des
-// refs existants — évite toute collision de `nextRef` si la table counters était
-// absente / en retard sur les issues/nodes déjà présents (robustesse migration).
+// Garantit que chaque compteur (repo, préfixe) du tracker COURANT est ≥ au plus
+// grand suffixe des refs existants — anti-collision de `nextRef` après import /
+// migration (counters absente ou en retard). S'exécute DANS une portée withRepo.
 function reconcileCounters(repoId) {
   const upsertMax = db.prepare(
     "INSERT INTO counters(repo_id, prefix, value) VALUES(?,?,?) ON CONFLICT(repo_id, prefix) DO UPDATE SET value = MAX(value, excluded.value)"
@@ -236,23 +302,26 @@ function reconcileCounters(repoId) {
   bump(db.prepare("SELECT ref FROM issues WHERE repo_id = ?").all(repoId));
   bump(db.prepare("SELECT ref FROM nodes WHERE repo_id = ?").all(repoId));
 }
-function migrateMultiRepo() {
-  bootstrapDefaultRepo();
-  const defaultId = db.prepare("SELECT id FROM repos WHERE is_default = 1").get()?.id
-    || db.prepare("SELECT id FROM repos ORDER BY id LIMIT 1").get()?.id;
-  if (defaultId == null) return; // aucun repo (ne devrait pas arriver)
 
-  // Reconstruit une table de l'ancien schéma vers le nouveau (scopée repo_id).
-  // foreign_keys doit être OFF pendant le DROP/RENAME (changement de pragma hors transaction).
-  const needIssues = !tableHasColumn("issues", "repo_id");
-  const needNodes = !tableHasColumn("nodes", "repo_id");
-  const needCounters = !tableHasColumn("counters", "repo_id");
+// ── Normalisation mono-repo → repo_id SUR LA BASE LEGACY (= fichier de registre) ─
+// N'agit QUE si la base de registre contient encore les anciennes tables de
+// tracking (instance d'avant la séparation par dépôt) sans colonne repo_id. Ajoute
+// repo_id pour que `splitLegacyToTrackers` puisse filtrer par dépôt. Idempotente.
+function migrateLegacyMultiRepo() {
+  if (!hasTable(registry, "issues")) return;
+  const defaultId =
+    registry.prepare("SELECT id FROM repos WHERE is_default = 1").get()?.id ||
+    registry.prepare("SELECT id FROM repos ORDER BY id LIMIT 1").get()?.id;
+  if (defaultId == null) return;
+  const needIssues = hasTable(registry, "issues") && !tableHasColumn(registry, "issues", "repo_id");
+  const needNodes = hasTable(registry, "nodes") && !tableHasColumn(registry, "nodes", "repo_id");
+  const needCounters = hasTable(registry, "counters") && !tableHasColumn(registry, "counters", "repo_id");
   if (!needIssues && !needNodes && !needCounters) return;
 
-  db.pragma("foreign_keys = OFF");
-  db.transaction(() => {
+  registry.pragma("foreign_keys = OFF");
+  registry.transaction(() => {
     if (needIssues) {
-      db.exec(`
+      registry.exec(`
         CREATE TABLE issues_new (
           id INTEGER PRIMARY KEY AUTOINCREMENT, repo_id INTEGER NOT NULL, ref TEXT NOT NULL,
           type TEXT NOT NULL DEFAULT 'bug', title TEXT NOT NULL, description TEXT DEFAULT '',
@@ -260,18 +329,19 @@ function migrateMultiRepo() {
           tags TEXT NOT NULL DEFAULT '[]', branch TEXT, git_commit TEXT,
           created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
           updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-          UNIQUE(repo_id, ref), FOREIGN KEY(repo_id) REFERENCES repos(id) ON DELETE CASCADE
+          UNIQUE(repo_id, ref)
         );`);
-      db.prepare(
-        `INSERT INTO issues_new (id, repo_id, ref, type, title, description, status, priority, tags, branch, git_commit, created_at, updated_at)
-         SELECT id, ?, ref, type, title, description, status, priority, tags, branch, git_commit,
-                COALESCE(created_at, strftime('%Y-%m-%dT%H:%M:%SZ','now')), COALESCE(updated_at, strftime('%Y-%m-%dT%H:%M:%SZ','now')) FROM issues`
-      ).run(defaultId);
-      db.exec("DROP TABLE issues; ALTER TABLE issues_new RENAME TO issues;");
-      db.exec("CREATE INDEX IF NOT EXISTS idx_issues_repo ON issues(repo_id);");
+      registry
+        .prepare(
+          `INSERT INTO issues_new (id, repo_id, ref, type, title, description, status, priority, tags, branch, git_commit, created_at, updated_at)
+           SELECT id, ?, ref, type, title, description, status, priority, tags, branch, git_commit,
+                  COALESCE(created_at, strftime('%Y-%m-%dT%H:%M:%SZ','now')), COALESCE(updated_at, strftime('%Y-%m-%dT%H:%M:%SZ','now')) FROM issues`
+        )
+        .run(defaultId);
+      registry.exec("DROP TABLE issues; ALTER TABLE issues_new RENAME TO issues;");
     }
     if (needNodes) {
-      db.exec(`
+      registry.exec(`
         CREATE TABLE nodes_new (
           id INTEGER PRIMARY KEY AUTOINCREMENT, repo_id INTEGER NOT NULL, ref TEXT NOT NULL,
           parent_id INTEGER, root_id INTEGER NOT NULL, depth INTEGER NOT NULL DEFAULT 0,
@@ -283,43 +353,92 @@ function migrateMultiRepo() {
           created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
           updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')), done_at TEXT,
           CHECK (parent_id IS NULL OR parent_id <> id), UNIQUE(repo_id, ref),
-          FOREIGN KEY(parent_id) REFERENCES nodes(id) ON DELETE CASCADE,
-          FOREIGN KEY(repo_id) REFERENCES repos(id) ON DELETE CASCADE
+          FOREIGN KEY(parent_id) REFERENCES nodes(id) ON DELETE CASCADE
         );`);
-      db.prepare(
-        `INSERT INTO nodes_new (id, repo_id, ref, parent_id, root_id, depth, path, title, description, notes, status, color, emoji, target_date, progress, position, pos_x, pos_y, version, created_at, updated_at, done_at)
-         SELECT id, ?, ref, parent_id, root_id, depth, path, title, description, notes, status, color, emoji, target_date, progress, position, pos_x, pos_y, version,
-                COALESCE(created_at, strftime('%Y-%m-%dT%H:%M:%SZ','now')), COALESCE(updated_at, strftime('%Y-%m-%dT%H:%M:%SZ','now')), done_at FROM nodes`
-      ).run(defaultId);
-      db.exec("DROP TABLE nodes; ALTER TABLE nodes_new RENAME TO nodes;");
-      db.exec(`
-        CREATE INDEX IF NOT EXISTS idx_nodes_repo   ON nodes(repo_id);
-        CREATE INDEX IF NOT EXISTS idx_nodes_parent ON nodes(parent_id, position, id);
-        CREATE INDEX IF NOT EXISTS idx_nodes_root   ON nodes(root_id);
-        CREATE INDEX IF NOT EXISTS idx_nodes_path   ON nodes(path);
-        CREATE INDEX IF NOT EXISTS idx_nodes_status ON nodes(status);`);
+      registry
+        .prepare(
+          `INSERT INTO nodes_new (id, repo_id, ref, parent_id, root_id, depth, path, title, description, notes, status, color, emoji, target_date, progress, position, pos_x, pos_y, version, created_at, updated_at, done_at)
+           SELECT id, ?, ref, parent_id, root_id, depth, path, title, description, notes, status, color, emoji, target_date, progress, position, pos_x, pos_y, version,
+                  COALESCE(created_at, strftime('%Y-%m-%dT%H:%M:%SZ','now')), COALESCE(updated_at, strftime('%Y-%m-%dT%H:%M:%SZ','now')), done_at FROM nodes`
+        )
+        .run(defaultId);
+      registry.exec("DROP TABLE nodes; ALTER TABLE nodes_new RENAME TO nodes;");
     }
     if (needCounters) {
-      db.exec(`
+      registry.exec(`
         CREATE TABLE counters_new (
           repo_id INTEGER NOT NULL, prefix TEXT NOT NULL, value INTEGER NOT NULL DEFAULT 0,
-          PRIMARY KEY (repo_id, prefix), FOREIGN KEY(repo_id) REFERENCES repos(id) ON DELETE CASCADE
+          PRIMARY KEY (repo_id, prefix)
         );`);
-      db.prepare("INSERT INTO counters_new (repo_id, prefix, value) SELECT ?, prefix, value FROM counters").run(defaultId);
-      db.exec("DROP TABLE counters; ALTER TABLE counters_new RENAME TO counters;");
+      registry.prepare("INSERT INTO counters_new (repo_id, prefix, value) SELECT ?, prefix, value FROM counters").run(defaultId);
+      registry.exec("DROP TABLE counters; ALTER TABLE counters_new RENAME TO counters;");
     }
   })();
-  db.pragma("foreign_keys = ON");
-  reconcileCounters(defaultId); // compteurs ≥ refs existants (anti-collision)
+  registry.pragma("foreign_keys = ON");
 }
-migrateMultiRepo();
 
-// Index sur repo_id — créés APRÈS la migration (colonnes garanties présentes,
-// que la base soit vierge ou reconstruite depuis l'ancien schéma).
-db.exec(`
-  CREATE INDEX IF NOT EXISTS idx_issues_repo ON issues(repo_id);
-  CREATE INDEX IF NOT EXISTS idx_nodes_repo  ON nodes(repo_id);
-`);
+// ── Scission de la base LEGACY (registre) → une base tracker.db PAR dépôt ──────
+// Pour chaque dépôt, copie ses données de tracking depuis l'ancienne base centrale
+// vers son `tracker.db` (ids PRÉSERVÉS) via ATTACH. Idempotente : drapeau global +
+// trackers déjà peuplés ignorés. Les tables legacy du registre sont CONSERVÉES
+// (sauvegarde — jamais droppées). Colonnes ÉNUMÉRÉES (pas de SELECT *) car les
+// ALTER ADD COLUMN historiques ont pu changer l'ordre des colonnes legacy.
+const COLS = {
+  issues: "id, repo_id, ref, type, title, description, status, priority, tags, branch, git_commit, created_at, updated_at",
+  refs: "id, issue_id, path, kind, line_start, line_end, existed, created_at",
+  comments: "id, issue_id, body, created_at",
+  counters: "repo_id, prefix, value",
+  nodes:
+    "id, repo_id, ref, parent_id, root_id, depth, path, title, description, notes, status, color, emoji, target_date, progress, position, pos_x, pos_y, version, created_at, updated_at, done_at",
+  node_messages: "id, node_id, role, author, model, body, reasoning, state, actions, client_nonce, created_at",
+  forest_messages: "id, repo_id, role, author, model, body, reasoning, state, actions, client_nonce, created_at",
+};
+function splitLegacyToTrackers() {
+  if (!hasTable(registry, "issues")) return; // base déjà « registre seul »
+  if (getSetting("tracking_split_done") === "1") return; // déjà scindée
+  for (const r of registry.prepare("SELECT id FROM repos").all()) {
+    const rid = r.id;
+    const conn = trackDbFor(rid);
+    const already = conn.prepare("SELECT COUNT(*) c FROM issues").get().c + conn.prepare("SELECT COUNT(*) c FROM nodes").get().c;
+    if (already > 0) continue; // tracker non vide : ne pas écraser
+    conn.prepare("ATTACH DATABASE ? AS legacy").run(DB_PATH);
+    // Copie une table legacy → tracker (colonnes énumérées, clause WHERE paramétrée
+    // par rid). Tolérante : une table legacy absente/incompatible n'échoue pas tout.
+    const TS = "strftime('%Y-%m-%dT%H:%M:%SZ','now')";
+    const copy = (table, whereSql) => {
+      try {
+        // created_at/updated_at sont NOT NULL côté tracker → COALESCE defensif
+        // (données legacy théoriquement non nulles, mais on ne casse pas la copie).
+        const sel = COLS[table]
+          .split(", ")
+          .map((c) => (c === "created_at" || c === "updated_at" ? `COALESCE(${c}, ${TS})` : c))
+          .join(", ");
+        conn.prepare(`INSERT INTO main.${table} (${COLS[table]}) SELECT ${sel} FROM legacy.${table} WHERE ${whereSql}`).run(rid);
+      } catch (e) {
+        console.error(`[meowtrack] split ${table} (repo ${rid}) : ${e.message || e}`);
+      }
+    };
+    try {
+      conn.transaction(() => {
+        copy("issues", "repo_id = ?");
+        copy("refs", "issue_id IN (SELECT id FROM legacy.issues WHERE repo_id = ?)");
+        copy("comments", "issue_id IN (SELECT id FROM legacy.issues WHERE repo_id = ?)");
+        copy("counters", "repo_id = ?");
+        copy("nodes", "repo_id = ?");
+        copy("node_messages", "node_id IN (SELECT id FROM legacy.nodes WHERE repo_id = ?)");
+        copy("forest_messages", "repo_id = ?");
+      })();
+    } finally {
+      conn.prepare("DETACH DATABASE legacy").run();
+    }
+    withRepo(rid, () => reconcileCounters(rid)); // compteurs ≥ refs importés
+  }
+  setSetting("tracking_split_done", "1");
+}
+
+bootstrapDefaultRepo();
+migrateLegacyMultiRepo();
+splitLegacyToTrackers();
 
 // ── Vocabulaire ──────────────────────────────────────────────────────────────
 export const TYPES = ["bug", "feature", "task", "chore"];
@@ -341,7 +460,9 @@ const MAX_NOTE_COUNT = 50; // nombre max de notes par nœud
 const PREFIX = { bug: "BUG", feature: "FEAT", task: "TASK", chore: "CHORE", node: "NODE" };
 
 function nowIso() {
-  return db.prepare("SELECT strftime('%Y-%m-%dT%H:%M:%SZ','now') AS t").get().t;
+  // Horodatage indépendant de la connexion → registre (toujours disponible, même
+  // hors portée withRepo).
+  return registry.prepare("SELECT strftime('%Y-%m-%dT%H:%M:%SZ','now') AS t").get().t;
 }
 
 // Code lisible suivant `BUG-1`, `FEAT-2`… Un compteur monotone PAR (repo, préfixe)
@@ -376,11 +497,11 @@ function rowToRepo(r) {
 export function getRepoRow(idOrSlug) {
   if (idOrSlug == null || idOrSlug === "") return null;
   if (typeof idOrSlug === "number" || /^\d+$/.test(String(idOrSlug)))
-    return db.prepare("SELECT * FROM repos WHERE id = ?").get(Number(idOrSlug));
-  return db.prepare("SELECT * FROM repos WHERE slug = ? COLLATE NOCASE").get(String(idOrSlug));
+    return registry.prepare("SELECT * FROM repos WHERE id = ?").get(Number(idOrSlug));
+  return registry.prepare("SELECT * FROM repos WHERE slug = ? COLLATE NOCASE").get(String(idOrSlug));
 }
 export function listRepoRows() {
-  return db.prepare("SELECT * FROM repos ORDER BY is_default DESC, id").all();
+  return registry.prepare("SELECT * FROM repos ORDER BY is_default DESC, id").all();
 }
 export function listRepos() {
   return listRepoRows().map(rowToRepo);
@@ -389,7 +510,7 @@ export function getRepo(idOrSlug) {
   return rowToRepo(getRepoRow(idOrSlug));
 }
 function defaultRepoRow() {
-  return db.prepare("SELECT * FROM repos WHERE is_default = 1").get() || db.prepare("SELECT * FROM repos ORDER BY id LIMIT 1").get();
+  return registry.prepare("SELECT * FROM repos WHERE is_default = 1").get() || registry.prepare("SELECT * FROM repos ORDER BY id LIMIT 1").get();
 }
 // Résout le paramètre `repo` (id ou slug, ou vide) → id. Vide → repo par défaut.
 // Lève si le repo demandé est inconnu (jamais de fallback silencieux sur défaut).
@@ -410,14 +531,14 @@ export function createRepo({ slug, name, url, localPath, defaultBranch, isDefaul
   let s = sanitizeSlug(slug) || deriveSlug(url);
   if (!s) throw new Error("slug requis (ou URL permettant de le dériver)");
   if (getRepoRow(s)) throw new Error(`slug déjà utilisé : ${s}`);
-  const tx = db.transaction(() => {
-    if (isDefault) db.prepare("UPDATE repos SET is_default = 0").run();
-    const res = db
+  const tx = registry.transaction(() => {
+    if (isDefault) registry.prepare("UPDATE repos SET is_default = 0").run();
+    const res = registry
       .prepare("INSERT INTO repos(slug, name, url, local_path, default_branch, is_default) VALUES(?,?,?,?,?,?)")
       .run(s, String(name || s), url || null, localPath || null, defaultBranch || null, isDefault ? 1 : 0);
     // Premier repo du registre → forcément défaut.
-    if (db.prepare("SELECT COUNT(*) c FROM repos WHERE is_default = 1").get().c === 0)
-      db.prepare("UPDATE repos SET is_default = 1 WHERE id = ?").run(res.lastInsertRowid);
+    if (registry.prepare("SELECT COUNT(*) c FROM repos WHERE is_default = 1").get().c === 0)
+      registry.prepare("UPDATE repos SET is_default = 1 WHERE id = ?").run(res.lastInsertRowid);
     return Number(res.lastInsertRowid);
   });
   return getRepo(tx());
@@ -431,11 +552,11 @@ export function updateRepo(idOrSlug, fields = {}) {
   if ("url" in fields) { sets.push("url = ?"); vals.push(fields.url || null); }
   if ("localPath" in fields) { sets.push("local_path = ?"); vals.push(fields.localPath || null); }
   if ("defaultBranch" in fields) { sets.push("default_branch = ?"); vals.push(fields.defaultBranch || null); }
-  const tx = db.transaction(() => {
-    if (sets.length) db.prepare(`UPDATE repos SET ${sets.join(", ")} WHERE id = ?`).run(...vals, row.id);
+  const tx = registry.transaction(() => {
+    if (sets.length) registry.prepare(`UPDATE repos SET ${sets.join(", ")} WHERE id = ?`).run(...vals, row.id);
     if (fields.isDefault === true) {
-      db.prepare("UPDATE repos SET is_default = 0").run();
-      db.prepare("UPDATE repos SET is_default = 1 WHERE id = ?").run(row.id);
+      registry.prepare("UPDATE repos SET is_default = 0").run();
+      registry.prepare("UPDATE repos SET is_default = 1 WHERE id = ?").run(row.id);
     }
   });
   tx();
@@ -444,13 +565,20 @@ export function updateRepo(idOrSlug, fields = {}) {
 export function deleteRepo(idOrSlug) {
   const row = getRepoRow(idOrSlug);
   if (!row) return { deleted: false };
-  if (db.prepare("SELECT COUNT(*) c FROM repos").get().c <= 1) throw new Error("Impossible de supprimer le dernier repo");
+  if (registry.prepare("SELECT COUNT(*) c FROM repos").get().c <= 1) throw new Error("Impossible de supprimer le dernier repo");
   const wasDefault = row.is_default;
-  // Cascade : issues/nodes/counters du repo supprimés via FK ON DELETE CASCADE.
-  db.prepare("DELETE FROM repos WHERE id = ?").run(row.id);
+  registry.prepare("DELETE FROM repos WHERE id = ?").run(row.id);
   if (wasDefault) {
-    const n = db.prepare("SELECT id FROM repos ORDER BY id LIMIT 1").get();
-    if (n) db.prepare("UPDATE repos SET is_default = 1 WHERE id = ?").run(n.id);
+    const n = registry.prepare("SELECT id FROM repos ORDER BY id LIMIT 1").get();
+    if (n) registry.prepare("UPDATE repos SET is_default = 1 WHERE id = ?").run(n.id);
+  }
+  // Les données de tracking de ce dépôt vivent dans SA base tracker.db (plus de
+  // cascade FK) : on ferme la connexion et on supprime son magasin (dossier/worktree).
+  closeTrackerDb(row.id);
+  try {
+    removeTrackerStoreFor(row.id, row);
+  } catch (e) {
+    console.error(`[meowtrack] suppression tracker (repo ${row.id}) : ${e.message || e}`);
   }
   return { deleted: true, id: row.id, slug: row.slug };
 }
@@ -518,42 +646,50 @@ function rowToIssue(row, { withDetail = false } = {}) {
 }
 
 // ── Références ───────────────────────────────────────────────────────────────
-export function listReferences(issueId) {
-  return db
-    .prepare("SELECT * FROM refs WHERE issue_id = ? ORDER BY id")
-    .all(issueId)
-    .map((r) => ({
-      id: r.id,
-      path: r.path,
-      kind: r.kind,
-      lineStart: r.line_start,
-      lineEnd: r.line_end,
-      existed: !!r.existed,
-    }));
+// repoId = dépôt propriétaire de l'issue (sélectionne la base tracker). Omis quand
+// l'appel est déjà dans une portée withRepo (sous-appel de rowToIssue → hérite).
+export function listReferences(issueId, repoId = null) {
+  return withRepo(repoId, () =>
+    db
+      .prepare("SELECT * FROM refs WHERE issue_id = ? ORDER BY id")
+      .all(issueId)
+      .map((r) => ({
+        id: r.id,
+        path: r.path,
+        kind: r.kind,
+        lineStart: r.line_start,
+        lineEnd: r.line_end,
+        existed: !!r.existed,
+      }))
+  );
 }
 
-export function addReference(issueId, spec) {
-  // Repo + branche de l'issue : la validation des chemins se fait dans CE repo,
-  // dans l'arbre de la branche de l'issue (pas le working tree courant).
-  const issueRow = db.prepare("SELECT repo_id, branch FROM issues WHERE id = ?").get(issueId);
-  if (!issueRow) throw new Error(`Issue introuvable : ${issueId}`);
-  const { repo_id: repoId, branch } = issueRow;
-  const { path, lineStart, lineEnd } = parseRefSpec(spec);
-  const norm = normalizePathFor(repoId, path);
-  if (!norm) throw new Error(`Chemin invalide ou hors repo : ${path}`);
-  const info = inspectPathFor(repoId, norm, branch);
-  const info2 = db
-    .prepare("INSERT INTO refs(issue_id, path, kind, line_start, line_end, existed) VALUES(?,?,?,?,?,?)")
-    .run(issueId, norm, info.kind, lineStart, lineEnd, info.exists ? 1 : 0);
-  touchIssue(issueId);
-  return db.prepare("SELECT * FROM refs WHERE id = ?").get(info2.lastInsertRowid);
+export function addReference(issueId, spec, repoId = null) {
+  return withRepo(repoId, () => {
+    // Repo + branche de l'issue : la validation des chemins se fait dans CE repo,
+    // dans l'arbre de la branche de l'issue (pas le working tree courant).
+    const issueRow = db.prepare("SELECT repo_id, branch FROM issues WHERE id = ?").get(issueId);
+    if (!issueRow) throw new Error(`Issue introuvable : ${issueId}`);
+    const { repo_id: rid, branch } = issueRow;
+    const { path, lineStart, lineEnd } = parseRefSpec(spec);
+    const norm = normalizePathFor(rid, path);
+    if (!norm) throw new Error(`Chemin invalide ou hors repo : ${path}`);
+    const info = inspectPathFor(rid, norm, branch);
+    const info2 = db
+      .prepare("INSERT INTO refs(issue_id, path, kind, line_start, line_end, existed) VALUES(?,?,?,?,?,?)")
+      .run(issueId, norm, info.kind, lineStart, lineEnd, info.exists ? 1 : 0);
+    touchIssue(issueId);
+    return db.prepare("SELECT * FROM refs WHERE id = ?").get(info2.lastInsertRowid);
+  });
 }
 
-export function removeReference(refId) {
-  const row = db.prepare("SELECT issue_id FROM refs WHERE id = ?").get(refId);
-  const res = db.prepare("DELETE FROM refs WHERE id = ?").run(refId);
-  if (row) touchIssue(row.issue_id);
-  return res.changes > 0;
+export function removeReference(refId, repoId = null) {
+  return withRepo(repoId, () => {
+    const row = db.prepare("SELECT issue_id FROM refs WHERE id = ?").get(refId);
+    const res = db.prepare("DELETE FROM refs WHERE id = ?").run(refId);
+    if (row) touchIssue(row.issue_id);
+    return res.changes > 0;
+  });
 }
 
 // Remplace l'intégralité des références d'une issue par `specs` (dédupliqué).
@@ -576,17 +712,21 @@ function setReferences(issueId, repoId, specs, branch = null) {
 }
 
 // ── Commentaires ─────────────────────────────────────────────────────────────
-export function listComments(issueId) {
-  return db.prepare("SELECT id, body, created_at AS createdAt FROM comments WHERE issue_id = ? ORDER BY id").all(issueId);
+export function listComments(issueId, repoId = null) {
+  return withRepo(repoId, () =>
+    db.prepare("SELECT id, body, created_at AS createdAt FROM comments WHERE issue_id = ? ORDER BY id").all(issueId)
+  );
 }
 
 export function addComment(repoId, refOrId, body) {
-  const issue = findRow(repoId, refOrId);
-  if (!issue) throw new Error(`Issue introuvable : ${refOrId}`);
-  if (!body || !String(body).trim()) throw new Error("Commentaire vide");
-  db.prepare("INSERT INTO comments(issue_id, body) VALUES(?, ?)").run(issue.id, String(body).trim());
-  touchIssue(issue.id);
-  return getIssueById(issue.id);
+  return withRepo(repoId, () => {
+    const issue = findRow(repoId, refOrId);
+    if (!issue) throw new Error(`Issue introuvable : ${refOrId}`);
+    if (!body || !String(body).trim()) throw new Error("Commentaire vide");
+    db.prepare("INSERT INTO comments(issue_id, body) VALUES(?, ?)").run(issue.id, String(body).trim());
+    touchIssue(issue.id);
+    return getIssueById(issue.id);
+  });
 }
 
 // ── Issues ───────────────────────────────────────────────────────────────────
@@ -609,11 +749,12 @@ function touchIssue(id) {
 }
 
 export function getIssue(repoId, refOrId) {
-  return rowToIssue(findRow(repoId, refOrId), { withDetail: true });
+  return withRepo(repoId, () => rowToIssue(findRow(repoId, refOrId), { withDetail: true }));
 }
 
 export function createIssue(repoId, input = {}) {
   if (repoId == null) throw new Error("repoId requis");
+  return withRepo(repoId, () => {
   const type = TYPES.includes(input.type) ? input.type : "bug";
   const title = String(input.title || "").trim();
   if (!title) throw new Error("Titre requis");
@@ -640,9 +781,11 @@ export function createIssue(repoId, input = {}) {
     return id;
   });
   return getIssueById(tx());
+  });
 }
 
 export function updateIssue(repoId, refOrId, fields = {}) {
+  return withRepo(repoId, () => {
   const row = findRow(repoId, refOrId);
   if (!row) throw new Error(`Issue introuvable : ${refOrId}`);
   const sets = [];
@@ -687,17 +830,21 @@ export function updateIssue(repoId, refOrId, fields = {}) {
   });
   tx();
   return getIssueById(row.id);
+  });
 }
 
 export function deleteIssue(repoId, refOrId) {
-  const row = findRow(repoId, refOrId);
-  if (!row) return false;
-  db.prepare("DELETE FROM issues WHERE id = ?").run(row.id); // cascade refs + comments
-  return true;
+  return withRepo(repoId, () => {
+    const row = findRow(repoId, refOrId);
+    if (!row) return false;
+    db.prepare("DELETE FROM issues WHERE id = ?").run(row.id); // cascade refs + comments
+    return true;
+  });
 }
 
 export function listIssues(repoId, filter = {}) {
   if (repoId == null) throw new Error("repoId requis");
+  return withRepo(repoId, () => {
   const where = ["repo_id = ?"];
   const vals = [repoId];
   if (filter.type) {
@@ -741,11 +888,13 @@ export function listIssues(repoId, filter = {}) {
   const rows = db.prepare(sql).all(...vals);
   const limit = filter.limit ? Math.max(1, Math.min(500, filter.limit)) : 200;
   return rows.slice(0, limit).map((r) => rowToIssue(r));
+  });
 }
 
 // Statistiques pour le dashboard / tool de résumé, scopées par repo.
 export function stats(repoId) {
   if (repoId == null) throw new Error("repoId requis");
+  return withRepo(repoId, () => {
   const byStatus = {};
   for (const r of db.prepare("SELECT status, COUNT(*) c FROM issues WHERE repo_id = ? GROUP BY status").all(repoId)) byStatus[r.status] = r.c;
   const byType = {};
@@ -755,6 +904,7 @@ export function stats(repoId) {
     byPriority[r.priority] = r.c;
   const total = db.prepare("SELECT COUNT(*) c FROM issues WHERE repo_id = ?").get(repoId).c;
   return { total, byStatus, byType, byPriority };
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -933,26 +1083,31 @@ function buildTree(rows, rootId) {
 
 // ── Lecture ──────────────────────────────────────────────────────────────────
 export function getNode(refOrId, { withMessages = false, withTree = false, repoId = null } = {}) {
-  const row = findNodeRow(refOrId, repoId);
-  if (!row) return null;
-  const node = rowToNode(row);
-  if (withTree) node.children = buildTree(loadSubtreeRows(row), row.id).children;
-  if (withMessages) node.messages = listNodeMessages(row.id);
-  return node;
+  return withRepo(repoId, () => {
+    const row = findNodeRow(refOrId, repoId);
+    if (!row) return null;
+    const node = rowToNode(row);
+    if (withTree) node.children = buildTree(loadSubtreeRows(row), row.id).children;
+    if (withMessages) node.messages = listNodeMessages(row.id);
+    return node;
+  });
 }
 
 export function getSubtree(refOrId, { maxNodes = MAX_NODES_PER_SUBTREE, repoId = null } = {}) {
-  const row = findNodeRow(refOrId, repoId);
-  if (!row) return null;
-  const rows = loadSubtreeRows(row).slice(0, maxNodes);
-  const counts = new Map();
-  for (const r of rows) if (r.parent_id != null) counts.set(r.parent_id, (counts.get(r.parent_id) || 0) + 1);
-  const toN = (r) => rowToNode(r, { childCount: counts.get(r.id) || 0 });
-  return { node: toN(row), descendants: rows.filter((r) => r.id !== row.id).map(toN) };
+  return withRepo(repoId, () => {
+    const row = findNodeRow(refOrId, repoId);
+    if (!row) return null;
+    const rows = loadSubtreeRows(row).slice(0, maxNodes);
+    const counts = new Map();
+    for (const r of rows) if (r.parent_id != null) counts.set(r.parent_id, (counts.get(r.parent_id) || 0) + 1);
+    const toN = (r) => rowToNode(r, { childCount: counts.get(r.id) || 0 });
+    return { node: toN(row), descendants: rows.filter((r) => r.id !== row.id).map(toN) };
+  });
 }
 
 export function listRootNodes(repoId, filter = {}) {
   if (repoId == null) throw new Error("repoId requis");
+  return withRepo(repoId, () => {
   const where = ["parent_id IS NULL", "repo_id = ?"];
   const vals = [repoId];
   if (filter.status) {
@@ -967,27 +1122,34 @@ export function listRootNodes(repoId, filter = {}) {
   const rows = db.prepare("SELECT * FROM nodes WHERE " + where.join(" AND ") + " ORDER BY position, id").all(...vals);
   const limit = filter.limit ? Math.max(1, Math.min(500, filter.limit)) : 200;
   return rows.slice(0, limit).map((r) => rowToNode(r));
+  });
 }
 
 // Forêt entière d'un repo à plat (graphe). childCount dérivé en un passage.
 export function listForest(repoId) {
   if (repoId == null) throw new Error("repoId requis");
+  return withRepo(repoId, () => {
   const rows = db.prepare("SELECT * FROM nodes WHERE repo_id = ? ORDER BY depth, position, id").all(repoId);
   const counts = new Map();
   for (const r of rows) if (r.parent_id != null) counts.set(r.parent_id, (counts.get(r.parent_id) || 0) + 1);
   return rows.map((r) => rowToNode(r, { childCount: counts.get(r.id) || 0 }));
+  });
 }
 
 export function listChildren(parentRefOrId, repoId = null) {
-  const p = findNodeRow(parentRefOrId, repoId);
-  if (!p) return [];
-  return db.prepare("SELECT * FROM nodes WHERE parent_id = ? ORDER BY position, id").all(p.id).map((r) => rowToNode(r));
+  return withRepo(repoId, () => {
+    const p = findNodeRow(parentRefOrId, repoId);
+    if (!p) return [];
+    return db.prepare("SELECT * FROM nodes WHERE parent_id = ? ORDER BY position, id").all(p.id).map((r) => rowToNode(r));
+  });
 }
 
-export function nodePathIds(refOrId) {
-  const row = findNodeRow(refOrId);
-  if (!row) return [];
-  return String(row.path || "").split("/").filter(Boolean).map(Number);
+export function nodePathIds(refOrId, repoId = null) {
+  return withRepo(repoId, () => {
+    const row = findNodeRow(refOrId, repoId);
+    if (!row) return [];
+    return String(row.path || "").split("/").filter(Boolean).map(Number);
+  });
 }
 
 // ── Rollup de progression + concurrence ──────────────────────────────────────
@@ -1160,20 +1322,24 @@ function _reorderChildrenRows(parentId, orderedIds, repoId = null) {
 
 // ── CRUD public (chaque mutation → rollup ascendant) ─────────────────────────
 export function createNode(repoId, parentRefOrId, input = {}) {
-  if (parentRefOrId != null) {
-    // L'enfant hérite du repo de son parent (repoId ignoré si incohérent).
-    const parent = findNodeRow(parentRefOrId, repoId);
-    if (!parent) throw new Error(`Parent introuvable : ${parentRefOrId}`);
-    let id;
-    db.transaction(() => {
-      id = _insertChild(parent.id, input);
-      recomputeAncestorProgress(id, { bumpSelf: false });
-    })();
+  return withRepo(repoId, () => {
+    // Id numérique du dépôt courant (repoId peut être null = défaut, ou un slug).
+    const rid = resolveRepoId(repoId);
+    if (parentRefOrId != null) {
+      // L'enfant hérite du repo de son parent (repoId ignoré si incohérent).
+      const parent = findNodeRow(parentRefOrId, rid);
+      if (!parent) throw new Error(`Parent introuvable : ${parentRefOrId}`);
+      let id;
+      db.transaction(() => {
+        id = _insertChild(parent.id, input);
+        recomputeAncestorProgress(id, { bumpSelf: false });
+      })();
+      return getNode(id);
+    }
+    // Racine.
+    const id = db.transaction(() => _insertRoot(rid, input))();
     return getNode(id);
-  }
-  // Racine.
-  const id = db.transaction(() => _insertRoot(repoId, input))();
-  return getNode(id);
+  });
 }
 
 // Insère un nœud RACINE (parent_id NULL, root_id=lui-même, path "/id/"). Non
@@ -1202,8 +1368,9 @@ function _insertRoot(repoId, input = {}) {
   return newId;
 }
 
-export function updateNode(refOrId, fields = {}, expectedVersion) {
-  const row = findNodeRow(refOrId);
+export function updateNode(refOrId, fields = {}, expectedVersion, repoId = null) {
+  return withRepo(repoId, () => {
+  const row = findNodeRow(refOrId, repoId);
   if (!row) throw new Error(`Nœud introuvable : ${refOrId}`);
   const tx = db.transaction(() => {
     if (expectedVersion != null && expectedVersion !== "") {
@@ -1220,10 +1387,12 @@ export function updateNode(refOrId, fields = {}, expectedVersion) {
   });
   tx();
   return getNode(row.id);
+  });
 }
 
-export function deleteNode(refOrId) {
-  const row = findNodeRow(refOrId);
+export function deleteNode(refOrId, repoId = null) {
+  return withRepo(repoId, () => {
+  const row = findNodeRow(refOrId, repoId);
   if (!row) return { deleted: false };
   const parentId = row.parent_id;
   db.transaction(() => {
@@ -1231,12 +1400,14 @@ export function deleteNode(refOrId) {
     if (parentId != null) recomputeAncestorProgress(parentId, { bumpSelf: true });
   })();
   return { deleted: true, id: row.id, parentId, rootId: row.root_id };
+  });
 }
 
-export function moveNode(refOrId, newParentRefOrId, position) {
-  const row = findNodeRow(refOrId);
+export function moveNode(refOrId, newParentRefOrId, position, repoId = null) {
+  return withRepo(repoId, () => {
+  const row = findNodeRow(refOrId, repoId);
   if (!row) throw new Error(`Nœud introuvable : ${refOrId}`);
-  const newParent = newParentRefOrId == null ? null : findNodeRow(newParentRefOrId);
+  const newParent = newParentRefOrId == null ? null : findNodeRow(newParentRefOrId, repoId);
   if (newParentRefOrId != null && !newParent) throw new Error("Nouveau parent introuvable");
   if (newParent) {
     if (newParent.id === row.id) throw new Error("Un nœud ne peut pas être son propre parent");
@@ -1251,11 +1422,13 @@ export function moveNode(refOrId, newParentRefOrId, position) {
     if (oldParentId != null && oldParentId !== newParentId) recomputeAncestorProgress(oldParentId, { bumpSelf: true });
   })();
   return getNode(row.id);
+  });
 }
 
 export function reorderChildren(parentRefOrId, orderedIds = [], repoId = null) {
+  return withRepo(repoId, () => {
   let pId = null;
-  let rId = repoId;
+  let rId = repoId != null ? resolveRepoId(repoId) : null;
   if (parentRefOrId != null) {
     const p = findNodeRow(parentRefOrId, repoId);
     if (!p) throw new Error(`Nœud introuvable : ${parentRefOrId}`);
@@ -1268,39 +1441,47 @@ export function reorderChildren(parentRefOrId, orderedIds = [], repoId = null) {
     if (pId != null) recomputeAncestorProgress(pId, { bumpSelf: true });
   })();
   return pId != null ? getNode(pId, { withTree: true }) : listRootNodes(rId);
+  });
 }
 
-export function setNodePositions(positions = []) {
+export function setNodePositions(positions = [], repoId = null) {
+  return withRepo(repoId, () => {
   const upd = db.prepare("UPDATE nodes SET pos_x = ?, pos_y = ? WHERE id = ?");
   db.transaction(() => {
     for (const p of positions || []) {
-      const row = findNodeRow(p && p.id);
+      const row = findNodeRow(p && p.id, repoId);
       if (row) upd.run(p.x == null ? null : Number(p.x), p.y == null ? null : Number(p.y), row.id);
     }
   })();
   return (positions || []).length;
+  });
 }
 
 // ── Chat (par nœud) ──────────────────────────────────────────────────────────
-export function clearNodeMessages(nodeRefOrId) {
-  const node = findNodeRow(nodeRefOrId);
-  if (!node) throw new Error(`Nœud introuvable : ${nodeRefOrId}`);
-  return db.prepare("DELETE FROM node_messages WHERE node_id = ?").run(node.id).changes;
+export function clearNodeMessages(nodeRefOrId, repoId = null) {
+  return withRepo(repoId, () => {
+    const node = findNodeRow(nodeRefOrId, repoId);
+    if (!node) throw new Error(`Nœud introuvable : ${nodeRefOrId}`);
+    return db.prepare("DELETE FROM node_messages WHERE node_id = ?").run(node.id).changes;
+  });
 }
 
-export function listNodeMessages(nodeId, { afterId = 0, limit = 500 } = {}) {
-  return db
-    .prepare("SELECT * FROM node_messages WHERE node_id = ? AND id > ? ORDER BY id LIMIT ?")
-    .all(nodeId, afterId, Math.max(1, Math.min(1000, limit)))
-    .map(rowToNodeMessage);
+export function listNodeMessages(nodeId, { afterId = 0, limit = 500, repoId = null } = {}) {
+  return withRepo(repoId, () =>
+    db
+      .prepare("SELECT * FROM node_messages WHERE node_id = ? AND id > ? ORDER BY id LIMIT ?")
+      .all(nodeId, afterId, Math.max(1, Math.min(1000, limit)))
+      .map(rowToNodeMessage)
+  );
 }
 
-export function getNodeMessage(messageId) {
-  return rowToNodeMessage(db.prepare("SELECT * FROM node_messages WHERE id = ?").get(messageId));
+export function getNodeMessage(messageId, repoId = null) {
+  return withRepo(repoId, () => rowToNodeMessage(db.prepare("SELECT * FROM node_messages WHERE id = ?").get(messageId)));
 }
 
-export function addNodeMessage(nodeRefOrId, { role, author, model, body, reasoning, state, actions, clientNonce } = {}) {
-  const node = findNodeRow(nodeRefOrId);
+export function addNodeMessage(nodeRefOrId, { role, author, model, body, reasoning, state, actions, clientNonce } = {}, repoId = null) {
+  return withRepo(repoId, () => {
+  const node = findNodeRow(nodeRefOrId, repoId);
   if (!node) throw new Error(`Nœud introuvable : ${nodeRefOrId}`);
   const r = role === "assistant" ? "assistant" : "user";
   const st = MSG_STATE_SET.has(state) ? state : "complete";
@@ -1321,9 +1502,11 @@ export function addNodeMessage(nodeRefOrId, { role, author, model, body, reasoni
       nonce
     );
   return getNodeMessage(Number(res.lastInsertRowid));
+  });
 }
 
-export function updateNodeMessage(messageId, { body, reasoning, state, actions } = {}) {
+export function updateNodeMessage(messageId, { body, reasoning, state, actions } = {}, repoId = null) {
+  return withRepo(repoId, () => {
   const sets = [];
   const vals = [];
   if (body != null) {
@@ -1345,11 +1528,13 @@ export function updateNodeMessage(messageId, { body, reasoning, state, actions }
   }
   if (sets.length) db.prepare(`UPDATE node_messages SET ${sets.join(", ")} WHERE id = ?`).run(...vals, messageId);
   return getNodeMessage(messageId);
+  });
 }
 
 // ── Application des actions IA (cœur sécurité — catalogue scopé subtree) ──────
-export function applyNodeActions(scopeNodeId, actions = []) {
-  const scope = findNodeRow(scopeNodeId);
+export function applyNodeActions(scopeNodeId, actions = [], repoId = null) {
+  return withRepo(repoId, () => {
+  const scope = findNodeRow(scopeNodeId, repoId);
   if (!scope) throw new Error(`Nœud introuvable : ${scopeNodeId}`);
   const applied = [];
   const rejected = [];
@@ -1474,6 +1659,7 @@ export function applyNodeActions(scopeNodeId, actions = []) {
   });
   tx();
   return { applied, rejected, affectedNodeIds: [...affected], roots: [...roots] };
+  });
 }
 
 // ── Chat « top level » (par repo / forêt) ────────────────────────────────────
@@ -1503,23 +1689,27 @@ function rowToForestMessage(r) {
 
 export function clearForestMessages(repoId) {
   if (repoId == null) throw new Error("repoId requis");
-  return db.prepare("DELETE FROM forest_messages WHERE repo_id = ?").run(repoId).changes;
+  return withRepo(repoId, () => db.prepare("DELETE FROM forest_messages WHERE repo_id = ?").run(resolveRepoId(repoId)).changes);
 }
 
 export function listForestMessages(repoId, { afterId = 0, limit = 500 } = {}) {
   if (repoId == null) throw new Error("repoId requis");
-  return db
-    .prepare("SELECT * FROM forest_messages WHERE repo_id = ? AND id > ? ORDER BY id LIMIT ?")
-    .all(repoId, afterId, Math.max(1, Math.min(1000, limit)))
-    .map(rowToForestMessage);
+  return withRepo(repoId, () =>
+    db
+      .prepare("SELECT * FROM forest_messages WHERE repo_id = ? AND id > ? ORDER BY id LIMIT ?")
+      .all(resolveRepoId(repoId), afterId, Math.max(1, Math.min(1000, limit)))
+      .map(rowToForestMessage)
+  );
 }
 
-export function getForestMessage(messageId) {
-  return rowToForestMessage(db.prepare("SELECT * FROM forest_messages WHERE id = ?").get(messageId));
+export function getForestMessage(messageId, repoId = null) {
+  return withRepo(repoId, () => rowToForestMessage(db.prepare("SELECT * FROM forest_messages WHERE id = ?").get(messageId)));
 }
 
 export function addForestMessage(repoId, { role, author, model, body, reasoning, state, actions, clientNonce } = {}) {
   if (repoId == null) throw new Error("repoId requis");
+  return withRepo(repoId, () => {
+  const rid = resolveRepoId(repoId);
   const r = role === "assistant" ? "assistant" : "user";
   const st = MSG_STATE_SET.has(state) ? state : "complete";
   const nonce = clientNonce ? String(clientNonce).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 80) || null : null;
@@ -1528,7 +1718,7 @@ export function addForestMessage(repoId, { role, author, model, body, reasoning,
       "INSERT INTO forest_messages(repo_id, role, author, model, body, reasoning, state, actions, client_nonce) VALUES(?,?,?,?,?,?,?,?,?)"
     )
     .run(
-      repoId,
+      rid,
       r,
       String(author || "anon").slice(0, 60) || "anon",
       model || null,
@@ -1539,9 +1729,11 @@ export function addForestMessage(repoId, { role, author, model, body, reasoning,
       nonce
     );
   return getForestMessage(Number(res.lastInsertRowid));
+  });
 }
 
-export function updateForestMessage(messageId, { body, reasoning, state, actions } = {}) {
+export function updateForestMessage(messageId, { body, reasoning, state, actions } = {}, repoId = null) {
+  return withRepo(repoId, () => {
   const sets = [];
   const vals = [];
   if (body != null) {
@@ -1563,14 +1755,17 @@ export function updateForestMessage(messageId, { body, reasoning, state, actions
   }
   if (sets.length) db.prepare(`UPDATE forest_messages SET ${sets.join(", ")} WHERE id = ?`).run(...vals, messageId);
   return getForestMessage(messageId);
+  });
 }
 
 // ── Application des actions IA « top level » (scope = repo entier) ─────────────
 // Pendant de applyNodeActions, mais la garde est l'appartenance au repo (et non un
 // sous-arbre) : add_node sans parentId crée un OBJECTIF RACINE. Tout id cible doit
 // appartenir au repo ; cap global par repo. Reste fail-closed et transactionnel.
-export function applyForestActions(repoId, actions = []) {
-  if (repoId == null) throw new Error("repoId requis");
+export function applyForestActions(repoIdParam, actions = []) {
+  if (repoIdParam == null) throw new Error("repoId requis");
+  return withRepo(repoIdParam, () => {
+  const repoId = resolveRepoId(repoIdParam);
   const applied = [];
   const rejected = [];
   const list = Array.isArray(actions) ? actions.slice(0, MAX_ACTIONS) : [];
@@ -1702,6 +1897,5 @@ export function applyForestActions(repoId, actions = []) {
   });
   tx();
   return { applied, rejected, affectedNodeIds: [...affected], roots: [...roots] };
+  });
 }
-
-export { db };

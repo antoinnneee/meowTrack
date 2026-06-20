@@ -66,7 +66,7 @@ r = parseAiTurn('Exemple :\n```json\n{"foo":1}\n```');
 check("fence sans actions → ignoré", r.actions.length === 0 && r.malformed === false);
 
 // 9. pipeline complet parse → applyNodeActions (tmpKey, add_node, reorder_children)
-const g = db.createNode(null, { title: "Pipeline" });
+const g = db.createNode(null, null, { title: "Pipeline" }); // repo défaut, nœud racine
 const ai =
   'Je crée deux sous-jalons.\n<<<MEOWTRACK_ACTIONS>>>\n```json\n' +
   '{"actions":[{"op":"add_node","title":"Sous A","tmpKey":"a"},' +

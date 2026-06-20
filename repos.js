@@ -11,6 +11,7 @@
 // moment de l'évaluation des modules — uniquement à l'intérieur des fonctions.
 
 import { execFileSync } from "node:child_process";
+import { mkdirSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -100,6 +101,40 @@ export function rootForRepo(repoOrId) {
 export function invalidateRepo(repoId) {
   _rootCache.delete(repoId);
   for (const key of [..._index.keys()]) if (key.startsWith(`${repoId}|`)) _index.delete(key);
+}
+
+// ── Magasin tracker.db PAR dépôt (base SQLite cloisonnée + versionnée) ────────
+// Chaque dépôt a sa base `tracker.db` (données de tracking : issues/nodes/…). Elle
+// vit dans un dossier dédié `.trackers/<slug>/`, à côté de la base de REGISTRE
+// (même dossier que MEOWTRACK_DB). Phase 1 : simple dossier local. Phase 2 : ce
+// dossier deviendra un worktree git de la branche orphan « tracking » du dépôt
+// (cloisonnement + versionnement, sans toucher aux branches de code).
+function trackingRoot() {
+  const dbPath = process.env.MEOWTRACK_DB || join(HERE, "meowtrack.db");
+  return resolve(dirname(dbPath), ".trackers");
+}
+export function trackerStoreDirFor(repoOrId) {
+  const repo = typeof repoOrId === "object" ? repoOrId : getRepoRow(repoOrId);
+  if (!repo) throw new Error(`Repo introuvable : ${repoOrId}`);
+  return join(trackingRoot(), repo.slug);
+}
+// Chemin du fichier tracker.db d'un dépôt (crée le dossier au besoin). Appelé par
+// db.js à l'ouverture paresseuse de la connexion du dépôt.
+export function trackerDbPathFor(repoOrId) {
+  const dir = trackerStoreDirFor(repoOrId);
+  mkdirSync(dir, { recursive: true });
+  return join(dir, "tracker.db");
+}
+// Supprime le magasin tracker d'un dépôt (suppression de dépôt). `repoRow` est
+// fourni par deleteRepo car la ligne de registre est déjà supprimée à cet instant.
+export function removeTrackerStoreFor(repoId, repoRow = null) {
+  const slug = repoRow ? repoRow.slug : (getRepoRow(repoId) || {}).slug;
+  if (!slug) return;
+  try {
+    rmSync(join(trackingRoot(), slug), { recursive: true, force: true });
+  } catch {
+    /* ignore */
+  }
 }
 
 // ── Cache d'index de chemins, par (repo, branche) ────────────────────────────
