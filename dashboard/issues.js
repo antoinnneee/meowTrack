@@ -32,8 +32,7 @@ async function loadMeta() {
     const g = m.git || {};
     $("#meta").innerHTML =
       `repo <b>${esc((m.repoRoot || "").split(/[\\/]/).pop())}</b> · ` +
-      `branche <b>${esc(g.branch || "?")}</b> @ <b>${esc(g.commit || "?")}</b> · ` +
-      `<b>${m.total || 0}</b> entrées (${m.byStatus?.in_progress || 0} en cours, ${m.byStatus?.open || 0} ouvertes)`;
+      `branche <b>${esc(g.branch || "?")}</b> @ <b>${esc(g.commit || "?")}</b>`;
   } catch (e) {
     $("#meta").textContent = "⚠ serveur injoignable : " + e.message;
   }
