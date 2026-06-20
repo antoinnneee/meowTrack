@@ -119,6 +119,7 @@
             <span class="code" id="ndRef"></span>
             <span class="badge" id="ndStatus"></span>
             <span class="badge" id="ndTarget" hidden></span>
+            <span class="badge badge-blocked" id="ndBlocked" hidden>⛔ Bloqué</span>
             <span class="gd-pct" id="ndPct"></span>
           </div>
         </div>
@@ -154,6 +155,15 @@
                 </div>
               </div>
             </div>
+          </div>
+
+          <!-- Liens de prérequis (hors hiérarchie) : ce nœud dépend de / est requis par -->
+          <div class="nd-links" id="ndLinks">
+            <div class="ms-section-head">
+              <h3>🔒 Prérequis</h3>
+              <button id="ndAddReqBtn" class="ghost" title="Ajouter un prérequis">＋ Prérequis</button>
+            </div>
+            <div class="nd-links-view" id="ndLinksView"></div>
           </div>
 
           <div class="ms-section-head">

@@ -20,7 +20,7 @@
 // lectures concurrentes + un seul writer.
 
 // ── Vocabulaire (constantes publiques) ───────────────────────────────────────
-export { TYPES, STATUSES, PRIORITIES, NODE_STATUSES, NODE_COLORS, CHAT_MODELS, MESSAGE_STATES } from "./db/constants.js";
+export { TYPES, STATUSES, PRIORITIES, NODE_STATUSES, NODE_COLORS, CHAT_MODELS, MESSAGE_STATES, NODE_LINK_KINDS } from "./db/constants.js";
 
 // ── Connexions (registre + pool tracker) ─────────────────────────────────────
 export { closeTrackerDb, checkpointTracker } from "./db/connection.js";
@@ -72,6 +72,10 @@ export {
   moveNode,
   reorderChildren,
   setNodePositions,
+  listNodeLinks,
+  listForestLinks,
+  addNodeLink,
+  removeNodeLink,
   applyNodeActions,
   applyForestActions,
 } from "./db/nodes.js";

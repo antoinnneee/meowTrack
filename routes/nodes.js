@@ -17,6 +17,9 @@ import {
   reorderChildren,
   listNodeMessages,
   clearNodeMessages,
+  listForestLinks,
+  addNodeLink,
+  removeNodeLink,
 } from "../db.js";
 import { openStream, forestKey, nodeKey, broadcast, refreshAncestors } from "../sse.js";
 import {
@@ -102,6 +105,41 @@ export async function handle(ctx) {
     return true;
   }
 
+  // ── Liens de prérequis (graphe additif). AVANT la route paramétrée (sinon
+  // « links » serait pris pour un :ref). Diffuse links:changed sur la forêt +
+  // les rooms des deux nœuds pour que toutes les vues se re-synchronisent.
+  if (path === "/api/nodes/links") {
+    const id = repoOf(q);
+    if (method === "GET") {
+      send(res, 200, listForestLinks(id));
+      return true;
+    }
+    const body = await readBody(req);
+    const rid = repoOf(q, body);
+    const ping = (r) => {
+      const payload = { fromId: r.fromId, toId: r.toId, repoId: r.repoId };
+      broadcast(forestKey(rid), "links:changed", payload);
+      if (r.fromId != null) broadcast(nodeKey(rid, r.fromId), "links:changed", payload);
+      if (r.toId != null) broadcast(nodeKey(rid, r.toId), "links:changed", payload);
+    };
+    if (method === "POST") {
+      try {
+        const r = addNodeLink(body.fromId, body.toId, { repoId: rid });
+        ping(r);
+        send(res, 201, r);
+      } catch (e) {
+        send(res, 400, { error: "link_failed", message: e.message });
+      }
+      return true;
+    }
+    if (method === "DELETE") {
+      const r = removeNodeLink(body.fromId, body.toId, { repoId: rid });
+      if (r.removed) ping(r);
+      send(res, 200, r);
+      return true;
+    }
+  }
+
   // /api/nodes/:ref[…] (résolution du code scopée par ?repo=)
   const nodeMatch = path.match(/^\/api\/nodes\/([^/]+)(\/subtree|\/messages|\/move|\/reorder|\/chat(?:\/confirm)?|\/stream)?$/);
   if (nodeMatch) {
@@ -119,7 +157,7 @@ export async function handle(ctx) {
       send(
         res,
         node ? 200 : 404,
-        node ? getNode(node.id, { repoId: id, withTree: q.get("tree") !== "false", withMessages: q.get("messages") === "true" }) : { error: "not_found", ref }
+        node ? getNode(node.id, { repoId: id, withTree: q.get("tree") !== "false", withMessages: q.get("messages") === "true", withLinks: true }) : { error: "not_found", ref }
       );
       return true;
     }

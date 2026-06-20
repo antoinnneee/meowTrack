@@ -19,10 +19,12 @@ import { resolveRepoId } from "./registry.js";
 import {
   NODE_STATUS_SET,
   NODE_COLOR_SET,
+  NODE_LINK_KIND_SET,
   MAX_DEPTH,
   MAX_NODES_PER_SUBTREE,
   MAX_NODES_PER_REPO,
   MAX_ACTIONS,
+  MAX_LINKS_PER_NODE,
 } from "./constants.js";
 import { clampStr, clampEmoji, parseNotes, normalizeNotesInput, validDateOrNull } from "./helpers.js";
 import { listNodeMessages } from "./messages.js";
@@ -109,13 +111,14 @@ function buildTree(rows, rootId) {
 }
 
 // ── Lecture ──────────────────────────────────────────────────────────────────
-export function getNode(refOrId, { withMessages = false, withTree = false, repoId = null } = {}) {
+export function getNode(refOrId, { withMessages = false, withTree = false, withLinks = false, repoId = null } = {}) {
   return withRepo(repoId, () => {
     const row = findNodeRow(refOrId, repoId);
     if (!row) return null;
     const node = rowToNode(row);
     if (withTree) node.children = buildTree(loadSubtreeRows(row), row.id).children;
     if (withMessages) node.messages = listNodeMessages(row.id);
+    if (withLinks) Object.assign(node, nodeLinksOf(row.id)); // { requires, requiredBy }
     return node;
   });
 }
@@ -481,6 +484,116 @@ export function setNodePositions(positions = [], repoId = null) {
     }
   })();
   return (positions || []).length;
+  });
+}
+
+// ── Liens de PRÉREQUIS (graphe additif, hors hiérarchie) ─────────────────────
+// from = dépendant, to = prérequis (« from dépend de to »). N'affecte ni le path
+// ni la progression : purement relationnel + signal de blocage côté UI. Les deux
+// extrémités sont dans la même base tracker → un lien est intrinsèquement intra-repo.
+
+// Résumé léger d'un nœud cible/source d'un lien (pour les listes côté UI).
+function linkSummary(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    ref: row.ref,
+    title: row.title,
+    status: row.status,
+    emoji: row.emoji,
+    color: row.color,
+    progress: Math.max(0, Math.min(100, row.progress | 0)),
+    depth: row.depth,
+  };
+}
+
+// { requires: [prérequis de ce nœud], requiredBy: [nœuds qui en dépendent] }.
+function nodeLinksOf(id) {
+  const sel = db.prepare("SELECT * FROM nodes WHERE id = ?");
+  const reqRows = db.prepare("SELECT to_id AS oid, id AS linkId FROM node_links WHERE from_id = ? AND kind = 'requires'").all(id);
+  const byRows = db.prepare("SELECT from_id AS oid, id AS linkId FROM node_links WHERE to_id = ? AND kind = 'requires'").all(id);
+  const map = (r) => { const s = linkSummary(sel.get(r.oid)); return s && { ...s, linkId: r.linkId }; };
+  return {
+    requires: reqRows.map(map).filter(Boolean),
+    requiredBy: byRows.map(map).filter(Boolean),
+  };
+}
+export function listNodeLinks(refOrId, repoId = null) {
+  return withRepo(repoId, () => {
+    const row = findNodeRow(refOrId, repoId);
+    if (!row) return { requires: [], requiredBy: [] };
+    return nodeLinksOf(row.id);
+  });
+}
+
+// Tous les liens d'un repo, à plat — pour le graphe (mêmes ids que listForest).
+export function listForestLinks(repoId) {
+  if (repoId == null) throw new Error("repoId requis");
+  return withRepo(repoId, () => {
+    const rid = resolveRepoId(repoId);
+    // Jointure sur from_id pour ne garder que les liens du repo (les deux extrémités
+    // partagent forcément le repo, le path n'étant pas inter-repos).
+    return db
+      .prepare(
+        `SELECT l.id AS id, l.from_id AS fromId, l.to_id AS toId, l.kind AS kind
+           FROM node_links l JOIN nodes n ON n.id = l.from_id
+          WHERE n.repo_id = ? ORDER BY l.id`
+      )
+      .all(rid)
+      .map((r) => ({ id: r.id, fromId: r.fromId, toId: r.toId, kind: r.kind }));
+  });
+}
+
+// `to` est-il déjà accessible depuis `from` en suivant les arêtes 'requires' ?
+// (détection de cycle avant insertion : on refuse from→to si to peut déjà atteindre from).
+function requiresReaches(startId, targetId) {
+  const seen = new Set();
+  const stack = [startId];
+  const next = db.prepare("SELECT to_id FROM node_links WHERE from_id = ? AND kind = 'requires'");
+  while (stack.length) {
+    const cur = stack.pop();
+    if (cur === targetId) return true;
+    if (seen.has(cur)) continue;
+    seen.add(cur);
+    for (const r of next.all(cur)) stack.push(r.to_id);
+  }
+  return false;
+}
+
+// Crée un lien « from dépend de to ». Fail-closed : extrémités du même repo, pas
+// d'auto-lien, type connu, anti-cycle, cap par nœud. Idempotent (UNIQUE).
+export function addNodeLink(fromRefOrId, toRefOrId, { kind = "requires", repoId = null } = {}) {
+  return withRepo(repoId, () => {
+    if (!NODE_LINK_KIND_SET.has(kind)) throw new Error(`Type de lien invalide : ${kind}`);
+    const from = findNodeRow(fromRefOrId, repoId);
+    const to = findNodeRow(toRefOrId, repoId);
+    if (!from) throw new Error(`Nœud introuvable : ${fromRefOrId}`);
+    if (!to) throw new Error(`Nœud introuvable : ${toRefOrId}`);
+    if (from.id === to.id) throw new Error("Un nœud ne peut pas être son propre prérequis");
+    if (from.repo_id !== to.repo_id) throw new Error("Lien inter-repos interdit");
+    let link;
+    db.transaction(() => {
+      // Cycle : to atteint-il déjà from via 'requires' ? (le nouveau lien from→to bouclerait)
+      if (requiresReaches(to.id, from.id)) throw new Error("Cycle de prérequis interdit");
+      const n = db.prepare("SELECT COUNT(*) c FROM node_links WHERE from_id = ? AND kind = ?").get(from.id, kind).c;
+      if (n >= MAX_LINKS_PER_NODE) throw new Error("Trop de prérequis sur ce nœud");
+      const res = db
+        .prepare("INSERT OR IGNORE INTO node_links(from_id, to_id, kind) VALUES(?,?,?)")
+        .run(from.id, to.id, kind);
+      link = { id: Number(res.lastInsertRowid) || null, fromId: from.id, toId: to.id, kind, created: res.changes > 0 };
+    })();
+    return { link, fromId: from.id, toId: to.id, repoId: from.repo_id };
+  });
+}
+
+// Supprime un lien from→to (par défaut 'requires'). Idempotent.
+export function removeNodeLink(fromRefOrId, toRefOrId, { kind = "requires", repoId = null } = {}) {
+  return withRepo(repoId, () => {
+    const from = findNodeRow(fromRefOrId, repoId);
+    const to = findNodeRow(toRefOrId, repoId);
+    if (!from || !to) return { removed: false };
+    const ch = db.prepare("DELETE FROM node_links WHERE from_id = ? AND to_id = ? AND kind = ?").run(from.id, to.id, kind).changes;
+    return { removed: ch > 0, fromId: from.id, toId: to.id, repoId: from.repo_id };
   });
 }
 

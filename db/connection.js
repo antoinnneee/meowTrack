@@ -197,6 +197,25 @@ export const TRACKING_SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS idx_node_messages_node ON node_messages(node_id, id);
 
+  -- Liens de PRÉREQUIS entre nœuds (graphe additif, hors hiérarchie). from_id =
+  -- le dépendant, to_id = le prérequis (« from dépend de to »). N'affecte NI le
+  -- path/depth NI la progression — purement visuel + signal de blocage. Les deux
+  -- extrémités vivent dans la MÊME base tracker (un lien ne traverse jamais 2 repos,
+  -- structurellement). Cascade : supprimer un nœud purge ses liens (entrants+sortants).
+  CREATE TABLE IF NOT EXISTS node_links (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_id    INTEGER NOT NULL,                      -- le dépendant
+    to_id      INTEGER NOT NULL,                      -- le prérequis
+    kind       TEXT NOT NULL DEFAULT 'requires',      -- type de lien (allowlist)
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    CHECK (from_id <> to_id),                          -- anti auto-lien
+    UNIQUE(from_id, to_id, kind),
+    FOREIGN KEY(from_id) REFERENCES nodes(id) ON DELETE CASCADE,
+    FOREIGN KEY(to_id)   REFERENCES nodes(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_node_links_from ON node_links(from_id);
+  CREATE INDEX IF NOT EXISTS idx_node_links_to   ON node_links(to_id);
+
   -- Chat « top level » d'un repo : discussion globale avec l'IA pour créer/gérer
   -- les objectifs racines (pas d'ancrage à un nœud précis ; scope = repo entier).
   CREATE TABLE IF NOT EXISTS forest_messages (

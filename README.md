@@ -182,6 +182,21 @@ type de nœud — objectif = jalon = sous-jalon — chacun avec titre, statut, c
 **progression** dérivée (moyenne récursive de ses enfants ; une feuille `done` = 100 %). Profondeur libre :
 un jalon « sert de goal » et peut avoir ses propres sous-jalons.
 
+### Liens de prérequis (un nœud sert à plusieurs parents)
+
+En plus de la hiérarchie (un nœud = **un** parent structurel), des **liens de prérequis** relient des nœuds
+**hors arbre** : « *A dépend de B* » (table `node_links`, `from_id` = dépendant, `to_id` = prérequis,
+`kind = 'requires'`). Cas typique : la *brique réseau* est requise à la fois par le *chat* et le
+*multijoueur* — elle vit à **un seul endroit** et les deux features pointent dessus. Ces liens sont
+**purement relationnels** : ils n'affectent **ni le `path`/`depth` ni la progression** (pas de double
+comptage) ; ils servent de **signal de blocage** (un nœud est « ⛔ bloqué » tant qu'un de ses prérequis
+n'est pas `done`). Garde-fous : extrémités du **même repo** (intrinsèque, une base tracker par repo), pas
+d'auto-lien, **anti-cycle** (refus si le prérequis atteint déjà le dépendant), cap par nœud, idempotent
+(`UNIQUE(from_id,to_id,kind)`), **cascade** (supprimer un nœud purge ses liens entrants + sortants). Dans le
+graphe : arête **pointillée orangée fléchée** (dépendant → prérequis), distincte des arêtes pleines de la
+hiérarchie ; clic droit sur un nœud → « 🔒 Marquer un prérequis… », double-clic/clic droit sur l'arête pour
+la retirer. En vue détail : sections **« Dépend de »** / **« Requis par »** + bouton **« ＋ Prérequis »**.
+
 ### Visualisation : graphe ↔ grille
 
 Bascule (segment dans la barre) entre un **graphe organique** (SVG radial : nœuds colorés reliés par des
@@ -233,8 +248,9 @@ outil** (réécriture de texte pure).
 **Messages et état (nœud + sous-arbre + progression) se synchronisent en direct** via **Server-Sent Events**
 (100 % natif, aucune dépendance). Rooms `node:<id>` (chat + stream + état du nœud) + canal `forest:<repoId>`
 (forêt d'un repo = graphe/grille ; un repo n'entend jamais les events d'un autre). Un changement profond remonte une sonnette `subtree:dirty` à la chaîne d'ancêtres → la vue
-détail re-fetch son sous-arbre (auto-correcteur). Auth du flux par `?token=`. Un pseudo (`localStorage`)
-identifie chaque participant.
+détail re-fetch son sous-arbre (auto-correcteur). Un ajout/retrait de prérequis émet `links:changed` (forêt
++ rooms des deux nœuds) → le graphe recharge ses liens et la vue détail rafraîchit « Dépend de / Requis par ».
+Auth du flux par `?token=`. Un pseudo (`localStorage`) identifie chaque participant.
 
 ### Endpoints
 
@@ -245,6 +261,9 @@ identifie chaque participant.
 | `GET/PATCH/DELETE` | `/api/nodes/:ref` | détail (`?tree=true`/`?messages=true`) / éditer (`expectedVersion` → 409) / supprimer (cascade) |
 | `POST` | `/api/nodes/:ref/move` | re-parenter (`newParentId`, anti-cycle) |
 | `POST` | `/api/nodes/:ref/reorder` | réordonner les enfants |
+| `GET` | `/api/nodes/links` | tous les liens de prérequis du repo (`[{id,fromId,toId,kind}]`) |
+| `POST` | `/api/nodes/links` | créer un lien `{fromId,toId}` (`from` dépend de `to`, anti-cycle) |
+| `DELETE` | `/api/nodes/links` | retirer un lien `{fromId,toId}` |
 | `GET` | `/api/nodes/:ref/messages` | historique du chat du nœud |
 | `POST` | `/api/nodes/:ref/chat` | message (lance le tour IA streaming, `202`, résultat via SSE) |
 | `POST` | `/api/nodes/:ref/chat/confirm` | confirmer une proposition destructive |

@@ -14,6 +14,8 @@ export const NODE_STATUSES = ["active", "paused", "done", "abandoned"];
 export const NODE_COLORS = ["accent", "feature", "task", "bug", "high"];
 export const CHAT_MODELS = ["sonnet", "opus", "haiku"];
 export const MESSAGE_STATES = ["pending", "streaming", "complete", "error"];
+// Liens de prérequis entre nœuds (hors hiérarchie) : catalogue fermé des types.
+export const NODE_LINK_KINDS = ["requires"];
 
 // ── Garde-fous (anti-DoS / quotas) ───────────────────────────────────────────
 export const MAX_DEPTH = 32; // profondeur max d'un arbre (anti-DoS récursion)
@@ -22,6 +24,7 @@ export const MAX_NODES_PER_REPO = 2000; // garde-fou volume par repo (chat « to
 export const MAX_ACTIONS = 20; // actions IA max appliquées par tour
 export const MAX_NOTES = 50000; // taille max du corps markdown d'UNE note (~50 Ko)
 export const MAX_NOTE_COUNT = 50; // nombre max de notes par nœud
+export const MAX_LINKS_PER_NODE = 50; // nombre max de prérequis sortants par nœud
 
 // Préfixes de codes lisibles, par type (cf. nextRef).
 export const PREFIX = { bug: "BUG", feature: "FEAT", task: "TASK", chore: "CHORE", node: "NODE" };
@@ -29,5 +32,6 @@ export const PREFIX = { bug: "BUG", feature: "FEAT", task: "TASK", chore: "CHORE
 // ── Sets dérivés (validation O(1)) + regex date ──────────────────────────────
 export const NODE_STATUS_SET = new Set(NODE_STATUSES);
 export const NODE_COLOR_SET = new Set(NODE_COLORS);
+export const NODE_LINK_KIND_SET = new Set(NODE_LINK_KINDS);
 export const MSG_STATE_SET = new Set(MESSAGE_STATES);
 export const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;

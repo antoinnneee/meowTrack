@@ -31,6 +31,8 @@ export const vibes = {
   currentVersion: null,
   forest: [],
   byId: new Map(),
+  links: [],            // liens de prérequis du repo : [{ id, fromId, toId, kind }]
+  reqByFrom: new Map(), // fromId → Set(toId) (dérivé de links, pour le calcul « bloqué »)
   seen: new Set(), // ids de messages rendus
   streams: new Map(), // turnId → { reasoning, text, reasoningEl, bodyEl }
   dirtyTimer: null,
@@ -59,6 +61,7 @@ export const vibes = {
     posMap: new Map(),      // id → {x,y} résolu au dernier rendu (drag live + arêtes)
     nodeDrag: null,         // déplacement d'un nœud (et de son sous-arbre) en cours
     linking: null,          // id source pendant « tirer un lien »
+    linkKind: "child",      // type de lien en cours de tracé : 'child' (reparente) | 'requires' (prérequis)
     edgeDel: null,          // { childId, parentId } de l'arête dont la poubelle est affichée
     pendingCreatePos: null, // position graphe où créer le prochain nœud (menu fond)
     suppressClick: false,   // ignore le prochain click (après un drag)
@@ -299,6 +302,31 @@ function indexForest(list) {
   vibes.forest = list || [];
   vibes.byId = new Map(vibes.forest.map((n) => [n.id, n]));
 }
+function indexLinks(list) {
+  vibes.links = Array.isArray(list) ? list : [];
+  const m = new Map();
+  for (const l of vibes.links) {
+    if (l.kind !== "requires") continue;
+    if (!m.has(l.fromId)) m.set(l.fromId, new Set());
+    m.get(l.fromId).add(l.toId);
+  }
+  vibes.reqByFrom = m;
+}
+// Un nœud est « bloqué » s'il a au moins un prérequis (requires) non atteint.
+function isNodeBlocked(node) {
+  if (!node) return false;
+  const reqs = vibes.reqByFrom.get(node.id);
+  if (reqs && reqs.size) {
+    for (const toId of reqs) {
+      const t = vibes.byId.get(toId);
+      if (t && t.status !== "done") return true;
+    }
+    return false;
+  }
+  // Vue détail : la forêt n'est pas indexée → on s'appuie sur node.requires (withLinks).
+  if (Array.isArray(node.requires)) return node.requires.some((r) => r.status !== "done");
+  return false;
+}
 function childrenOf(id) {
   return vibes.forest.filter((n) => n.parentId === id).sort((a, b) => a.position - b.position || a.id - b.id);
 }
@@ -368,7 +396,12 @@ function applyLayoutToggle() {
 // ── Chargement forêt + rendu des deux vues ───────────────────────────────────
 async function loadForest() {
   try {
-    indexForest(await api.get("/api/nodes?view=forest"));
+    const [forest, links] = await Promise.all([
+      api.get("/api/nodes?view=forest"),
+      api.get("/api/nodes/links").catch(() => []),
+    ]);
+    indexForest(forest);
+    indexLinks(links);
     renderForestViews();
   } catch (e) {
     $("#graphSvg") && ($("#vibesSummary").textContent = "Erreur : " + e.message);
@@ -580,7 +613,8 @@ function nodeGroup(n, p) {
   const celebrate = vibes.graph.celebrated.has(n.id);
   const despawn = vibes.graph.despawning.has(n.id);
   const fxCls = (spawn ? " spawn" : "") + (pulse ? " pulse" : "") + (celebrate ? " celebrate" : "") + (despawn ? " despawn" : "");
-  const g = svgEl("g", { transform: `translate(${p.x},${p.y})`, class: "g-node status-" + n.status + fxCls, "data-ref": n.ref, "data-id": String(n.id) });
+  const blocked = isNodeBlocked(n) ? " blocked" : "";
+  const g = svgEl("g", { transform: `translate(${p.x},${p.y})`, class: "g-node status-" + n.status + fxCls + blocked, "data-ref": n.ref, "data-id": String(n.id) });
   // Tooltip natif : le label étant tronqué, le survol révèle le titre complet.
   const ttl = svgEl("title", {});
   ttl.textContent = n.title;
@@ -677,6 +711,34 @@ function ghostNodeGroup(gh, p) {
 function ghostEdge(p, c) {
   return svgEl("path", { d: edgeD(p, c), class: "g-edge g-ghost-edge" });
 }
+// Arête de PRÉREQUIS : « from dépend de to ». Courbe pointillée distincte (jamais
+// confondue avec la hiérarchie pleine), flèche pointant vers le prérequis (to).
+// L'arc s'écarte du segment droit pour rester lisible même entre nœuds éloignés.
+function reqEdgeD(a, b) {
+  const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const off = Math.min(60, len * 0.18); // déport perpendiculaire
+  const cx = mx - (dy / len) * off, cy = my + (dx / len) * off;
+  return `M ${a.x} ${a.y} Q ${cx} ${cy} ${b.x} ${b.y}`;
+}
+function reqEdgePath(a, b, link, blocked) {
+  return svgEl("path", {
+    d: reqEdgeD(a, b),
+    class: "g-req" + (blocked ? " blocked" : ""),
+    "data-from": String(link.fromId),
+    "data-to": String(link.toId),
+    "marker-end": "url(#reqArrow)",
+  });
+}
+// <defs> du graphe : marqueur de flèche pour les arêtes de prérequis (défini une fois).
+function graphDefs() {
+  const defs = svgEl("defs", {});
+  const m = svgEl("marker", { id: "reqArrow", viewBox: "0 0 10 10", refX: "9", refY: "5", markerWidth: "7", markerHeight: "7", orient: "auto-start-reverse" });
+  m.appendChild(svgEl("path", { d: "M 0 0 L 10 5 L 0 10 z", class: "g-req-arrow" }));
+  defs.appendChild(m);
+  return defs;
+}
 function renderGraph() {
   const svg = $("#graphSvg");
   if (!svg || $("#graphView").hidden) return;
@@ -685,14 +747,25 @@ function renderGraph() {
   vibes.graph.posMap = pos;     // réutilisé par le drag live et le recalcul des arêtes
   vibes.graph.edgeDel = null;   // l'overlay poubelle (re)disparaît au rendu
   while (svg.firstChild) svg.removeChild(svg.firstChild);
+  svg.appendChild(graphDefs());
   const gEdges = svgEl("g", { class: "g-edges" });
+  const gReq = svgEl("g", { class: "g-reqs" });
   const gNodes = svgEl("g", { class: "g-nodes" });
   svg.appendChild(gEdges);
+  svg.appendChild(gReq);
   svg.appendChild(gNodes);
   for (const n of vibes.forest) {
     if (n.parentId == null) continue;
     const pp = pos.get(n.parentId), pc = pos.get(n.id);
     if (pp && pc) gEdges.appendChild(edgePath(pp, pc, n));
+  }
+  // Arêtes de prérequis (par-dessus la hiérarchie, sous les nœuds).
+  for (const l of vibes.links) {
+    if (l.kind !== "requires") continue;
+    const pf = pos.get(l.fromId), pt = pos.get(l.toId);
+    if (!pf || !pt) continue;
+    const to = vibes.byId.get(l.toId);
+    gReq.appendChild(reqEdgePath(pf, pt, l, to && to.status !== "done"));
   }
   for (const n of vibes.forest) {
     const pp = pos.get(n.id);
@@ -792,6 +865,10 @@ function liveUpdateGraphPositions() {
     const pp = pos.get(Number(ed.dataset.pid)), pc = pos.get(Number(ed.dataset.cid));
     if (pp && pc) ed.setAttribute("d", edgeD(pp, pc));
   });
+  svg.querySelectorAll(".g-req").forEach((ed) => {
+    const pf = pos.get(Number(ed.dataset.from)), pt = pos.get(Number(ed.dataset.to));
+    if (pf && pt) ed.setAttribute("d", reqEdgeD(pf, pt));
+  });
   if (vibes.graph.edgeDel) positionEdgeDel();
 }
 // Persiste les positions manuelles d'un ensemble d'ids (depuis posMap) + maj locale.
@@ -838,14 +915,17 @@ export function showCtxMenu(clientX, clientY, items) {
   setTimeout(() => document.addEventListener("mousedown", _ctxOutside, true), 0);
 }
 
-// ── Mode « tirer un lien » (connecter deux nœuds = reparentage) ───────────────
-function startLinkMode(sourceId) {
+// ── Mode « tirer un lien » (kind='child' = reparentage | 'requires' = prérequis) ──
+function startLinkMode(sourceId, kind = "child") {
   cancelLinkMode();
   vibes.graph.linking = sourceId;
-  const line = svgEl("path", { class: "g-link-temp", d: "" });
+  vibes.graph.linkKind = kind;
+  const line = svgEl("path", { class: "g-link-temp" + (kind === "requires" ? " req" : ""), d: "" });
   $("#graphSvg").insertBefore(line, $("#graphSvg").firstChild);
   vibes.graph._linkLine = line;
-  toast("Clique le nœud à rattacher comme enfant (Échap pour annuler).");
+  toast(kind === "requires"
+    ? "Clique le nœud PRÉREQUIS (ce nœud en dépendra). Échap pour annuler."
+    : "Clique le nœud à rattacher comme enfant. Échap pour annuler.");
 }
 function cancelLinkMode() {
   vibes.graph.linking = null;
@@ -860,8 +940,20 @@ function updateLinkLine(clientX, clientY) {
 }
 async function finishLink(targetId) {
   const sourceId = vibes.graph.linking;
+  const kind = vibes.graph.linkKind;
   cancelLinkMode();
   if (!sourceId || targetId == null || targetId === sourceId) return;
+  if (kind === "requires") {
+    // « sourceId dépend de targetId » : source = from (dépendant), target = to (prérequis).
+    try {
+      await api.send("POST", "/api/nodes/links", { fromId: sourceId, toId: targetId });
+      toast("Prérequis ajouté.");
+      loadForest();
+    } catch (e) {
+      toast(/cycle/i.test(e.message) ? "Impossible : créerait un cycle de prérequis." : "Échec : " + e.message);
+    }
+    return;
+  }
   try {
     // « Tirer un lien depuis A vers B » = B devient enfant de A.
     await api.send("POST", `/api/nodes/${encodeURIComponent(targetId)}/move`, { newParentId: sourceId });
@@ -870,6 +962,16 @@ async function finishLink(targetId) {
     loadForest();
   } catch (e) {
     toast(/cycle|sous-arbre/i.test(e.message) ? "Impossible : créerait un cycle." : "Échec : " + e.message);
+  }
+}
+// Supprime un lien de prérequis (from dépend de to).
+async function deleteReqLink(fromId, toId) {
+  try {
+    await api.send("DELETE", "/api/nodes/links", { fromId, toId });
+    toast("Prérequis retiré.");
+    loadForest();
+  } catch (e) {
+    toast("Échec : " + e.message);
   }
 }
 
@@ -1003,6 +1105,8 @@ function wireGraph() {
 
   // double-clic sur une arête → affiche la poubelle de suppression de lien.
   svg.addEventListener("dblclick", (e) => {
+    const req = e.target.closest(".g-req");
+    if (req) { e.preventDefault(); deleteReqLink(Number(req.dataset.from), Number(req.dataset.to)); return; }
     const edge = e.target.closest(".g-edge");
     if (edge) { e.preventDefault(); showEdgeDel(Number(edge.dataset.cid), Number(edge.dataset.pid)); }
   });
@@ -1016,9 +1120,17 @@ function wireGraph() {
       const id = Number(gNode.dataset.id);
       const ref = gNode.dataset.ref;
       showCtxMenu(e.clientX, e.clientY, [
-        { label: "🔗 Tirer un lien…", onClick: () => startLinkMode(id) },
+        { label: "🔒 Marquer un prérequis…", onClick: () => startLinkMode(id, "requires") },
+        { label: "🔗 Rattacher comme enfant…", onClick: () => startLinkMode(id, "child") },
         { label: "✎ Ouvrir", onClick: () => openNode(ref) },
         { label: "🗑 Supprimer", danger: true, onClick: () => { if (confirm("Supprimer ce nœud et tout son sous-arbre ?")) deleteNodeById(id); } },
+      ]);
+      return;
+    }
+    const req = e.target.closest(".g-req");
+    if (req) {
+      showCtxMenu(e.clientX, e.clientY, [
+        { label: "🗑 Retirer le prérequis", danger: true, onClick: () => deleteReqLink(Number(req.dataset.from), Number(req.dataset.to)) },
       ]);
       return;
     }
@@ -1098,7 +1210,102 @@ function renderNodeHeader(n) {
   const desc = $("#ndDesc");
   desc.textContent = n.description || "";
   desc.hidden = !n.description;
+  const blk = $("#ndBlocked");
+  if (blk) blk.hidden = !isNodeBlocked(n);
   renderNotes(n);
+  renderLinks(n);
+}
+
+// ── Liens de prérequis (vue détail) ──────────────────────────────────────────
+// Affiche « Dépend de » (requires, avec retrait + état) et « Requis par »
+// (requiredBy, lecture seule). Données fournies par getNode(withLinks).
+function linkChipHtml(l, removable) {
+  const done = l.status === "done";
+  const cls = "link-chip" + (done ? " done" : " pending");
+  const rm = removable ? `<button class="link-chip-del" title="Retirer ce prérequis" data-to="${l.id}">✕</button>` : "";
+  return `<span class="${cls}" data-ref="${esc(l.ref)}" title="${esc(l.title)} · ${l.progress}%">
+    <span class="link-chip-emoji">${esc(l.emoji || "🎯")}</span>
+    <span class="link-chip-title">${esc(l.title)}</span>
+    <span class="link-chip-pct">${l.progress}%</span>${rm}</span>`;
+}
+function renderLinks(n) {
+  const view = $("#ndLinksView");
+  if (!view) return;
+  const requires = Array.isArray(n.requires) ? n.requires : [];
+  const requiredBy = Array.isArray(n.requiredBy) ? n.requiredBy : [];
+  let html = "";
+  if (requires.length) {
+    html += `<div class="link-group"><span class="link-label">Dépend de</span><div class="link-chips">${requires.map((l) => linkChipHtml(l, true)).join("")}</div></div>`;
+  }
+  if (requiredBy.length) {
+    html += `<div class="link-group"><span class="link-label">Requis par</span><div class="link-chips">${requiredBy.map((l) => linkChipHtml(l, false)).join("")}</div></div>`;
+  }
+  if (!html) html = '<span class="hint">Aucun prérequis. Clique « ＋ Prérequis » pour relier ce nœud à un autre dont il dépend.</span>';
+  view.innerHTML = html;
+  // Ouvre le nœud d'un chip au clic ; ✕ retire le lien (depuis le nœud courant).
+  view.querySelectorAll(".link-chip[data-ref]").forEach((chip) =>
+    chip.addEventListener("click", (e) => {
+      if (e.target.closest(".link-chip-del")) return;
+      openNode(chip.dataset.ref);
+    })
+  );
+  view.querySelectorAll(".link-chip-del").forEach((b) =>
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const toId = Number(e.currentTarget.dataset.to);
+      if (vibes.currentNode) removeReqFromDetail(vibes.currentNode.id, toId);
+    })
+  );
+}
+// Retrait d'un prérequis depuis la vue détail (rafraîchit le nœud courant).
+async function removeReqFromDetail(fromId, toId) {
+  try {
+    await api.send("DELETE", "/api/nodes/links", { fromId, toId });
+    toast("Prérequis retiré.");
+    refreshCurrentNode();
+  } catch (e) {
+    toast("Échec : " + e.message);
+  }
+}
+// Picker « ＋ Prérequis » : liste les nœuds candidats (forêt du repo, hors soi-même
+// et hors prérequis déjà posés) dans un menu contextuel. Le serveur refuse les cycles.
+async function openReqPicker(clientX, clientY) {
+  const cur = vibes.currentNode;
+  if (!cur) return;
+  let forest;
+  try {
+    forest = await api.get("/api/nodes?view=forest");
+  } catch (e) {
+    toast("Échec du chargement : " + e.message);
+    return;
+  }
+  const already = new Set((cur.requires || []).map((l) => l.id));
+  const candidates = forest.filter((n) => n.id !== cur.id && !already.has(n.id));
+  if (!candidates.length) { toast("Aucun autre nœud disponible."); return; }
+  showCtxMenu(clientX, clientY, candidates.slice(0, 50).map((n) => ({
+    label: `${n.emoji || "🎯"} ${n.title}`,
+    onClick: () => addReqFromDetail(cur.id, n.id),
+  })));
+}
+async function addReqFromDetail(fromId, toId) {
+  try {
+    await api.send("POST", "/api/nodes/links", { fromId, toId });
+    toast("Prérequis ajouté.");
+    refreshCurrentNode();
+  } catch (e) {
+    toast(/cycle/i.test(e.message) ? "Impossible : créerait un cycle de prérequis." : "Échec : " + e.message);
+  }
+}
+// Re-fetch du nœud courant (liens inclus) — après ajout/retrait de prérequis.
+async function refreshCurrentNode() {
+  if (!vibes.current) return;
+  try {
+    const node = await api.get(nodeUrl("?tree=true"));
+    vibes.currentNode = node;
+    vibes.currentVersion = node.version;
+    renderNodeHeader(node);
+    renderTree(node);
+  } catch { /* ignore */ }
 }
 
 // ── Notes markdown : liste de sections collapsables (lecture + édition) ────────
@@ -1740,6 +1947,7 @@ function subscribeForest() {
   });
   es.addEventListener("node:reparented", () => loadForest());
   es.addEventListener("nodes:reordered", () => loadForest());
+  es.addEventListener("links:changed", () => loadForest()); // prérequis ajouté/retiré ailleurs
   // Positions manuelles déplacées ailleurs : maj locale + re-rendu (sauf si on drague).
   es.addEventListener("nodes:moved", (e) => {
     if (vibes.graph.nodeDrag) return;
@@ -1767,6 +1975,7 @@ function subscribeNode(ref) {
   es.addEventListener("node:ghost", (e) => applyGhostDetail(JSON.parse(e.data)));
   es.addEventListener("node:updated", (e) => applyNodeUpdate(JSON.parse(e.data)));
   es.addEventListener("subtree:dirty", () => scheduleSubtreeRefetch());
+  es.addEventListener("links:changed", () => refreshCurrentNode()); // prérequis du nœud modifié
   es.addEventListener("chat:cleared", () => renderChat([])); // un autre client a vidé l'historique
   es.addEventListener("node:deleted", (e) => {
     const d = JSON.parse(e.data);
@@ -1864,6 +2073,7 @@ export function initVibes() {
   $("#ndNotesCancelBtn").addEventListener("click", closeNotesEditor);
   $("#ndNotesSaveBtn").addEventListener("click", saveNotes);
   $("#ndNotesAddBtn").addEventListener("click", () => addNoteEditor());
+  $("#ndAddReqBtn").addEventListener("click", (e) => openReqPicker(e.clientX, e.clientY));
   $("#chatSend").addEventListener("click", sendChat);
   $("#chatClearBtn").addEventListener("click", clearChatHistory);
   // Suivi du scroll : on coupe l'auto-défilement dès que l'utilisateur remonte,
