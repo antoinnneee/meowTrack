@@ -75,10 +75,12 @@ if ! sshpass -e ssh $SSH_OPTS -fNM "$REMOTE_USER@$REMOTE_HOST"; then
     exit 1
 fi
 
-# S'assurer que le dossier distant existe.
-ssh -o "ControlPath=$SSH_MUX_SOCKET" "$REMOTE_USER@$REMOTE_HOST" "mkdir -p '$REMOTE_DIR/dashboard'"
+# S'assurer que les dossiers distants existent (modules éclatés : db/, ai/, routes/).
+ssh -o "ControlPath=$SSH_MUX_SOCKET" "$REMOTE_USER@$REMOTE_HOST" \
+    "mkdir -p '$REMOTE_DIR/dashboard' '$REMOTE_DIR/db' '$REMOTE_DIR/ai' '$REMOTE_DIR/routes'"
 
 # Fichiers à copier (exclut node_modules, meowtrack.db*, .env, .deployEnv).
+# Les modules éclatés vivent dans db/, ai/, routes/ (copiés récursivement plus bas).
 FILES=(
     "server.js"
     "mcp.js"
@@ -86,16 +88,31 @@ FILES=(
     "db.js"
     "repo.js"
     "repos.js"
+    "config.js"
+    "http-util.js"
+    "sse.js"
+    "github.js"
+    "mcp-endpoint.js"
     "package.json"
     "package-lock.json"
     "README.md"
     "install-service.sh"
     ".env.example"
 )
+# Dossiers de modules copiés récursivement (couvre tout ajout futur sans liste à tenir).
+MODULE_DIRS=(
+    "db"
+    "ai"
+    "routes"
+)
 DASHBOARD_FILES=(
     "dashboard/index.html"
     "dashboard/dashboard.css"
     "dashboard/dashboard.js"
+    "dashboard/core.js"
+    "dashboard/issues.js"
+    "dashboard/vibes.js"
+    "dashboard/repo.js"
 )
 
 COPY_ERRORS=0
@@ -113,6 +130,19 @@ copy_one() {
 
 for file in "${FILES[@]}"; do copy_one "$file" "$REMOTE_DIR/"; done
 for file in "${DASHBOARD_FILES[@]}"; do copy_one "$file" "$REMOTE_DIR/dashboard/"; done
+
+# Dossiers de modules (db/, ai/, routes/) — copie du CONTENU (.js) dans le dossier
+# distant déjà créé (évite le piège scp -r qui imbriquerait db/db au re-déploiement).
+for dir in "${MODULE_DIRS[@]}"; do
+    if [ -d "$dir" ]; then
+        echo "📦 Copie de $dir/*.js..."
+        if ! scp -o "ControlPath=$SSH_MUX_SOCKET" "$dir"/*.js "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR/$dir/"; then
+            echo "❌ Échec de copie : $dir/"; COPY_ERRORS=$((COPY_ERRORS + 1))
+        fi
+    else
+        echo "⚠️  Dossier introuvable : $dir/"; COPY_ERRORS=$((COPY_ERRORS + 1))
+    fi
+done
 
 if [ "$COPY_ERRORS" -gt 0 ]; then
     echo "❌ $COPY_ERRORS fichier(s) non copié(s). Abandon avant le redémarrage du service."
