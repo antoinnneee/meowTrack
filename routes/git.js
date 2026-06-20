@@ -18,6 +18,8 @@ import {
   commitDetailFor,
   listTreeFor,
   fileContentFor,
+  writeFileFor,
+  fileRawFor,
   stageFor,
   unstageFor,
   discardFor,
@@ -56,6 +58,19 @@ import {
   flushTrackingCommits,
 } from "../repos.js";
 import { suggestCommitMessage } from "../ai/claude.js";
+
+// Extension → type MIME pour le service des médias bruts (lecteur image/vidéo/son).
+const RAW_MIME = {
+  png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp",
+  svg: "image/svg+xml", bmp: "image/bmp", ico: "image/x-icon", avif: "image/avif",
+  mp4: "video/mp4", m4v: "video/mp4", webm: "video/webm", ogv: "video/ogg", mov: "video/quicktime", mkv: "video/x-matroska",
+  mp3: "audio/mpeg", wav: "audio/wav", ogg: "audio/ogg", oga: "audio/ogg", flac: "audio/flac", m4a: "audio/mp4", aac: "audio/aac",
+  pdf: "application/pdf",
+};
+function mimeForPath(p) {
+  const e = String(p || "").toLowerCase().split(".").pop();
+  return RAW_MIME[e] || "application/octet-stream";
+}
 
 // Verrou anti-collision : une seule opération git MUTANTE en vol par repo (sinon
 // 409). Les lectures (status/log/diff) ne sont pas verrouillées.
@@ -148,6 +163,17 @@ export async function handle(ctx) {
     send(res, 200, fileContentFor(repoOf(q), q.get("path") || "", q.get("branch") || null));
     return true;
   }
+  // Octets bruts d'un média (image/vidéo/son) servis avec leur type MIME, pour un
+  // lecteur compatible dans la modale. Auth ?token= (le gate l'accepte) → <img>/<video>.
+  if (method === "GET" && path === "/api/git/raw") {
+    const r = fileRawFor(repoOf(q), q.get("path") || "", q.get("branch") || null);
+    if (!r.ok) {
+      send(res, 404, { error: r.error || "introuvable" });
+      return true;
+    }
+    send(res, 200, r.buffer, { "Content-Type": mimeForPath(r.path) });
+    return true;
+  }
   const gitCommitMatch = path.match(/^\/api\/git\/commit\/([0-9a-fA-F]{4,64})$/);
   if (method === "GET" && gitCommitMatch) {
     send(res, 200, commitDetailFor(repoOf(q), gitCommitMatch[1]));
@@ -171,6 +197,14 @@ export async function handle(ctx) {
   }
 
   // ── Écritures (verrouillées par repo) ──
+  // Édition d'un fichier depuis l'explorateur → écriture dans le working tree (jamais
+  // un blob historique). Verrouillée + broadcast git:changed (le working tree change).
+  if (method === "PUT" && path === "/api/git/file") {
+    const body = await readBody(req);
+    const id = repoOf(q, body);
+    await withGitLock(id, res, () => send(res, 200, writeFileFor(id, body.path, body.content)));
+    return true;
+  }
   if (method === "POST" && path === "/api/git/stage") {
     const body = await readBody(req);
     const id = repoOf(q, body);

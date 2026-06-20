@@ -814,11 +814,45 @@ button.xs { padding: 3px 8px; font-size: 11px; }
 .ftree-file .ftree-label::before { content: "📄 "; }
 .ftree-file.active { background: var(--accent); color: #fff; }
 .files-view { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-.files-path { font-family: ui-monospace, monospace; font-size: 12px; color: var(--text-dim); padding: 4px 2px 8px; word-break: break-all; }
-.files-scroll { flex: 1; display: flex; overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+/* Barre d'outils du panneau (chemin + boutons aperçu / éditer / enregistrer) */
+.files-toolbar { display: flex; align-items: center; gap: 8px; padding: 0 2px 8px; }
+.files-path { font-family: ui-monospace, monospace; font-size: 12px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.files-dirty { color: var(--high); font-size: 14px; line-height: 1; }
+.files-dirty[hidden] { display: none; }
+.files-content { flex: 1; position: relative; display: flex; min-height: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); overflow: hidden; }
+.files-content > * { flex: 1; min-width: 0; }
+.files-content > [hidden] { display: none; }
+/* Lecture : gouttière + code colorisé */
+.files-scroll { display: flex; overflow: auto; }
 .files-gutter { position: sticky; left: 0; margin: 0; padding: 12px 10px; text-align: right; color: var(--text-dim); border-right: 1px solid var(--border); user-select: none; font-family: ui-monospace, monospace; font-size: 12.5px; line-height: 1.5; background: var(--bg); }
 .files-code { margin: 0; flex: 1; padding: 0; overflow: visible; background: transparent; }
 .files-code code.hljs { padding: 12px; font-family: ui-monospace, monospace; font-size: 12.5px; line-height: 1.5; background: transparent; }
+/* Édition : textarea transparent superposé au rendu colorisé (mêmes métriques) */
+.files-editor { position: relative; }
+.files-editor .files-edit-hl,
+.files-editor textarea {
+  position: absolute; inset: 0; margin: 0; border: 0; padding: 12px;
+  font-family: ui-monospace, monospace; font-size: 12.5px; line-height: 1.5;
+  tab-size: 2; white-space: pre; overflow: auto; box-sizing: border-box;
+}
+.files-editor .files-edit-hl { pointer-events: none; background: transparent; z-index: 0; overflow: hidden; }
+.files-editor .files-edit-hl code.hljs { padding: 0; background: transparent; font: inherit; }
+.files-editor textarea {
+  z-index: 1; resize: none; background: transparent; color: transparent;
+  caret-color: var(--text); -webkit-text-fill-color: transparent;
+}
+.files-editor textarea::selection { background: color-mix(in srgb, var(--accent) 40%, transparent); }
+/* Aperçu Markdown */
+.files-md { overflow: auto; padding: 14px 18px; }
+/* Média : lecteur centré, borné à la zone */
+.files-media { display: flex; align-items: center; justify-content: center; overflow: auto; padding: 12px; background: repeating-conic-gradient(#0000 0% 25%, color-mix(in srgb, var(--text) 4%, transparent) 0% 50%) 50% / 24px 24px; }
+.files-media img, .files-media video { max-width: 100%; max-height: 100%; object-fit: contain; }
+.files-media audio { width: min(560px, 100%); }
+/* Plein écran */
+.files-modal.full { width: 100vw; max-width: 100vw; height: 100vh; max-height: 100vh; border-radius: 0; }
+.files-modal.full .files-body { height: auto; flex: 1; min-height: 0; }
+.files-modal.full { display: flex; flex-direction: column; }
+#filesBackdrop:has(.files-modal.full) { padding: 0; align-items: stretch; overflow: hidden; }
 
 /* Modale config : ajout de remote */
 .cfg-remote-add { display: flex; gap: 8px; margin-top: 8px; }

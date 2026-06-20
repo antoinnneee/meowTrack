@@ -36,6 +36,8 @@ import {
   stagedDiff,
   commitDetail,
   fileContent,
+  writeFile,
+  fileRaw,
   getGitConfig,
   setGitConfig,
   stage,
@@ -465,6 +467,14 @@ export function listTreeFor(repoId, branch = null) {
 }
 export function fileContentFor(repoId, relPath, branch = null) {
   return fileContent(rootForRepo(repoId), relPath, branch);
+}
+export function writeFileFor(repoId, relPath, content) {
+  const r = writeFile(rootForRepo(repoId), relPath, content);
+  if (r.ok) refreshPathsFor(repoId); // un nouveau fichier doit apparaître dans l'arbre/@-mention
+  return r;
+}
+export function fileRawFor(repoId, relPath, branch = null) {
+  return fileRaw(rootForRepo(repoId), relPath, branch);
 }
 // Ensemble effectif des branches masquées d'un dépôt : liste explicite (UI) +
 // branche de suivi (orphan tracking.db), toujours cachée des sélecteurs de code.

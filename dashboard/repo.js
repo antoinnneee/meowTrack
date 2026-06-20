@@ -3,7 +3,7 @@
 // (device flow) et credentials. Exporte les ponts openRepoView / initRepo.
 
 import { $, esc, api, getToken, injectRepo } from "./core.js";
-import { toast, showCtxMenu } from "./vibes.js";
+import { toast, showCtxMenu, renderMarkdown } from "./vibes.js";
 
 // ── Modales génériques (remplacent window.prompt/confirm/alert — cohérence UX) ──
 // Construites en DOM à la volée (aucun HTML à prévoir), refermées au clic backdrop /
@@ -781,7 +781,24 @@ async function openCommitDetail(hash) {
 }
 
 // ── Explorateur de fichiers (arbre + contenu colorisé via highlight.js) ────────
-const filesState = { all: [], current: null };
+// kind: text | media | binary ; mode: read | edit | md | media
+const filesState = { all: [], current: null, content: "", kind: null, mode: "read", dirty: false, isMd: false };
+
+// Extension → famille de média (lecteur compatible). Le SVG est traité comme image
+// (rendu direct) plutôt que comme XML éditable.
+const MEDIA_KIND = {
+  png: "image", jpg: "image", jpeg: "image", gif: "image", webp: "image", svg: "image", bmp: "image", ico: "image", avif: "image",
+  mp4: "video", m4v: "video", webm: "video", ogv: "video", mov: "video", mkv: "video",
+  mp3: "audio", wav: "audio", ogg: "audio", oga: "audio", flac: "audio", m4a: "audio", aac: "audio",
+};
+function mediaKind(path) {
+  const ext = path.toLowerCase().split(".").pop();
+  return MEDIA_KIND[ext] || null;
+}
+// URL des octets bruts d'un média (auth par ?token= car <img>/<video> ne portent pas d'en-tête).
+function rawUrl(path) {
+  return injectRepo("/api/git/raw?path=" + encodeURIComponent(path)) + "&token=" + encodeURIComponent(getToken() || "");
+}
 
 // Extension → langage highlight.js (alias) pour les cas où le nom ne suffit pas.
 // Repli sur l'auto-détection de hljs si l'extension est inconnue.
@@ -854,6 +871,17 @@ async function openFilesModal() {
   $("#filesBackdrop").hidden = false;
   $("#filesTree").innerHTML = `<div class="empty">Chargement…</div>`;
   $("#filesFilter").value = "";
+  // Réinitialise l'état + le panneau (revient en lecture, vide le contenu).
+  filesState.current = null;
+  filesState.content = "";
+  filesState.kind = null;
+  filesState.mode = "read";
+  markFilesDirty(false);
+  $("#filesPath").innerHTML = `<span class="hint">Sélectionne un fichier à gauche.</span>`;
+  $("#filesCode").textContent = "";
+  $("#filesGutter").textContent = "";
+  setFilesPanel("read");
+  refreshFilesToolbar();
   try {
     const tree = await api.get("/api/git/tree");
     filesState.all = tree.files || [];
@@ -864,6 +892,8 @@ async function openFilesModal() {
   }
 }
 function closeFilesModal() {
+  if (filesState.dirty && !confirm("Abandonner les modifications non enregistrées ?")) return;
+  markFilesDirty(false);
   $("#filesBackdrop").hidden = true;
 }
 function filterFileTree() {
@@ -873,54 +903,193 @@ function filterFileTree() {
   renderFileTree(matches, true);
 }
 
-// Affiche le contenu colorisé d'un fichier + la gouttière de numéros de ligne.
-function showFileContent(path, content) {
-  const code = $("#filesCode");
+// Affiche un seul des panneaux (lecture / édition / aperçu MD / média).
+function setFilesPanel(name) {
+  $("#filesScroll").hidden = name !== "read";
+  $("#filesEditor").hidden = name !== "edit";
+  $("#filesMd").hidden = name !== "md";
+  $("#filesMedia").hidden = name !== "media";
+}
+function markFilesDirty(d) {
+  filesState.dirty = d;
+  $("#filesDirty").hidden = !d;
+}
+// Visibilité / libellés des boutons selon le type de fichier et le mode courant.
+function refreshFilesToolbar() {
+  const isText = filesState.kind === "text";
+  const mode = filesState.mode;
+  const prev = $("#filesPreview");
+  const edit = $("#filesEdit");
+  const save = $("#filesSave");
+  prev.hidden = !(isText && filesState.isMd) || mode === "edit";
+  prev.textContent = mode === "md" ? "📄 Source" : "👁 Aperçu";
+  edit.hidden = !isText || mode === "md";
+  edit.textContent = mode === "edit" ? "✖ Quitter" : "✎ Éditer";
+  save.hidden = mode !== "edit";
+}
+
+// Colorise `content` (langage déduit du chemin, repli auto). Renvoie du HTML échappé
+// par hljs (sûr) ou null si indisponible.
+function hlValue(content, path) {
   const lang = langForPath(path);
-  let out = null;
   try {
-    out =
-      lang && window.hljs && window.hljs.getLanguage(lang)
-        ? window.hljs.highlight(content, { language: lang, ignoreIllegals: true })
-        : window.hljs
-        ? window.hljs.highlightAuto(content)
-        : null;
+    if (lang && window.hljs && window.hljs.getLanguage(lang)) return window.hljs.highlight(content, { language: lang, ignoreIllegals: true }).value;
+    if (window.hljs) return window.hljs.highlightAuto(content).value;
   } catch {
-    out = null;
+    /* repli texte brut */
   }
-  if (out) {
-    code.innerHTML = out.value; // hljs échappe son HTML → sûr
-    code.className = "hljs" + (out.language ? " language-" + out.language : "");
-  } else {
-    code.textContent = content;
-    code.className = "hljs";
-  }
-  const lines = content.split("\n").length;
+  return null;
+}
+// Lecture : code colorisé + gouttière de numéros de ligne.
+function renderReadView() {
+  const code = $("#filesCode");
+  const html = hlValue(filesState.content, filesState.current);
+  if (html != null) code.innerHTML = html;
+  else code.textContent = filesState.content;
+  code.className = "hljs";
+  const lines = filesState.content.split("\n").length;
   let gutter = "";
   for (let i = 1; i <= lines; i++) gutter += i + "\n";
   $("#filesGutter").textContent = gutter;
   $("#filesScroll").scrollTop = 0;
 }
+// Média : lecteur compatible selon la famille.
+function renderMediaView(path, kind) {
+  const url = rawUrl(path);
+  const el = $("#filesMedia");
+  if (kind === "image") el.innerHTML = `<img src="${esc(url)}" alt="${esc(path)}" />`;
+  else if (kind === "video") el.innerHTML = `<video src="${esc(url)}" controls preload="metadata"></video>`;
+  else if (kind === "audio") el.innerHTML = `<audio src="${esc(url)}" controls preload="metadata"></audio>`;
+  else el.innerHTML = `<a href="${esc(url)}" target="_blank" rel="noopener">Ouvrir le fichier</a>`;
+}
+
+// Édition : re-colorise la couche de fond à partir du textarea (le « \n » final garde
+// la dernière ligne visible au scroll), et synchronise le défilement des deux couches.
+function syncEditHl() {
+  const ta = $("#filesTextarea");
+  const code = $("#filesEditHl");
+  const html = hlValue(ta.value, filesState.current);
+  code.innerHTML = (html != null ? html : esc(ta.value)) + "\n";
+  code.className = "hljs";
+}
+function syncEditScroll() {
+  const ta = $("#filesTextarea");
+  const pre = $("#filesEditHlPre");
+  pre.scrollTop = ta.scrollTop;
+  pre.scrollLeft = ta.scrollLeft;
+}
+function enterEditMode() {
+  if (filesState.kind !== "text") return;
+  filesState.mode = "edit";
+  const ta = $("#filesTextarea");
+  ta.value = filesState.content;
+  syncEditHl();
+  syncEditScroll();
+  setFilesPanel("edit");
+  refreshFilesToolbar();
+  ta.focus();
+}
+function exitEditMode() {
+  filesState.mode = "read";
+  renderReadView();
+  setFilesPanel("read");
+  refreshFilesToolbar();
+}
+function toggleEdit() {
+  if (filesState.mode === "edit") {
+    if (filesState.dirty && !confirm("Abandonner les modifications non enregistrées ?")) return;
+    markFilesDirty(false);
+    exitEditMode();
+  } else {
+    enterEditMode();
+  }
+}
+async function saveFile() {
+  const ta = $("#filesTextarea");
+  const newContent = ta.value;
+  const btn = $("#filesSave");
+  const old = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "💾 …";
+  try {
+    const r = await api.send("PUT", "/api/git/file", { path: filesState.current, content: newContent });
+    if (r && r.ok === false) {
+      uiAlert("Échec de l'enregistrement : " + (r.error || "écriture impossible"));
+      return;
+    }
+    filesState.content = newContent;
+    markFilesDirty(false);
+    toast("✅ Fichier enregistré");
+  } catch (e) {
+    uiAlert("Erreur : " + (e.message === "git_busy" ? "une opération git est déjà en cours sur ce repo." : e.message));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = old;
+  }
+}
+// Aperçu Markdown ↔ source.
+function toggleMdPreview() {
+  if (filesState.mode === "md") {
+    exitEditMode(); // revient en lecture
+    return;
+  }
+  filesState.mode = "md";
+  $("#filesMd").innerHTML = renderMarkdown(filesState.content) || '<span class="hint">(vide)</span>';
+  setFilesPanel("md");
+  refreshFilesToolbar();
+}
+function toggleFilesFullscreen() {
+  const m = $(".files-modal");
+  if (m) m.classList.toggle("full");
+}
+
 async function loadFileInExplorer(path) {
+  if (filesState.dirty && !confirm("Abandonner les modifications non enregistrées ?")) return;
   filesState.current = path;
+  markFilesDirty(false);
+  filesState.isMd = langForPath(path) === "markdown";
   $("#filesTree").querySelectorAll(".ftree-file.active").forEach((el) => el.classList.remove("active"));
   const node = $("#filesTree").querySelector(`[data-file="${CSS.escape(path)}"]`);
   if (node) node.classList.add("active");
   $("#filesPath").textContent = path;
+
+  // Média → lecteur compatible (pas de lecture texte).
+  const mk = mediaKind(path);
+  if (mk) {
+    filesState.kind = "media";
+    filesState.mode = "media";
+    filesState.content = "";
+    renderMediaView(path, mk);
+    setFilesPanel("media");
+    refreshFilesToolbar();
+    return;
+  }
+
+  // Texte (ou binaire non média).
+  filesState.mode = "read";
+  setFilesPanel("read");
   $("#filesCode").textContent = "Chargement…";
   $("#filesGutter").textContent = "";
   try {
     const r = await api.get("/api/git/file?path=" + encodeURIComponent(path));
     if (r.ok === false) {
+      filesState.kind = "binary";
+      filesState.content = "";
       $("#filesCode").className = "hljs";
-      $("#filesCode").textContent = r.binary ? "🖼 Fichier binaire — aperçu non disponible." : r.error || "Lecture impossible.";
+      $("#filesCode").textContent = r.binary ? "📦 Fichier binaire — aperçu non disponible." : r.error || "Lecture impossible.";
       $("#filesGutter").textContent = "";
+      refreshFilesToolbar();
       return;
     }
-    showFileContent(path, r.content || "");
+    filesState.kind = "text";
+    filesState.content = r.content || "";
+    renderReadView();
+    refreshFilesToolbar();
   } catch (e) {
+    filesState.kind = null;
     $("#filesCode").className = "hljs";
     $("#filesCode").textContent = "Erreur : " + e.message;
+    refreshFilesToolbar();
   }
 }
 
@@ -1250,10 +1419,32 @@ export function initRepo() {
 
   // Modale explorateur de fichiers
   $("#filesClose").addEventListener("click", closeFilesModal);
+  $("#filesFull").addEventListener("click", toggleFilesFullscreen);
+  $("#filesEdit").addEventListener("click", toggleEdit);
+  $("#filesSave").addEventListener("click", saveFile);
+  $("#filesPreview").addEventListener("click", toggleMdPreview);
   $("#filesBackdrop").addEventListener("mousedown", (e) => {
     if (e.target === $("#filesBackdrop")) closeFilesModal();
   });
   $("#filesFilter").addEventListener("input", filterFileTree);
+  // Éditeur : marque sale + re-colorise à la frappe, synchronise le défilement, Tab = 2 espaces.
+  $("#filesTextarea").addEventListener("input", () => {
+    markFilesDirty(true);
+    syncEditHl();
+  });
+  $("#filesTextarea").addEventListener("scroll", syncEditScroll);
+  $("#filesTextarea").addEventListener("keydown", (e) => {
+    if (e.key === "Tab") {
+      e.preventDefault();
+      const ta = e.target;
+      const s = ta.selectionStart;
+      const en = ta.selectionEnd;
+      ta.value = ta.value.slice(0, s) + "  " + ta.value.slice(en);
+      ta.selectionStart = ta.selectionEnd = s + 2;
+      markFilesDirty(true);
+      syncEditHl();
+    }
+  });
   // Délégation : clic sur un dossier (replier/déplier) ou un fichier (afficher).
   $("#filesTree").addEventListener("click", (e) => {
     const file = e.target.closest(".ftree-file");

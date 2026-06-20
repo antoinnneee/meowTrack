@@ -386,13 +386,14 @@
       </div>
     </div>
 
-    <!-- Modale explorateur de fichiers (vue Repo) : arbre + contenu colorisé -->
+    <!-- Modale explorateur de fichiers (vue Repo) : arbre + contenu colorisé / édition / aperçu MD / média -->
     <div class="modal-backdrop" id="filesBackdrop" hidden>
       <div class="modal files-modal" role="dialog" aria-modal="true">
         <div class="diff-head">
           <h2 id="filesTitle">📂 Fichiers</h2>
           <span class="files-branch" id="filesBranch"></span>
           <span class="repo-toolbar-sp"></span>
+          <button id="filesFull" class="ghost" title="Plein écran">⛶</button>
           <button id="filesClose" class="ghost">✕</button>
         </div>
         <div class="files-body">
@@ -401,10 +402,29 @@
             <div class="files-tree" id="filesTree"></div>
           </aside>
           <section class="files-view">
-            <div class="files-path" id="filesPath"><span class="hint">Sélectionne un fichier à gauche.</span></div>
-            <div class="files-scroll" id="filesScroll">
-              <pre class="files-gutter" id="filesGutter" aria-hidden="true"></pre>
-              <pre class="files-code"><code id="filesCode" class="hljs"></code></pre>
+            <div class="files-toolbar">
+              <span class="files-path" id="filesPath"><span class="hint">Sélectionne un fichier à gauche.</span></span>
+              <span class="files-dirty" id="filesDirty" hidden title="Modifications non enregistrées">●</span>
+              <span class="repo-toolbar-sp"></span>
+              <button id="filesPreview" class="ghost xs" hidden title="Aperçu Markdown rendu">👁 Aperçu</button>
+              <button id="filesEdit" class="ghost xs" hidden title="Éditer le fichier (working tree)">✎ Éditer</button>
+              <button id="filesSave" class="primary xs" hidden title="Enregistrer dans le working tree">💾 Enregistrer</button>
+            </div>
+            <div class="files-content" id="filesContent">
+              <!-- Lecture : code colorisé + gouttière de numéros de ligne -->
+              <div class="files-scroll" id="filesScroll">
+                <pre class="files-gutter" id="filesGutter" aria-hidden="true"></pre>
+                <pre class="files-code"><code id="filesCode" class="hljs"></code></pre>
+              </div>
+              <!-- Édition : textarea transparent superposé au rendu colorisé -->
+              <div class="files-editor" id="filesEditor" hidden>
+                <pre class="files-edit-hl" id="filesEditHlPre" aria-hidden="true"><code id="filesEditHl" class="hljs"></code></pre>
+                <textarea id="filesTextarea" spellcheck="false" wrap="off" autocomplete="off"></textarea>
+              </div>
+              <!-- Aperçu Markdown rendu -->
+              <div class="files-md markdown-body" id="filesMd" hidden></div>
+              <!-- Média : lecteur image / vidéo / son -->
+              <div class="files-media" id="filesMedia" hidden></div>
             </div>
           </section>
         </div>

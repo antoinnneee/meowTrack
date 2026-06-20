@@ -209,7 +209,7 @@ function mdInline(str) {
     .replace(/\*([^*\n]+)\*/g, "<em>$1</em>")
     .replace(/~~([^~]+)~~/g, "<del>$1</del>");
 }
-function renderMarkdown(src) {
+export function renderMarkdown(src) {
   const raw = String(src || "");
   if (!raw.trim()) return "";
   // 1) Extraire les blocs de code clôturés (placeholders) pour ne pas les transformer.

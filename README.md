@@ -173,10 +173,22 @@ Chaque entrée est rattachée à une **branche git** (champ `branch`, sélection
 
 ### Explorateur de fichiers (vue Repo)
 
-Le bouton **📂 Fichiers** de la barre d'outils de l'onglet **🔀 Repo** ouvre une modale d'exploration des fichiers du dépôt : arborescence repliable à gauche (avec filtre), contenu du fichier à droite **avec coloration syntaxique** (highlight.js vendorisé dans `dashboard/`, fonctionne hors-ligne) et numéros de ligne. La lecture est **strictement en lecture seule** et bornée (refus du binaire et des fichiers > 2 Mo). Deux endpoints, non verrouillés, scopés `?repo=` :
+Le bouton **📂 Fichiers** de la barre d'outils de l'onglet **🔀 Repo** ouvre une modale d'exploration des fichiers du dépôt : arborescence repliable à gauche (avec filtre), panneau de contenu à droite. Le panneau s'adapte au type de fichier :
 
-- `GET /api/git/tree?repo=…&branch=…` — arbre complet `{ files[], dirs[], branch, commit }` (branche omise → working tree via `git ls-files` ; branche fournie → arbre `git ls-tree` sans checkout).
-- `GET /api/git/file?repo=…&path=…&branch=…` — contenu d'un fichier `{ ok, path, branch, ref, size, content }` (branche omise → fichier du working tree lu sur disque ; branche fournie → `git show <ref>:<chemin>`, préfère `origin/<branch>`). Mêmes gardes que le reste du gestionnaire git : `normalizePath` (anti path-traversal, rejet du préfixe `:`), `isValidRef` (anti option-injection), `GIT_LITERAL_PATHSPECS`.
+- **Code / texte** : coloration syntaxique (highlight.js vendorisé dans `dashboard/`, hors-ligne) + numéros de ligne.
+- **Markdown** : bouton **👁 Aperçu** pour basculer entre la source colorisée et le **rendu markdown** (réutilise le rendu anti-XSS des notes Vibes).
+- **Média** (image, vidéo, son — png/jpg/gif/webp/svg…, mp4/webm/mov…, mp3/wav/ogg…) : **lecteur compatible** (`<img>` / `<video controls>` / `<audio controls>`), servi par un endpoint d'octets bruts.
+- **Édition** : bouton **✎ Éditer** → éditeur **avec coloration syntaxique conservée** (textarea transparent superposé au rendu colorisé) ; **💾 Enregistrer** écrit le fichier **dans le working tree** (jamais un blob historique). Un point ● signale les modifications non enregistrées.
+- **⛶ Plein écran** : bascule la modale en plein écran.
+
+Endpoints, scopés `?repo=` :
+
+- `GET /api/git/tree?branch=…` — arbre complet `{ files[], dirs[], branch, commit }` (branche omise → working tree via `git ls-files` ; branche fournie → arbre `git ls-tree` sans checkout). Non verrouillé.
+- `GET /api/git/file?path=…&branch=…` — contenu texte `{ ok, path, branch, ref, size, content }` (borné 2 Mo, refus du binaire ; branche omise → working tree lu sur disque, sinon `git show <ref>:<chemin>` préférant `origin/<branch>`). Non verrouillé.
+- `GET /api/git/raw?path=…&branch=…&token=…` — **octets bruts** du fichier avec son type MIME (déduit de l'extension), pour les lecteurs média ; auth par `?token=` car `<img>/<video>` ne portent pas d'en-tête. Non verrouillé.
+- `PUT /api/git/file` (corps `{ path, content }`) — écrit le fichier **dans le working tree** (working tree uniquement, pas de branche). **Verrouillé par dépôt** (`withGitLock`) et diffuse `git:changed`. Limite pratique ~1 Mo (corps JSON borné par `readBody`).
+
+Gardes communes à toutes ces routes : `normalizePath` (anti path-traversal, rejet du préfixe `:`), `isValidRef` (anti option-injection), `GIT_LITERAL_PATHSPECS` ; l'écriture refuse en plus `.git/` et tout chemin existant qui est un dossier.
 
 ### Amélioration IA de la description
 

@@ -11,7 +11,7 @@
 // sauf clone/fetch/pull explicites (cloneInto / pull).
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 
 // Env de TOUTES les invocations git : GIT_LITERAL_PATHSPECS=1 neutralise la « magie »
@@ -552,6 +552,71 @@ export function fileContent(root, relPath, branch = null, { maxBytes = 2 * 1024 
   // Détection binaire : octet NUL dans le premier bloc → on refuse l'affichage texte.
   if (buf.subarray(0, 8000).includes(0)) return { ok: false, error: "Fichier binaire", size, binary: true };
   return { ok: true, path: rel, branch: branch || null, ref, size, content: buf.toString("utf8") };
+}
+
+// Écrit un fichier dans le WORKING TREE (édition depuis l'explorateur). Working tree
+// UNIQUEMENT (jamais un blob historique : éditer le passé n'a pas de sens). Mêmes
+// gardes que fileContent : normalizePath (anti path-traversal, rejet du préfixe « : »),
+// refus de .git/, refus d'un chemin existant qui est un dossier, borné en taille.
+export function writeFile(root, relPath, content, { maxBytes = 5 * 1024 * 1024 } = {}) {
+  if (!isGitClone(root)) return { ok: false, error: "Pas un clone git" };
+  const rel = normalizePath(root, relPath);
+  if (!rel) return { ok: false, error: "Chemin invalide" };
+  if (rel === ".git" || rel.startsWith(".git/")) return { ok: false, error: "Écriture interdite dans .git" };
+  const text = typeof content === "string" ? content : "";
+  const bytes = Buffer.byteLength(text, "utf8");
+  if (bytes > maxBytes) return { ok: false, error: `Contenu trop volumineux (${bytes} octets)` };
+  const abs = join(root, rel);
+  try {
+    if (existsSync(abs) && statSync(abs).isDirectory()) return { ok: false, error: "C'est un dossier" };
+    mkdirSync(dirname(abs), { recursive: true });
+    writeFileSync(abs, text, "utf8");
+  } catch (e) {
+    return { ok: false, error: "Écriture impossible : " + (e && e.message ? e.message : String(e)) };
+  }
+  return { ok: true, path: rel, size: bytes };
+}
+
+// Octets BRUTS d'un fichier (médias : image / vidéo / son) pour un lecteur compatible
+// côté navigateur. Working tree (disque) si branch nul, sinon blob de la branche. Borné,
+// retourne un Buffer (pas d'interprétation texte, pas de refus du binaire). Le type MIME
+// est déduit côté route à partir de l'extension.
+export function fileRaw(root, relPath, branch = null, { maxBytes = 50 * 1024 * 1024 } = {}) {
+  if (!isGitClone(root)) return { ok: false, error: "Pas un clone git" };
+  const rel = normalizePath(root, relPath);
+  if (!rel) return { ok: false, error: "Chemin invalide" };
+  let buf;
+  let ref = null;
+  if (branch) {
+    if (!isValidRef(branch)) return { ok: false, error: "Branche invalide" };
+    ref = git(["rev-parse", "--verify", "--quiet", `origin/${branch}`], root) ? `origin/${branch}` : branch;
+    const spec = `${ref}:${rel}`;
+    const sizeRaw = git(["cat-file", "-s", spec], root);
+    const size = sizeRaw == null ? -1 : Number(sizeRaw);
+    if (size < 0 || Number.isNaN(size)) return { ok: false, error: "Fichier introuvable dans cette branche" };
+    if (size > maxBytes) return { ok: false, error: "Fichier trop volumineux", tooLarge: true };
+    try {
+      buf = execFileSync("git", ["show", spec], { cwd: root, env: GIT_ENV, maxBuffer: 64 * 1024 * 1024 });
+    } catch {
+      return { ok: false, error: "Lecture impossible" };
+    }
+  } else {
+    const abs = join(root, rel);
+    let st;
+    try {
+      st = statSync(abs);
+    } catch {
+      return { ok: false, error: "Fichier introuvable" };
+    }
+    if (st.isDirectory()) return { ok: false, error: "C'est un dossier" };
+    if (st.size > maxBytes) return { ok: false, error: "Fichier trop volumineux", tooLarge: true };
+    try {
+      buf = readFileSync(abs);
+    } catch {
+      return { ok: false, error: "Lecture impossible" };
+    }
+  }
+  return { ok: true, path: rel, ref, buffer: buf };
 }
 
 // Reflog (HEAD@{n}) : journal des positions de HEAD — filet de sécurité après un
