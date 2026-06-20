@@ -619,6 +619,9 @@ body:not(.view-repo) .repo-only { display: none; }
 .side-item .si-track { font-size: 10px; color: var(--text-dim); font-family: "Segoe UI", sans-serif; }
 .side-item.remote { color: var(--accent-2); }
 .side-item.stash { color: var(--high); cursor: default; }
+.side-item.hidden { opacity: 0.5; }
+.side-item.hidden .si-name { text-decoration: line-through; text-decoration-color: var(--text-dim); }
+.side-item .si-hidden { font-size: 10px; opacity: 0.85; }
 .side-empty { padding: 4px 14px; font-size: 12px; color: var(--text-dim); }
 
 /* Graphe d'historique : grille [lanes | refs+message | auteur | date] */

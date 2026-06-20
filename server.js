@@ -41,6 +41,8 @@ import {
   createRepo,
   updateRepo,
   deleteRepo,
+  hideBranch,
+  unhideBranch,
   // Good Vibes v2 : arbre de nœuds + chat par nœud
   getNode,
   getSubtree,
@@ -1694,6 +1696,16 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === "GET" && path === "/api/git/branches") {
       return send(res, 200, branchesDetailedFor(repoOf()));
+    }
+    // Masquage de branche (par dépôt) : retire/affiche une branche des sélecteurs
+    // (topbar, modale, autocomplete « @ »). Sans effet sur le dépôt git lui-même.
+    if (req.method === "POST" && path === "/api/git/branch/hide") {
+      const { name } = await readBody(req);
+      return send(res, 200, hideBranch(repoOf(), name));
+    }
+    if (req.method === "POST" && path === "/api/git/branch/unhide") {
+      const { name } = await readBody(req);
+      return send(res, 200, unhideBranch(repoOf(), name));
     }
     if (req.method === "GET" && path === "/api/git/stashes") {
       return send(res, 200, stashListFor(repoOf()));
