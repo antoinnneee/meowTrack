@@ -1311,8 +1311,13 @@ async function persistPositions(ids) {
   const positions = [];
   for (const id of ids) {
     const p = vibes.graph.posMap.get(id);
+    if (!p) continue;
+    // posMap fait foi : un nœud fraîchement créé via le menu fond n'est pas encore
+    // dans byId (repeuplé par loadForest) — la maj de byId est donc « best-effort »,
+    // mais la position part TOUJOURS au serveur. Exiger byId ici perdait la position.
     const n = vibes.byId.get(id);
-    if (p && n) { n.posX = p.x; n.posY = p.y; positions.push({ id, x: p.x, y: p.y }); }
+    if (n) { n.posX = p.x; n.posY = p.y; }
+    positions.push({ id, x: p.x, y: p.y });
   }
   if (!positions.length) return;
   try { await api.send("POST", "/api/nodes/positions", { positions }); }
@@ -2302,7 +2307,9 @@ async function saveNode() {
       if (at) {
         n.posX = at.x; n.posY = at.y;
         vibes.graph.posMap.set(n.id, { x: at.x, y: at.y });
-        persistPositions([n.id]);
+        // Attendre la persistance AVANT loadForest, sinon le rechargement récupère le
+        // nœud avec posX/posY encore NULL (course) → il atterrit en auto-layout, pas au clic.
+        await persistPositions([n.id]);
       }
       if (vibes.current) scheduleSubtreeRefetch();
       else if (at) loadForest(); // créé via le menu fond → rester sur le graphe pour le voir apparaître
