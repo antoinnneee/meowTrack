@@ -77,16 +77,49 @@ async function onRepoChange(slug) {
   else if (typeof vibes !== "undefined" && vibes.view === "repo") openRepoView();
 }
 
-// Ajoute un repo via une petite invite (slug + url) puis bascule dessus.
+// Ajoute un repo à suivre depuis son URL git, puis bascule dessus. Le slug (identifiant
+// court) est dérivé AUTOMATIQUEMENT de l'URL côté serveur : on ne le demande jamais —
+// même si le clonage échoue, le repo reste enregistré (clonable plus tard via « ⟳ Mettre
+// à jour »), sans nouvelle invite.
 async function addRepoPrompt() {
-  const url = (window.prompt("URL git du repo à suivre (laisser vide pour un clone local géré à la main) :", "") || "").trim();
-  const slug = (window.prompt("Slug court (identifiant, ex. 'chatserver'). Vide = dérivé de l'URL :", "") || "").trim();
-  if (!slug && !url) return;
+  const url = (window.prompt("URL git du repo à suivre :", "") || "").trim();
+  if (!url) return;
   try {
-    const r = await api.send("POST", "/api/repos", { slug: slug || undefined, url: url || undefined });
+    const r = await api.send("POST", "/api/repos", { url });
     if (r.sync && r.sync.ok === false) alert("Repo ajouté mais clone échoué :\n" + (r.sync.output || "erreur inconnue"));
     await loadRepos();
     await onRepoChange(r.repo.slug);
+  } catch (e) {
+    alert("Erreur : " + e.message);
+  }
+}
+
+// Retire le repo actif du meowtrack. Suppression strictement LOCALE : ses entrées et
+// nœuds (base tracker du dépôt) + le clone local géré (`.repos/<slug>/`). Le dépôt
+// GitHub DISTANT n'est jamais affecté. Le dernier repo ne peut pas être retiré ; on
+// bascule ensuite sur le repo par défaut.
+async function removeRepoPrompt() {
+  const cur = activeRepo();
+  const repo = state.repos.find((r) => r.slug === cur) || state.repos.find((r) => r.isDefault) || state.repos[0];
+  if (!repo) return;
+  if (state.repos.length <= 1) {
+    alert("Impossible de retirer le dernier repo.");
+    return;
+  }
+  const name = repo.name || repo.slug;
+  if (
+    !window.confirm(
+      `Retirer « ${name} » du meowtrack ?\n\n` +
+        "Suppression LOCALE : ses entrées, ses nœuds et le clone local (.repos/).\n" +
+        "Le dépôt GitHub distant n'est PAS affecté. Irréversible."
+    )
+  )
+    return;
+  try {
+    await api.send("DELETE", "/api/repos/" + encodeURIComponent(repo.slug));
+    setActiveRepo(""); // bascule sur le repo par défaut au rechargement
+    await loadRepos();
+    await onRepoChange(activeRepo());
   } catch (e) {
     alert("Erreur : " + e.message);
   }
@@ -853,6 +886,7 @@ export function init() {
   $("#repoSel")?.addEventListener("change", (e) => onRepoChange(e.target.value));
   $("#addRepoBtn")?.addEventListener("click", addRepoPrompt);
   $("#importReposBtn")?.addEventListener("click", importReposPrompt);
+  $("#removeRepoBtn")?.addEventListener("click", removeRepoPrompt);
 
   const desc = $("#mDesc");
   desc.addEventListener("input", onDescInput);

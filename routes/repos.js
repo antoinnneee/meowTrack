@@ -6,12 +6,13 @@
 
 import { send, readBody, repoOf } from "../http-util.js";
 import { PORT } from "../config.js";
-import { listRepos, createRepo, getRepo, updateRepo, deleteRepo, resolveRepoId, stats } from "../db.js";
+import { listRepos, createRepo, getRepo, getRepoRow, updateRepo, deleteRepo, resolveRepoId, stats } from "../db.js";
 import {
   ensureRepo,
   importReposFromDir,
   gitContextFor,
   invalidateRepo,
+  removeManagedClone,
   listBranchesFor,
   searchPathsFor,
   refreshPathsFor,
@@ -86,7 +87,13 @@ export async function handle(ctx) {
       return true;
     }
     if (sub === "" && method === "DELETE") {
-      send(res, 200, deleteRepo(key));
+      // Capture la row AVANT suppression de registre (pour résoudre le clone géré).
+      const row = getRepoRow(key);
+      const result = deleteRepo(key);
+      // Suppression LOCALE uniquement : retire notre clone `.repos/<slug>/` si on le
+      // possède. Ne touche jamais le distant ni un local_path utilisateur.
+      const clone = result.deleted && row ? removeManagedClone(row) : { removed: false, reason: "not_deleted" };
+      send(res, 200, { ...result, clone });
       return true;
     }
   }
