@@ -788,10 +788,11 @@ function reqApex(a, b, center) {
   return { x: g.mx + g.nx * g.off / 2, y: g.my + g.ny * g.off / 2 };
 }
 // Arête de PRÉREQUIS : « from dépend de to ». Courbe pointillée distincte (jamais
-// confondue avec la hiérarchie pleine), flèche pointant vers le prérequis (to).
+// confondue avec la hiérarchie pleine), flèche allant du prérequis (to) vers le
+// dépendant (from) — le prérequis « débloque » ce qui en dépend.
 // L'arc s'écarte du segment droit pour rester lisible même entre nœuds éloignés.
 // ra/rb rognent les extrémités sur le périmètre des nœuds (le long de la tangente de
-// la courbe quadratique) pour que la flèche se pose VISIBLEMENT sur le bord du prérequis
+// la courbe quadratique) pour que la flèche se pose VISIBLEMENT sur le bord du dépendant
 // au lieu d'être cachée sous son disque (les nœuds sont peints par-dessus les arêtes).
 function reqEdgeD(a, b, ra = 0, rb = 0, center = null) {
   const { nx, ny, off, mx, my } = reqGeom(a, b, center);
@@ -805,9 +806,11 @@ function reqEdgeD(a, b, ra = 0, rb = 0, center = null) {
 // souris) + le trait pointillé visible (sans capture d'événements). data-from/to et le
 // tooltip portés par le groupe ; le clic est géré au niveau du groupe (.g-req-edge).
 function reqEdgePath(a, b, link, blocked, center) {
-  const ra = nodeOuterR(link.fromId) + 2;       // démarre juste hors du nœud source
-  const rb = nodeOuterR(link.toId) + 9;         // laisse la place à la pointe de flèche
-  const d = reqEdgeD(a, b, ra, rb, center);
+  // a = position du dépendant (from), b = position du prérequis (to).
+  // Tracé du prérequis (to) VERS le dépendant (from) : la pointe se pose sur le dépendant.
+  const ra = nodeOuterR(link.toId) + 2;         // démarre juste hors du prérequis (to)
+  const rb = nodeOuterR(link.fromId) + 9;       // laisse la place à la pointe de flèche sur le dépendant
+  const d = reqEdgeD(b, a, ra, rb, center);
   const g = svgEl("g", {
     class: "g-req-edge" + (blocked ? " blocked" : ""),
     "data-from": String(link.fromId),
@@ -815,7 +818,7 @@ function reqEdgePath(a, b, link, blocked, center) {
   });
   g.appendChild(svgEl("path", { d, class: "g-req-hit" }));
   g.appendChild(svgEl("path", { d, class: "g-req" + (blocked ? " blocked" : ""), "marker-end": blocked ? "url(#reqArrowBlocked)" : "url(#reqArrow)" }));
-  // Tooltip natif au survol : lève l'ambiguïté du sens (la flèche pointe vers le prérequis).
+  // Tooltip natif au survol : lève l'ambiguïté du sens (la flèche va du prérequis vers le dépendant).
   const from = vibes.byId.get(link.fromId), to = vibes.byId.get(link.toId);
   if (from && to) {
     const ttl = svgEl("title", {});
@@ -977,7 +980,7 @@ function liveUpdateGraphPositions() {
     const from = Number(g.dataset.from), to = Number(g.dataset.to);
     const pf = pos.get(from), pt = pos.get(to);
     if (!pf || !pt) return;
-    const d = reqEdgeD(pf, pt, nodeOuterR(from) + 2, nodeOuterR(to) + 9, center);
+    const d = reqEdgeD(pt, pf, nodeOuterR(to) + 2, nodeOuterR(from) + 9, center); // to → from (flèche sur le dépendant)
     g.querySelectorAll("path").forEach((p) => p.setAttribute("d", d));
   });
   if (vibes.graph.edgeDel) positionEdgeDel();
