@@ -11,7 +11,7 @@ import { openRepoView, initRepo } from "./repo.js";
 // Réutilise les helpers du Suivi ($/esc/api/getToken). N'altère PAS init().
 // ═══════════════════════════════════════════════════════════════════════════
 
-const NODE_STATUS_LABEL = { active: "🌱 Actif", paused: "⏸️ En pause", done: "🏆 Atteint", abandoned: "🪦 Abandonné" };
+const NODE_STATUS_LABEL = { active: "🌱 Actif", paused: "⏸️ En pause", waiting: "⏳ En attente d'info", done: "🏆 Atteint", abandoned: "🪦 Abandonné" };
 const NODE_COLORS = ["accent", "feature", "task", "bug", "high"];
 
 // Palette « par cascade » : chaque sous-arbre de 1er niveau (tête de cascade =
@@ -1488,7 +1488,9 @@ function renderNodeHeader(n) {
   $("#ndEmoji").textContent = n.emoji || "🎯";
   $("#ndTitle").textContent = n.title;
   $("#ndRef").textContent = n.ref;
-  $("#ndStatus").textContent = NODE_STATUS_LABEL[n.status] || n.status;
+  const stEl = $("#ndStatus");
+  stEl.textContent = NODE_STATUS_LABEL[n.status] || n.status;
+  stEl.className = "badge status-" + n.status; // colore le badge selon le statut (ex. waiting)
   $("#ndBar").style.width = n.progress + "%";
   $("#ndPct").textContent = n.progress + "%";
   const tgt = $("#ndTarget");
@@ -1498,6 +1500,18 @@ function renderNodeHeader(n) {
   desc.hidden = !n.description;
   const blk = $("#ndBlocked");
   if (blk) blk.hidden = !isNodeBlocked(n);
+  // Panneau « en attente d'info » : visible uniquement au statut waiting.
+  const pend = $("#ndPending");
+  if (pend) {
+    const waiting = n.status === "waiting";
+    pend.hidden = !waiting;
+    if (waiting) {
+      const body = $("#ndPendingBody");
+      if (body) body.innerHTML = n.pendingInfo
+        ? renderMarkdown(n.pendingInfo)
+        : '<span class="hint">(aucun détail fourni sur l\'info attendue)</span>';
+    }
+  }
   renderNotes(n);
   renderLinks(n);
   renderNodeIssues(n);
@@ -1791,7 +1805,7 @@ function treeHtml(n, depth, fx) {
       <span class="temoji">${esc(n.emoji || "🎯")}</span>
       <span class="ttitle" title="Ouvrir le chat de ce nœud">${esc(n.title)}</span>
       <span class="tpct">${n.progress}%</span>
-      <select class="tstatus" title="Statut">${["active", "paused", "done", "abandoned"].map((s) => `<option value="${s}" ${s === n.status ? "selected" : ""}>${esc(NODE_STATUS_LABEL[s])}</option>`).join("")}</select>
+      <select class="tstatus" title="Statut">${["active", "paused", "waiting", "done", "abandoned"].map((s) => `<option value="${s}" ${s === n.status ? "selected" : ""}>${esc(NODE_STATUS_LABEL[s])}</option>`).join("")}</select>
       <button class="tadd" title="Ajouter un sous-jalon">＋</button>
       <button class="tdel danger" title="Supprimer">🗑</button>
     </div>
@@ -1948,6 +1962,10 @@ async function patchNode(id, fields) {
   } catch (e) {
     toast(e.message);
   }
+}
+// waiting → active : le nœud redevient implémentable (le data layer efface pending_info).
+async function markNodeReady(id) {
+  await patchNode(id, { status: "active" });
 }
 async function deleteNodeById(id) {
   try {
@@ -2470,6 +2488,9 @@ export function initVibes() {
   $("#ndEdit").addEventListener("click", () => openNodeModal(vibes.currentNode, null));
   $("#ndDel").addEventListener("click", deleteCurrentNode);
   $("#ndAddChild").addEventListener("click", () => openNodeModal(null, vibes.currentNode ? vibes.currentNode.id : null));
+  // « Prêt à implémenter » : sort le nœud de l'attente (waiting → active). Le data
+  // layer efface alors l'info en attente. Secours manuel quand on ne passe pas par l'IA.
+  $("#ndReadyBtn").addEventListener("click", () => { if (vibes.currentNode) markNodeReady(vibes.currentNode.id); });
   // Crée une entrée de suivi pré-remplie et auto-liée à ce jalon (puis bascule sur Suivi).
   $("#ndAddIssue").addEventListener("click", () => { if (vibes.currentNode) createIssueFromNode(vibes.currentNode); });
   // Notes markdown : éditeur multi-notes (chaque éditeur gère son @ / aperçu).

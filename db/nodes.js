@@ -51,6 +51,8 @@ function rowToNode(r, { childCount } = {}) {
     status: r.status,
     color: r.color,
     emoji: r.emoji,
+    // Info attendue de l'utilisateur (markdown) quand status='waiting' ; sinon null.
+    pendingInfo: r.pending_info != null ? r.pending_info : null,
     targetDate: r.target_date,
     progress: pct,
     position: r.position,
@@ -254,6 +256,9 @@ function _setNodeFields(id, fields = {}) {
     sets.push("pos_y = ?");
     vals.push(fields.posY == null ? null : Number(fields.posY));
   }
+  // `pending_info` : info attendue de l'utilisateur (status='waiting'). Accepte les
+  // deux casses (`pendingInfo` côté API/IA, `pending_info` brut). null/'' efface.
+  const hasPending = "pendingInfo" in fields || "pending_info" in fields;
   if (fields.status != null) {
     if (!NODE_STATUS_SET.has(fields.status)) throw new Error(`Statut invalide : ${fields.status}`);
     sets.push("status = ?");
@@ -265,6 +270,17 @@ function _setNodeFields(id, fields = {}) {
       sets.push("done_at = ?");
       vals.push(null);
     }
+    // En quittant 'waiting', l'info en attente n'a plus lieu d'être → effacée
+    // (sauf si l'appelant fournit explicitement une nouvelle valeur ci-dessous).
+    if (fields.status !== "waiting" && row.status === "waiting" && !hasPending) {
+      sets.push("pending_info = ?");
+      vals.push(null);
+    }
+  }
+  if (hasPending) {
+    const pi = "pendingInfo" in fields ? fields.pendingInfo : fields.pending_info;
+    sets.push("pending_info = ?");
+    vals.push(pi == null || pi === "" ? null : clampStr(String(pi), 8000));
   }
   if (fields.color != null) {
     if (!NODE_COLOR_SET.has(fields.color)) throw new Error(`Couleur invalide : ${fields.color}`);

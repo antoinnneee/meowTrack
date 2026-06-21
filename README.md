@@ -104,7 +104,8 @@ Tools exposés :
 | `meowtrack_branches` | Lister les branches d'un repo (hors branches masquées). |
 | `meowtrack_node_list` / `_get` | Lister l'arbre des nœuds (Vibes) / détail d'un nœud (+ `requires`/`requiredBy`). |
 | `meowtrack_node_create` / `_update` / `_delete` | Créer / modifier / supprimer un nœud (jalon). |
-| `meowtrack_node_set_status` / `_set_notes` | Raccourcis statut / notes d'un nœud. |
+| `meowtrack_node_set_status` / `_set_notes` | Raccourcis statut (`active`/`paused`/`waiting`/`done`/`abandoned`) / notes d'un nœud. |
+| `meowtrack_node_request_input` | Mettre un nœud **en attente d'info utilisateur** (`status='waiting'` + description du manque) : clé API, config, décision attendue avant implémentation. Sans secret dans le texte. |
 | `meowtrack_node_move` / `_reorder` | Re-parenter un nœud (anti-cycle) / réordonner ses enfants. |
 | `meowtrack_node_link_add` / `_remove` / `meowtrack_node_links` | Gérer les liens de prérequis (`from` dépend de `to`) / les lister. |
 
@@ -290,6 +291,16 @@ Onglet **🌱 Vibes** du dashboard : un **arbre de NŒUDS récursif** (`nodes`, 
 type de nœud — objectif = jalon = sous-jalon — chacun avec titre, statut, couleur, emoji, échéance et une
 **progression** dérivée (moyenne récursive de ses enfants ; une feuille `done` = 100 %). Profondeur libre :
 un jalon « sert de goal » et peut avoir ses propres sous-jalons.
+
+**Statut `waiting` — en attente d'information utilisateur.** En plus de `active`/`paused`/`done`/`abandoned`,
+un nœud peut être **`waiting`** (⏳) : il **manque une info de l'utilisateur** (clé API, config, décision)
+avant de pouvoir être implémenté. L'info attendue est décrite dans le champ **`pending_info`** (markdown libre,
+**jamais** la valeur d'un secret). Un nœud `waiting` n'est **pas réclamable** par l'orchestrateur
+(`claimNextNode` exige `status='active'`). Côté chat IA, quand le nœud courant est `waiting`, le prompt
+**bascule en mode « collecte »** : l'assistant explique ce qui manque, aide à le réunir, puis pose
+`{"op":"set_node_fields","status":"active"}` quand tout est là (ce qui efface `pending_info`). En détail de
+nœud, un encart affiche `pending_info` + un bouton **« ✅ Prêt à implémenter »** (secours manuel). L'agent
+Claude Code déclenche l'attente via **`meowtrack_node_request_input`** (ou `status='waiting'` + `pendingInfo`).
 
 ### Liens de prérequis (un nœud sert à plusieurs parents)
 

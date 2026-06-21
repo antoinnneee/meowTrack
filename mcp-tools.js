@@ -486,6 +486,11 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
         description: z.string().optional(),
         notes: notesSchema.optional(),
         status: z.enum(NODE_STATUSES).optional(),
+        pendingInfo: z
+          .string()
+          .nullable()
+          .optional()
+          .describe("Info attendue de l'utilisateur (markdown) quand status='waiting' ; null pour effacer. JAMAIS de secret (clé API…)."),
         color: z.enum(NODE_COLORS).optional(),
         emoji: z.string().optional(),
         targetDate: z.string().nullable().optional().describe("'YYYY-MM-DD' ou null pour effacer."),
@@ -499,10 +504,37 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
     "meowtrack_node_set_status",
     {
       title: "Changer le statut d'un nœud",
-      description: "Raccourci : active / paused / done / abandoned. Passer à 'done' marque le jalon comme atteint.",
+      description:
+        "Raccourci : active / paused / waiting / done / abandoned. 'done' marque le jalon atteint ; " +
+        "'waiting' = en attente d'info utilisateur (préfère meowtrack_node_request_input pour décrire ce qui manque).",
       inputSchema: { repo: repoParam, ref: nodeRefSchema, status: z.enum(NODE_STATUSES) },
     },
     guard(async ({ repo, ref, status }) => apiFetch("PATCH", "/api/nodes/" + encodeURIComponent(ref) + qs({ repo: repoOf(repo) }), { status }))
+  );
+
+  // ── meowtrack_node_request_input ─────────────────────────────────────────────
+  // À utiliser quand l'agent réalise qu'il MANQUE une info de l'utilisateur (clé API,
+  // config, décision) avant de pouvoir implémenter ce nœud. Le passe en 'waiting'
+  // (bloqué pour l'orchestrateur) et décrit le manque dans `info`. Le chat du nœud
+  // bascule alors en mode « collecte » ; quand l'info est fournie, le nœud repasse
+  // 'active' (via le chat ou le bouton « Prêt à implémenter »).
+  server.registerTool(
+    "meowtrack_node_request_input",
+    {
+      title: "Demander une info à l'utilisateur (mise en attente)",
+      description:
+        "Met un nœud EN ATTENTE d'information utilisateur (status='waiting') et décrit ce qui manque. " +
+        "À appeler quand il manque une clé API, une config ou une décision pour une implémentation à venir. " +
+        "N'inclus JAMAIS la valeur d'un secret dans `info` — décris seulement ce qui est attendu.",
+      inputSchema: {
+        repo: repoParam,
+        ref: nodeRefSchema,
+        info: z.string().describe("Markdown décrivant l'info manquante (clé API, config, décision). Sans secret."),
+      },
+    },
+    guard(async ({ repo, ref, info }) =>
+      apiFetch("PATCH", "/api/nodes/" + encodeURIComponent(ref) + qs({ repo: repoOf(repo) }), { status: "waiting", pendingInfo: info })
+    )
   );
 
   // ── meowtrack_node_set_notes (raccourci) ─────────────────────────────────────

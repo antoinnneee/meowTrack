@@ -10,7 +10,10 @@ export const STATUSES = ["open", "in_progress", "done", "wontfix"];
 export const PRIORITIES = ["low", "medium", "high", "critical"];
 
 // ── Vocabulaire Vibes v2 (arbre de nœuds) ───────────────────────────────
-export const NODE_STATUSES = ["active", "paused", "done", "abandoned"];
+// `waiting` = en attente d'une information de l'utilisateur (clé API, config, décision)
+// avant de pouvoir être implémenté. Bloqué pour l'orchestrateur (claimNextNode exige
+// status='active') ; l'info manquante est décrite dans la colonne `pending_info`.
+export const NODE_STATUSES = ["active", "paused", "waiting", "done", "abandoned"];
 export const NODE_COLORS = ["accent", "feature", "task", "bug", "high"];
 export const CHAT_MODELS = ["sonnet", "opus", "haiku"];
 export const MESSAGE_STATES = ["pending", "streaming", "complete", "error"];
