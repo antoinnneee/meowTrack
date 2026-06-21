@@ -422,9 +422,18 @@ body.forest-pinned.view-vibes #vibesView { margin-right: var(--forest-pin-w); }
 
 /* Graphe organique (SVG) */
 .graph-view { flex: 1; min-height: 0; position: relative; overflow: hidden; }
-.graph-svg { width: 100%; height: 100%; display: block; cursor: grab; user-select: none; background: radial-gradient(1200px 800px at 50% 40%, rgba(124, 92, 255, .06), transparent 70%); }
+.graph-svg { width: 100%; height: 100%; display: block; cursor: grab; user-select: none; touch-action: none; background: radial-gradient(1200px 800px at 50% 40%, rgba(124, 92, 255, .06), transparent 70%); }
 .graph-svg:active { cursor: grabbing; }
-.graph-controls { position: absolute; top: 12px; right: 14px; display: flex; gap: 8px; }
+.graph-controls { position: absolute; top: 12px; right: 14px; display: flex; align-items: center; gap: 8px; }
+/* Filtres par statut */
+.graph-filters { display: flex; gap: 4px; }
+.graph-filter-btn { font-size: 11px; padding: 3px 8px; border: 1px solid var(--border); border-radius: 20px; background: var(--surface); color: var(--text-dim); cursor: pointer; transition: background .15s, color .15s, opacity .15s; opacity: .55; }
+.graph-filter-btn.active { background: var(--surface-2); color: var(--text); opacity: 1; }
+.graph-filter-btn:hover { opacity: .85; }
+/* Minimap */
+.graph-minimap { position: absolute; bottom: 14px; left: 14px; width: 180px; height: 100px; background: rgba(10, 10, 20, .72); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; pointer-events: none; opacity: .85; }
+/* LOD : masquer les labels quand on est trop dézoomé */
+.graph-svg.lod-compact .g-label { display: none; }
 .g-edges { pointer-events: none; }
 .g-edge { fill: none; stroke-width: 3; opacity: .5; pointer-events: stroke; cursor: pointer; } /* cliquable (suppression de lien) */
 .g-edge:hover { opacity: .9; stroke-width: 4; }

@@ -70,6 +70,7 @@ export const vibes = {
     reqDel: null,           // { fromId, toId } du prérequis dont la poubelle est affichée
     pendingCreatePos: null, // position graphe où créer le prochain nœud (menu fond)
     suppressClick: false,   // ignore le prochain click (après un drag)
+    hiddenStatuses: new Set(), // statuts masqués par les filtres (done/abandoned/paused)
   },
 };
 
@@ -861,6 +862,54 @@ function graphDefs() {
   defs.appendChild(reqArrowMarker("reqArrowBlocked", "g-req-arrow-blocked"));
   return defs;
 }
+// Calcule les ids de nœuds masqués par les filtres de statut.
+// Un nœud est masqué si son propre statut est filtré OU si un ancêtre est masqué
+// (on ne laisse pas des enfants visibles suspendus sans parent visible).
+function computeHiddenNodes() {
+  const hidden = new Set();
+  const h = vibes.graph.hiddenStatuses;
+  if (!h.size) return hidden;
+  const visit = (n) => {
+    if (h.has(n.status) || (n.parentId != null && hidden.has(n.parentId))) hidden.add(n.id);
+    for (const c of childrenOf(n.id)) visit(c);
+  };
+  for (const root of rootsOf()) visit(root);
+  return hidden;
+}
+// Dessine la minimap : vue d'ensemble de tout le graphe avec le rectangle de viewport.
+function renderMinimap(pos, hiddenIds) {
+  const mm = $("#graphMinimap");
+  if (!mm || !pos || !pos.size) return;
+  // Bounding box de tous les nœuds (visibles ET masqués, pour que la minimap reste stable).
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of pos.values()) {
+    minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y);
+  }
+  if (!isFinite(minX)) { mm.style.display = "none"; return; }
+  mm.style.display = "";
+  const pad = 60;
+  mm.setAttribute("viewBox", `${minX - pad} ${minY - pad} ${maxX - minX + pad * 2} ${maxY - minY + pad * 2}`);
+  while (mm.firstChild) mm.removeChild(mm.firstChild);
+  // Arêtes hiérarchiques (lignes fines).
+  for (const n of vibes.forest) {
+    if (n.parentId == null) continue;
+    const pp = pos.get(n.parentId), pc = pos.get(n.id);
+    if (!pp || !pc) continue;
+    const dim = hiddenIds && (hiddenIds.has(n.id) || hiddenIds.has(n.parentId));
+    mm.appendChild(svgEl("line", { x1: pp.x, y1: pp.y, x2: pc.x, y2: pc.y, stroke: "rgba(255,255,255,.18)", "stroke-width": "6", opacity: dim ? "0.3" : "1" }));
+  }
+  // Nœuds (petits disques colorés).
+  for (const n of vibes.forest) {
+    const p = pos.get(n.id);
+    if (!p) continue;
+    const dim = hiddenIds && hiddenIds.has(n.id);
+    mm.appendChild(svgEl("circle", { cx: p.x, cy: p.y, r: "14", fill: cascadeColorOf(n), opacity: dim ? "0.25" : "0.9" }));
+  }
+  // Rectangle de viewport courant.
+  const v = vibes.graph.view;
+  mm.appendChild(svgEl("rect", { id: "minimapViewport", x: v.x, y: v.y, width: v.w, height: v.h, fill: "rgba(255,255,255,.07)", stroke: "rgba(255,255,255,.55)", "stroke-width": "10" }));
+}
 function renderGraph() {
   const svg = $("#graphSvg");
   if (!svg || $("#graphView").hidden) return;
@@ -881,8 +930,10 @@ function renderGraph() {
   svg.appendChild(gEdges);
   svg.appendChild(gReq);
   svg.appendChild(gNodes);
+  const hiddenIds = computeHiddenNodes();
   for (const n of vibes.forest) {
     if (n.parentId == null) continue;
+    if (hiddenIds.has(n.id) || hiddenIds.has(n.parentId)) continue;
     const pp = pos.get(n.parentId), pc = pos.get(n.id);
     if (pp && pc) gEdges.appendChild(edgePath(pp, pc, n));
   }
@@ -891,12 +942,14 @@ function renderGraph() {
   const center = graphCenter(pos);
   for (const l of vibes.links) {
     if (l.kind !== "requires") continue;
+    if (hiddenIds.has(l.fromId) || hiddenIds.has(l.toId)) continue;
     const pf = pos.get(l.fromId), pt = pos.get(l.toId);
     if (!pf || !pt) continue;
     const to = vibes.byId.get(l.toId);
     gReq.appendChild(reqEdgePath(pf, pt, l, to && to.status !== "done", center));
   }
   for (const n of vibes.forest) {
+    if (hiddenIds.has(n.id)) continue;
     const pp = pos.get(n.id);
     if (pp) gNodes.appendChild(nodeGroup(n, pp));
   }
@@ -918,13 +971,15 @@ function renderGraph() {
     gNodes.appendChild(t);
   }
   // Le fit englobe aussi les fantômes (sinon ils apparaîtraient hors cadre).
-  let fitPos = pos;
-  if (gpos && gpos.size) { fitPos = new Map(pos); let i = 0; for (const v of gpos.values()) fitPos.set("ghost:" + i++, v); }
+  // On exclut les nœuds masqués par le filtre pour que la vue s'adapte aux nœuds visibles.
+  let fitPos = hiddenIds.size ? new Map([...pos].filter(([id]) => !hiddenIds.has(id))) : pos;
+  if (gpos && gpos.size) { fitPos = new Map(fitPos); let i = 0; for (const v of gpos.values()) fitPos.set("ghost:" + i++, v); }
   // Pendant un tour de création (fantômes présents), on RECADRE toujours : l'arbre en
   // cours de génération reste centré au lieu de « filer » à droite hors cadre quand
   // l'utilisateur avait pané/zoomé (userView). Sinon on respecte sa vue manuelle.
   if (!vibes.graph.userView || vibes._ghostNodes.length) fitView(fitPos, svg);
   else applyViewBox(svg);
+  renderMinimap(pos, hiddenIds);
   // Feu d'artifice sur les nœuds qui viennent d'apparaître / d'être atteints.
   if (!REDUCED) {
     for (const id of vibes.graph.spawned) sparkleNode(svg, id, false);
@@ -955,6 +1010,27 @@ function fitView(pos, svg) {
 function applyViewBox(svg) {
   const v = vibes.graph.view;
   svg.setAttribute("viewBox", `${v.x} ${v.y} ${v.w} ${v.h}`);
+  updateLOD(svg);
+  updateMinimapViewport();
+}
+// LOD : masque les labels quand les nœuds sont trop petits à l'écran (dézoom extrême).
+function updateLOD(svg) {
+  if (!svg) svg = $("#graphSvg");
+  if (!svg) return;
+  const rect = svg.getBoundingClientRect();
+  const v = vibes.graph.view;
+  if (!rect.width || !v.w) return;
+  const pxPerSvg = rect.width / v.w; // pixels réels pour 1 unité SVG
+  const smallestNodeDiameter = 24;   // r=12, le plus petit nœud
+  svg.classList.toggle("lod-compact", smallestNodeDiameter * pxPerSvg < 16);
+}
+// Met à jour uniquement le rectangle de viewport dans la minimap (sans tout reconstruire).
+function updateMinimapViewport() {
+  const vp = document.getElementById("minimapViewport");
+  if (!vp) return;
+  const v = vibes.graph.view;
+  vp.setAttribute("x", v.x); vp.setAttribute("y", v.y);
+  vp.setAttribute("width", v.w); vp.setAttribute("height", v.h);
 }
 // Zoom clavier (+ / -) : zoom centré sur le milieu de la vue courante.
 // factor < 1 = zoom avant ; factor > 1 = zoom arrière.
@@ -1324,6 +1400,22 @@ function wireGraph() {
   $("#graphFit").addEventListener("click", () => {
     vibes.graph.userView = false;
     renderGraph();
+  });
+
+  // Boutons de filtre par statut : toggle actif/masqué, re-rendu du graphe.
+  document.querySelectorAll(".graph-filter-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const s = btn.dataset.status;
+      if (vibes.graph.hiddenStatuses.has(s)) {
+        vibes.graph.hiddenStatuses.delete(s);
+        btn.classList.add("active");
+      } else {
+        vibes.graph.hiddenStatuses.add(s);
+        btn.classList.remove("active");
+      }
+      vibes.graph.userView = true; // préserver le zoom/pan courant après le filtre
+      renderGraph();
+    });
   });
 
   // Zoom au clavier : + (ou =) zoom avant, - (ou _) zoom arrière. Actif seulement
