@@ -1979,8 +1979,13 @@ function messageEl(m) {
   // JSON brut pendant que l'IA rédige son bloc d'actions.
   let statusEl = null;
   if (streaming) {
-    body.textContent = m.body || "";
-    if (!m.body) {
+    // Pendant le streaming on interprète le markdown au fil de l'eau (même rendu
+    // qu'à la finalisation). renderMarkdown échappe tout le HTML d'abord, donc le
+    // markdown incomplet (** non fermé, fence ouverte) reste juste non transformé.
+    if (m.body) {
+      body.classList.add("markdown-body");
+      body.innerHTML = renderMarkdown(m.body);
+    } else {
       const dots = document.createElement("span");
       dots.className = "dots";
       dots.textContent = "Claude rédige";
@@ -2052,6 +2057,23 @@ function appendMessage(m) {
   feed.appendChild(messageEl(m));
   scrollFeed();
 }
+// Repeint le corps d'un message en streaming en interprétant le markdown.
+// Throttlé par requestAnimationFrame : les deltas arrivent token par token, mais
+// renderMarkdown re-parse tout le texte → on coalesce à au plus un rendu par frame.
+function paintStreamBody(s) {
+  if (!s.bodyEl || s._raf) return;
+  s._raf = requestAnimationFrame(() => {
+    s._raf = null;
+    if (!s.bodyEl) return;
+    if (s.text) {
+      s.bodyEl.classList.add("markdown-body");
+      s.bodyEl.innerHTML = renderMarkdown(s.text);
+    } else {
+      s.bodyEl.textContent = "";
+    }
+    scrollFeed();
+  });
+}
 function onStreamDelta(d) {
   const s = vibes.streams.get(d.turnId);
   if (!s) return;
@@ -2064,7 +2086,7 @@ function onStreamDelta(d) {
     }
   } else if (d.kind === "text") {
     s.text += d.delta;
-    if (s.bodyEl) s.bodyEl.textContent = s.text;
+    paintStreamBody(s); // rendu markdown live (throttlé via rAF)
   } else if (d.kind === "status") {
     // Libellé d'action en cours (remplace, ne concatène pas) — affiché à la
     // place du JSON brut pendant que l'IA rédige son bloc d'actions.
