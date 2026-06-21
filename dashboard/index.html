@@ -79,8 +79,14 @@
     <main class="view graph-view" id="graphView" hidden>
       <svg id="graphSvg" class="graph-svg" preserveAspectRatio="xMidYMid meet"></svg>
       <div class="graph-controls">
+        <div class="graph-filters" id="graphFilters">
+          <button class="graph-filter-btn active" data-status="done" title="Afficher / masquer les nœuds terminés">✅ Terminés</button>
+          <button class="graph-filter-btn active" data-status="abandoned" title="Afficher / masquer les nœuds abandonnés">🚫 Abandonnés</button>
+          <button class="graph-filter-btn active" data-status="paused" title="Afficher / masquer les nœuds en pause">⏸ En pause</button>
+        </div>
         <button id="graphFit" class="ghost" title="Recentrer">⤢ Recentrer</button>
       </div>
+      <svg id="graphMinimap" class="graph-minimap"></svg>
     </main>
 
     <!-- Vue Vibes : grille des objectifs racines -->
