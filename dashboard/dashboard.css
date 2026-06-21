@@ -307,7 +307,10 @@ body:not(.view-repo) .repo-only { display: none; }
 .model-select { max-width: 120px; font-size: 12px; }
 .chat-feed { flex: 1; overflow: auto; padding: 14px 18px; display: flex; flex-direction: column; gap: 10px; }
 .chat-feed .empty { margin: auto; }
-.msg { max-width: 88%; padding: 8px 12px; border-radius: 12px; background: var(--surface-2); border: 1px solid var(--border); align-self: flex-start; }
+.msg { position: relative; max-width: 88%; padding: 8px 12px; border-radius: 12px; background: var(--surface-2); border: 1px solid var(--border); align-self: flex-start; }
+.msg-delete { position: absolute; top: 4px; right: 5px; border: none; background: none; color: var(--text-dim); cursor: pointer; font-size: 12px; line-height: 1; padding: 2px 5px; border-radius: 6px; opacity: 0; transition: opacity .12s, color .12s, background .12s; }
+.msg:hover .msg-delete, .msg-delete:focus-visible { opacity: 1; }
+.msg-delete:hover { color: var(--bug); background: var(--surface); outline: none; }
 .msg.mine { align-self: flex-end; background: var(--surface); }
 .msg.ai { align-self: flex-start; border-color: var(--accent); }
 .msg.pending { opacity: .85; }

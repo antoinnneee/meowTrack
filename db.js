@@ -123,11 +123,13 @@ export {
 // ── Chats (par nœud + forêt) ─────────────────────────────────────────────────
 export {
   clearNodeMessages,
+  deleteNodeMessage,
   listNodeMessages,
   getNodeMessage,
   addNodeMessage,
   updateNodeMessage,
   clearForestMessages,
+  deleteForestMessage,
   listForestMessages,
   getForestMessage,
   addForestMessage,
