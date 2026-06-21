@@ -3,7 +3,7 @@
 // gestionnaire de dépôts) et les ponts openVibes / initVibes.
 
 import { $, esc, api, getToken, injectRepo } from "./core.js";
-import { state, handleMentionInput, menuKeydown, hideMenu, createIssueFromNode, openIssueInTrack } from "./issues.js";
+import { state, handleMentionInput, handleChatMention, menuKeydown, hideMenu, createIssueFromNode, openIssueInTrack } from "./issues.js";
 import { openRepoView, initRepo } from "./repo.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -39,6 +39,8 @@ export const vibes = {
   forestTimer: null,
   model: "sonnet",
   user: "",
+  // Chat « top level » épinglé sur toute la colonne de droite (vue graphe/grille).
+  pinned: localStorage.getItem("meowtrack_forest_pin") === "1",
   wasDown: false,
   stickToBottom: true, // chat : suivre le bas tant que l'utilisateur n'a pas scrollé vers le haut
   _editing: null,
@@ -369,6 +371,31 @@ function setForestChatVisible(on) {
   if (el) el.hidden = !on;
 }
 
+// Épingle / désépingle le chat « top level » sur toute la colonne de droite.
+// La hauteur de l'en-tête est mesurée (elle varie quand la barre passe à la ligne)
+// et exposée via --topbar-h pour caler le panneau pile sous l'en-tête.
+function measureTopbar() {
+  const tb = document.querySelector(".topbar");
+  if (tb) document.documentElement.style.setProperty("--topbar-h", tb.offsetHeight + "px");
+}
+function setForestPinned(on) {
+  vibes.pinned = on;
+  localStorage.setItem("meowtrack_forest_pin", on ? "1" : "0");
+  document.body.classList.toggle("forest-pinned", on);
+  const chat = $("#forestChat");
+  if (chat) {
+    chat.classList.toggle("pinned", on);
+    if (on) chat.classList.remove("collapsed"); // épinglé = toujours déployé
+  }
+  const btn = $("#forestChatPinBtn");
+  if (btn) {
+    btn.classList.toggle("active", on);
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    btn.title = on ? "Détacher le chat (revenir au dock flottant)" : "Épingler le chat sur toute la colonne de droite";
+  }
+  if (on) measureTopbar();
+}
+
 export async function openVibes() {
   $("#nodeView").hidden = true;
   $("#vibesBar").hidden = false;
@@ -380,6 +407,7 @@ export async function openVibes() {
   if (fm) fm.value = vibes.model;
   applyLayoutToggle();
   setForestChatVisible(true);
+  setForestPinned(vibes.pinned); // restaure l'état épinglé persisté
   await loadForest();
   subscribeForest();
   loadForestChat();
@@ -2297,10 +2325,10 @@ export function initVibes() {
   // Suivi du scroll : on coupe l'auto-défilement dès que l'utilisateur remonte,
   // on le rétablit quand il revient en bas (pendant la génération comme après).
   $("#chatFeed").addEventListener("scroll", () => { vibes.stickToBottom = isFeedAtBottom($("#chatFeed")); });
-  // Autocomplete @ fichier dans le chat (même UX que la modale d'entrée du tracker).
+  // Autocomplete dans le chat : @ fichier + # nœud (même UX que la modale d'entrée).
   const chatInput = $("#chatInput");
   const chatMenu = $("#chatMentionMenu");
-  chatInput.addEventListener("input", () => handleMentionInput(chatInput, chatMenu, state.branch || "", null));
+  chatInput.addEventListener("input", () => handleChatMention(chatInput, chatMenu, state.branch || "", null));
   chatInput.addEventListener("blur", () => setTimeout(() => hideMenu(chatMenu), 150));
   chatInput.addEventListener("keydown", (e) => {
     if (menuKeydown(chatMenu, e)) return; // menu ouvert : flèches / Entrée / Tab / Échap pour lui
@@ -2311,9 +2339,16 @@ export function initVibes() {
   $("#forestChatSend").addEventListener("click", sendChat);
   $("#forestChatClearBtn").addEventListener("click", clearChatHistory);
   $("#forestChatToggle").addEventListener("click", () => $("#forestChat").classList.toggle("collapsed"));
+  $("#forestChatPinBtn").addEventListener("click", () => setForestPinned(!vibes.pinned));
+  // En-tête redimensionné (barre qui passe à la ligne) : recale le panneau épinglé.
+  window.addEventListener("resize", () => { if (vibes.pinned && !$("#forestChat").hidden) measureTopbar(); });
   $("#forestChatFeed").addEventListener("scroll", () => { vibes.stickToBottom = isFeedAtBottom($("#forestChatFeed")); });
   const forestChatInput = $("#forestChatInput");
+  const forestChatMenu = $("#forestChatMentionMenu");
+  forestChatInput.addEventListener("input", () => handleChatMention(forestChatInput, forestChatMenu, state.branch || "", null));
+  forestChatInput.addEventListener("blur", () => setTimeout(() => hideMenu(forestChatMenu), 150));
   forestChatInput.addEventListener("keydown", (e) => {
+    if (menuKeydown(forestChatMenu, e)) return; // menu ouvert : flèches / Entrée / Tab / Échap pour lui
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
   });
   $("#forestModelSel").addEventListener("change", (e) => (vibes.model = e.target.value));

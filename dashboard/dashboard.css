@@ -17,6 +17,7 @@
   --med: #5a8dee;
   --low: #6c7384;
   --radius: 10px;
+  --forest-pin-w: min(440px, 38vw);
 }
 
 * { box-sizing: border-box; }
@@ -341,13 +342,39 @@ body:not(.view-repo) .repo-only { display: none; }
 .forest-chat[hidden] { display: none; }
 .forest-chat .chat-head { cursor: default; }
 .forest-chat-toggle { font-size: 14px; font-weight: 600; }
-/* Réduit : on ne garde que l'en-tête (clic sur le titre pour replier/déplier). */
-.forest-chat.collapsed { height: auto; }
-.forest-chat.collapsed .chat-feed,
-.forest-chat.collapsed .typing-row,
-.forest-chat.collapsed .chat-input { display: none; }
+/* Réduit : on ne garde que l'en-tête (clic sur le titre pour replier/déplier).
+   Sans effet quand le chat est épinglé (le panneau pleine hauteur reste déployé). */
+.forest-chat.collapsed:not(.pinned) { height: auto; }
+.forest-chat.collapsed:not(.pinned) .chat-feed,
+.forest-chat.collapsed:not(.pinned) .typing-row,
+.forest-chat.collapsed:not(.pinned) .chat-input { display: none; }
 @media (max-width: 640px) {
   .forest-chat { right: 8px; bottom: 8px; width: calc(100vw - 16px); height: min(60vh, 480px); }
+}
+.forest-chat-pin { font-size: 14px; line-height: 1; }
+.forest-chat-pin.active { background: var(--accent); border-color: var(--accent); }
+
+/* Épinglé : le chat occupe toute la colonne de droite (du bas de l'en-tête au bas
+   de l'écran). --topbar-h est mesurée en JS ; --forest-pin-w pilote aussi la marge
+   des vues forêt pour ne pas masquer le graphe / la grille derrière le panneau. */
+.forest-chat.pinned {
+  top: var(--topbar-h, 58px); right: 0; bottom: 0; left: auto;
+  width: var(--forest-pin-w); height: auto;
+  border-radius: 0; border-right: none; border-bottom: none;
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.32);
+}
+/* Les vues forêt se rétrécissent pour laisser la place au panneau épinglé. */
+body.forest-pinned.view-vibes #vibesBar,
+body.forest-pinned.view-vibes #graphView,
+body.forest-pinned.view-vibes #vibesView { margin-right: var(--forest-pin-w); }
+@media (max-width: 640px) {
+  /* Petit écran : pas de colonne dédiée, on retombe sur le dock flottant. */
+  .forest-chat.pinned { top: auto; right: 8px; bottom: 8px; left: auto;
+    width: calc(100vw - 16px); height: min(60vh, 480px);
+    border: 1px solid var(--border); border-radius: 14px; }
+  body.forest-pinned.view-vibes #vibesBar,
+  body.forest-pinned.view-vibes #graphView,
+  body.forest-pinned.view-vibes #vibesView { margin-right: 0; }
 }
 /* Menu de mentions du chat : s'ouvre vers le HAUT (le champ est en bas de l'écran). */
 .mention-menu.up { top: auto; bottom: 100%; margin: 0 0 4px; }
