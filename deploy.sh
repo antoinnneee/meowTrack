@@ -113,6 +113,7 @@ DASHBOARD_FILES=(
     "dashboard/issues.js"
     "dashboard/vibes.js"
     "dashboard/repo.js"
+    "dashboard/orchestrator.js"
 )
 
 COPY_ERRORS=0

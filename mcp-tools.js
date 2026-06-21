@@ -585,4 +585,138 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
     },
     guard(async ({ repo }) => apiGet("/api/nodes/links" + qs({ repo: repoOf(repo) })))
   );
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Orchestrateur — file de travail exécutable (bail + runs + revue). L'agent TIRE
+  // les tâches prêtes, les réalise dans un worktree isolé, puis rend compte.
+  // ═══════════════════════════════════════════════════════════════════════════
+  const TEST_RESULTS = ["pass", "fail", "skipped"];
+
+  // ── meowtrack_node_next ──────────────────────────────────────────────────────
+  server.registerTool(
+    "meowtrack_node_next",
+    {
+      title: "Réclamer la prochaine tâche prête",
+      description:
+        "Tire ET réclame atomiquement la prochaine tâche exécutable d'un repo : une FEUILLE active, débloquée " +
+        "(tous ses prérequis 'done'), au bail libre. Pose un bail au nom de `owner` (le nœud passe run_state='running'). " +
+        "Renvoie { node, config } ou node=null si rien n'est prêt. Boucle : next → travailler dans un worktree → " +
+        "écrire .meowtrack/runs/<ref>.json → complete.",
+      inputSchema: {
+        repo: repoParam,
+        owner: z.string().describe("Identifiant du worker (ex. 'agent-1') — détenteur du bail."),
+        branch: z.string().optional().describe("Branche de travail associée au run (ex. 'meow/NODE-12')."),
+      },
+    },
+    guard(async ({ repo, owner, branch }) => apiFetch("POST", "/api/nodes/next" + qs({ repo: repoOf(repo) }), { owner, branch }))
+  );
+
+  // ── meowtrack_node_heartbeat ─────────────────────────────────────────────────
+  server.registerTool(
+    "meowtrack_node_heartbeat",
+    {
+      title: "Prolonger le bail d'une tâche",
+      description: "Prolonge le bail d'une tâche longue (évite l'expiration → re-réclamation). Échoue (409) si le bail a été perdu.",
+      inputSchema: { repo: repoParam, ref: nodeRefSchema, owner: z.string().describe("Détenteur du bail.") },
+    },
+    guard(async ({ repo, ref, owner }) => apiFetch("POST", "/api/nodes/" + encodeURIComponent(ref) + "/heartbeat" + qs({ repo: repoOf(repo) }), { owner }))
+  );
+
+  // ── meowtrack_node_complete ──────────────────────────────────────────────────
+  server.registerTool(
+    "meowtrack_node_complete",
+    {
+      title: "Clôturer une tâche (+ rapport)",
+      description:
+        "Clôt une tâche réclamée. Le serveur ingère le rapport (inline via `report`, sinon lu depuis " +
+        ".meowtrack/runs/<ref>.json du clone) : applique les `nodeUpdates` sûrs et persiste les `reviewPoints`. " +
+        "Sans point bloquant → la tâche passe 'done' (débloque ses dépendants, progression remonte) ; avec un point " +
+        "bloquant → 'review' (attend un arbitrage humain ou auto). Seul le détenteur du bail peut clore.",
+      inputSchema: {
+        repo: repoParam,
+        ref: nodeRefSchema,
+        owner: z.string().describe("Détenteur du bail."),
+        summary: z.string().optional().describe("Compte-rendu de ce qui a été fait."),
+        branch: z.string().optional().describe("Branche de travail."),
+        testResult: z.enum(TEST_RESULTS).optional().describe("Résultat des tests."),
+        report: z
+          .any()
+          .optional()
+          .describe("Rapport structuré inline (sinon lu depuis .meowtrack/runs/<ref>.json) : { state, summary, nodeUpdates[], reviewPoints[] }."),
+      },
+    },
+    guard(async ({ repo, ref, ...a }) => apiFetch("POST", "/api/nodes/" + encodeURIComponent(ref) + "/complete" + qs({ repo: repoOf(repo) }), a))
+  );
+
+  // ── meowtrack_node_fail ──────────────────────────────────────────────────────
+  server.registerTool(
+    "meowtrack_node_fail",
+    {
+      title: "Signaler l'échec d'une tâche",
+      description: "Marque une tâche en échec (libère le bail ; rejouable tant que le nombre de tentatives reste sous le maximum).",
+      inputSchema: {
+        repo: repoParam,
+        ref: nodeRefSchema,
+        owner: z.string().describe("Détenteur du bail."),
+        error: z.string().optional().describe("Message d'erreur."),
+        branch: z.string().optional(),
+      },
+    },
+    guard(async ({ repo, ref, owner, error, branch }) =>
+      apiFetch("POST", "/api/nodes/" + encodeURIComponent(ref) + "/fail" + qs({ repo: repoOf(repo) }), { owner, error, branch })
+    )
+  );
+
+  // ── meowtrack_node_runs ──────────────────────────────────────────────────────
+  server.registerTool(
+    "meowtrack_node_runs",
+    {
+      title: "Historique d'exécution d'un nœud",
+      description: "Liste les runs d'un nœud (état, branche, résumé, test, rapport), du plus récent au plus ancien.",
+      inputSchema: { repo: repoParam, ref: nodeRefSchema },
+    },
+    guard(async ({ repo, ref }) => apiGet("/api/nodes/" + encodeURIComponent(ref) + "/runs" + qs({ repo: repoOf(repo) })))
+  );
+
+  // ── meowtrack_node_reviews ───────────────────────────────────────────────────
+  server.registerTool(
+    "meowtrack_node_reviews",
+    {
+      title: "Lister les points de revue",
+      description:
+        "Liste les points de revue. Avec `ref` → ceux d'un nœud ; sans `ref` → la file globale du repo. " +
+        "`state` filtre (open/resolved/dismissed).",
+      inputSchema: {
+        repo: repoParam,
+        ref: nodeRefSchema.optional().describe("Nœud cible (absent = file globale du repo)."),
+        state: z.enum(["open", "resolved", "dismissed"]).optional(),
+      },
+    },
+    guard(async ({ repo, ref, state }) =>
+      ref != null
+        ? apiGet("/api/nodes/" + encodeURIComponent(ref) + "/reviews" + qs({ repo: repoOf(repo), state }))
+        : apiGet("/api/nodes/reviews" + qs({ repo: repoOf(repo), state }))
+    )
+  );
+
+  // ── meowtrack_review_auto ────────────────────────────────────────────────────
+  server.registerTool(
+    "meowtrack_review_auto",
+    {
+      title: "Auto-réviser des points de revue (chat IA top-level)",
+      description:
+        "Déclenche une AUTO-REVUE : le chat IA « top level » (forêt) répond aux points de revue d'un nœud en " +
+        "remodelant l'arbre d'objectifs et/ou les tâches (guidé par le prompt de politique configuré). Réutilise le " +
+        "pipeline du chat forêt (actions destructives → proposées pour confirmation). Réponse 202 puis stream SSE.",
+      inputSchema: {
+        repo: repoParam,
+        ref: nodeRefSchema.describe("Nœud dont on auto-révise les points."),
+        reviewIds: z.array(z.number().int()).optional().describe("Ids des points à traiter (défaut : tous les points ouverts)."),
+        model: z.enum(["sonnet", "opus", "haiku"]).optional().describe("Modèle de l'auto-revue."),
+      },
+    },
+    guard(async ({ repo, ref, reviewIds, model }) =>
+      apiFetch("POST", "/api/nodes/" + encodeURIComponent(ref) + "/reviews/auto" + qs({ repo: repoOf(repo) }), { reviewIds, model })
+    )
+  );
 }

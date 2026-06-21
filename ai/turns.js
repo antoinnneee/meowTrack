@@ -24,7 +24,12 @@ import {
   getForestMessage,
   listForestMessages,
   applyForestActions,
+  listReviews,
+  resolveReview,
+  listRuns,
+  bumpAutoReviews,
 } from "../db.js";
+import { MAX_AUTO_REVIEWS } from "../db/constants.js";
 import { send, readBody } from "../http-util.js";
 import {
   forestKey,
@@ -313,7 +318,7 @@ function forestStructuralChange(applied) {
   return (applied || []).some((a) => a && (a.op === "delete_node" || a.op === "move_node" || a.op === "reorder_children"));
 }
 
-async function runForestTurn(repoId, forestSnapshot, history, userText, author, model, pendingId, root, links) {
+async function runForestTurn(repoId, forestSnapshot, history, userText, author, model, pendingId, root, links, policyPrompt = "") {
   const room = forestKey(repoId);
   const batcher = makeStreamBatcher(room, pendingId);
   let reasoning = "";
@@ -374,7 +379,7 @@ async function runForestTurn(repoId, forestSnapshot, history, userText, author, 
     /* repo introuvable → libellé générique */
   }
   try {
-    const prompt = buildForestPrompt(forestSnapshot, history, userText, author, repo, links);
+    const prompt = buildForestPrompt(forestSnapshot, history, userText, author, repo, links, policyPrompt);
     const result = await runClaudeStreaming(prompt, model, root, {
       onChild: (child) => { const l = aiLocks.get(forestLockKey(repoId)); if (l) l.child = child; },
       onThinking: (d) => {
@@ -506,4 +511,98 @@ export function handleForestChatConfirm(req, res, repoId, body) {
   if (forestStructuralChange(result.applied)) broadcast(forestKey(repoId), "nodes:reordered", { forest: true });
   if (result.linksChanged) broadcast(forestKey(repoId), "links:changed", { repoId });
   return send(res, 200, { ok: true, applied: result.applied });
+}
+
+// ── Auto-revue par le chat IA « top level » (§6.6) ───────────────────────────
+// Construit le MESSAGE SYNTHÉTIQUE (untrusted) à partir du contexte de revue : le
+// nœud d'origine, les points de revue ouverts (message/type/blocage/actions
+// suggérées) et le résumé du dernier run. La POLITIQUE (trusted) est passée à part
+// (injectée hors bloc untrusted par buildForestPrompt).
+function buildReviewMessage(node, reviews, lastRun) {
+  const lines = [];
+  lines.push(`Une tâche d'exécution a soulevé des points de revue à arbitrer en remodelant l'arbre d'objectifs si besoin.`);
+  lines.push(`Tâche : ${node.ref} — ${node.title} (statut ${node.status}).`);
+  if (lastRun) {
+    lines.push(`Dernier run : état=${lastRun.state}, test=${lastRun.testResult || "n/a"}${lastRun.branch ? `, branche=${lastRun.branch}` : ""}.`);
+    if (lastRun.summary) lines.push(`Résumé de l'agent : ${String(lastRun.summary).slice(0, 1500)}`);
+  }
+  lines.push("");
+  lines.push("POINTS DE REVUE :");
+  for (const r of reviews) {
+    lines.push(`- [${r.kind}${r.blocking ? ", BLOQUANT" : ""}] ${r.message}`);
+    if (Array.isArray(r.suggested) && r.suggested.length) {
+      lines.push(`  (actions suggérées par l'agent : ${JSON.stringify(r.suggested).slice(0, 1000)})`);
+    }
+  }
+  lines.push("");
+  lines.push(
+    "Décide des modifications du graphe d'objectifs en réponse (créer/découper des sous-tâches, ajuster des statuts, " +
+      "ajouter des prérequis, etc.) via les actions structurées. Si rien ne doit changer, explique-le sans bloc d'actions."
+  );
+  return lines.join("\n");
+}
+
+// Lance une auto-revue (programmatique, pas d'humain). Anti-boucle : compteur
+// d'auto-revues par nœud plafonné (au-delà → on laisse la revue à un humain).
+// Réutilise INTÉGRALEMENT le pipeline du chat forêt (runForestTurn → parse
+// fail-closed → applyForestActions, destructif → proposé). Après le tour, marque
+// les points de revue traités comme résolus (la promotion review→done est gérée par
+// resolveReview quand plus aucun point bloquant ne reste). Renvoie un récapitulatif.
+export async function triggerAutoReview(repoId, nodeId, reviewIds, { model, policyPrompt } = {}) {
+  const lockKey = forestLockKey(repoId);
+  if (aiLocks.has(lockKey)) return { error: "ai_busy" };
+  if (aiInFlight >= MAX_CONCURRENT_AI) return { error: "ai_overloaded" };
+
+  // Contexte de revue (points OUVERTS du nœud, restreints à reviewIds si fourni).
+  let reviews = listReviews({ ref: nodeId, state: "open", repoId });
+  if (Array.isArray(reviewIds) && reviewIds.length) reviews = reviews.filter((r) => reviewIds.includes(r.id));
+  if (!reviews.length) return { skipped: "no_open_reviews" };
+
+  // Anti-boucle : plafonner les auto-revues par nœud.
+  const count = bumpAutoReviews(nodeId, repoId);
+  if (count > MAX_AUTO_REVIEWS) return { skipped: "max_auto_reviews", count };
+
+  const node = getNode(nodeId, { repoId });
+  if (!node) return { skipped: "node_introuvable" };
+  const runs = listRuns(nodeId, repoId);
+  const mdl = resolveModel(model);
+  const syntheticText = buildReviewMessage(node, reviews, runs[0] || null);
+
+  // Trace : message humain synthétique + placeholder assistant (auteur 'auto-review').
+  const userMessage = addForestMessage(repoId, { role: "user", author: "auto-review", body: `🤖 Auto-revue de ${node.ref}`, state: "complete" });
+  broadcastForestMessage(repoId, userMessage);
+  const pendingMessage = addForestMessage(repoId, { role: "assistant", author: "auto-review", model: mdl, body: "", state: "pending" });
+  broadcastForestMessage(repoId, pendingMessage);
+
+  const forestSnapshot = listForest(repoId);
+  let forestLinks = [];
+  try { forestLinks = listForestLinks(repoId); } catch { /* pas de liens */ }
+  const history = listForestMessages(repoId, { limit: 1000 }).filter(
+    (m) => m.state === "complete" && m.id !== userMessage.id && m.id !== pendingMessage.id
+  );
+
+  aiLocks.set(lockKey, { child: null });
+  aiInFlight++;
+  broadcast(forestKey(repoId), "ai:turn", { repoId, scope: "forest", actor: "auto-review", model: mdl, state: "start", turnId: pendingMessage.id });
+
+  let root = null;
+  try { root = rootForRepo(repoId); } catch { /* IA sans accès fichiers */ }
+
+  // Exécute le tour (runForestTurn libère le verrou en finally), puis résout les revues.
+  await runForestTurn(repoId, forestSnapshot, history, syntheticText, "auto-review", mdl, pendingMessage.id, root, forestLinks, policyPrompt);
+
+  let affected = [];
+  for (const rv of reviews) {
+    try {
+      // applyActions:false : l'IA a déjà remodelé via applyForestActions ; on ne
+      // ré-applique pas les actions suggérées de l'agent. Promotion gérée dedans.
+      const r = resolveReview(rv.id, { decision: "approve", applyActions: false, response: `Auto-revue (message #${pendingMessage.id})` }, repoId);
+      affected = [...affected, ...(r.affectedNodeIds || [])];
+    } catch (e) {
+      console.error(`[meowtrack] triggerAutoReview: résolution revue ${rv.id} → ${e.message || e}`);
+    }
+  }
+  if (affected.length) broadcastAffected(repoId, affected);
+  broadcast(forestKey(repoId), "review:resolved", { repoId, nodeId, auto: true, messageId: pendingMessage.id });
+  return { ok: true, messageId: pendingMessage.id, resolved: reviews.length, autoReviewCount: count };
 }

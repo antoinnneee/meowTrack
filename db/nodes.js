@@ -28,6 +28,7 @@ import {
 } from "./constants.js";
 import { clampStr, clampEmoji, parseNotes, normalizeNotesInput, validDateOrNull } from "./helpers.js";
 import { listNodeMessages } from "./messages.js";
+import { startRun, finishRun } from "./runs.js";
 
 // ── Sérialisation ────────────────────────────────────────────────────────────
 function childCountOf(id) {
@@ -56,6 +57,13 @@ function rowToNode(r, { childCount } = {}) {
     posX: r.pos_x != null ? r.pos_x : null,
     posY: r.pos_y != null ? r.pos_y : null,
     version: r.version,
+    // Orchestrateur : état d'exécution (bail). `run_state` peut être absent sur les
+    // bases pré-migration (colonne ajoutée) → null par défaut.
+    runState: r.run_state != null ? r.run_state : null,
+    leaseOwner: r.lease_owner != null ? r.lease_owner : null,
+    leaseUntil: r.lease_until != null ? r.lease_until : null,
+    runAttempts: r.run_attempts | 0,
+    autoReviews: r.auto_reviews | 0,
     childCount: childCount != null ? childCount : childCountOf(r.id),
     createdAt: r.created_at,
     updatedAt: r.updated_at,
@@ -191,6 +199,10 @@ function recomputeAncestorProgress(nodeId, { bumpSelf = true } = {}) {
   const ts = nowIso();
   const selKids = db.prepare("SELECT status, progress FROM nodes WHERE parent_id = ?");
   const upd = db.prepare("UPDATE nodes SET progress = ?, version = version + 1, updated_at = ? WHERE id = ?");
+  // Auto-promotion d'un JALON (§4.5) : un parent dont tous les enfants sont terminés
+  // (progress 100) passe lui-même 'done' → un prérequis pointant un jalon devient
+  // satisfait sans clôture manuelle. Monotone (promeut jamais ne rétrograde).
+  const prom = db.prepare("UPDATE nodes SET status='done', done_at=COALESCE(done_at, ?) WHERE id = ?");
   const sel = db.prepare("SELECT * FROM nodes WHERE id = ?");
   for (let i = 0; i < chain.length; i++) {
     const row = sel.get(chain[i]);
@@ -199,9 +211,11 @@ function recomputeAncestorProgress(nodeId, { bumpSelf = true } = {}) {
     let prog;
     if (kids.length) prog = Math.round(kids.reduce((a, k) => a + (k.status === "done" ? 100 : k.progress), 0) / kids.length);
     else prog = row.status === "done" ? 100 : 0;
+    const promote = kids.length > 0 && prog === 100 && (row.status === "active" || row.status === "paused");
     const isSelf = i === 0;
-    if ((isSelf && bumpSelf) || prog !== row.progress) {
+    if ((isSelf && bumpSelf) || prog !== row.progress || promote) {
       upd.run(prog, ts, row.id);
+      if (promote) prom.run(nowIso(), row.id);
       out.push(sel.get(row.id));
     } else if (isSelf) {
       out.push(row);
@@ -768,6 +782,159 @@ export function applyNodeActions(scopeNodeId, actions = [], repoId = null) {
   if (rejected.length)
     console.error(`[meowtrack] applyActions: ${applied.length} appliquée(s), ${rejected.length} rejetée(s) → ${JSON.stringify(rejected)}`);
   return { applied, rejected, affectedNodeIds: [...affected], roots: [...roots], linksChanged };
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ORCHESTRATEUR — file de travail (bail) sur l'arbre de nœuds.
+//
+// Le `status` (active|paused|done|abandoned) = INTENTION de planning ; le bail
+// (run_state/lease_owner/lease_until) = coordination d'EXÉCUTION. Une « tâche
+// exécutable » = une FEUILLE active, débloquée (tous prérequis 'done'), au bail
+// libre. La réclamation est un compare-and-swap en UNE instruction (pas de TOCTOU).
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Réclame atomiquement la prochaine tâche PRÊTE pour `owner`. null si rien n'est
+// prêt. Démarre un run (node_runs) lié au bail. SQLite sérialise les écritures :
+// deux workers concurrents n'obtiennent jamais la même tâche (CAS sur l'UPDATE).
+export function claimNextNode(repoId, owner, { leaseMs = 600000, maxAttempts = 3, branch = null } = {}) {
+  if (!owner) throw new Error("owner requis pour réclamer une tâche");
+  return withRepo(repoId, () => {
+    const rid = resolveRepoId(repoId);
+    const now = nowIso();
+    const leaseUntil = new Date(Date.parse(now) + Math.max(1000, leaseMs)).toISOString();
+    let row;
+    db.transaction(() => {
+      row = db
+        .prepare(
+          `UPDATE nodes
+              SET run_state='running', lease_owner=@owner, lease_until=@leaseUntil,
+                  run_attempts = run_attempts + 1, version = version + 1, updated_at=@ts
+            WHERE id = (
+              SELECT n.id FROM nodes n
+               WHERE n.repo_id = @repo
+                 AND n.status  = 'active'
+                 AND NOT EXISTS (SELECT 1 FROM nodes c WHERE c.parent_id = n.id)            -- feuille
+                 AND n.run_state IS NOT 'done'                                              -- pas terminée
+                 AND n.run_state IS NOT 'review'                                            -- pas en attente de revue
+                 AND n.run_attempts < @maxAttempts
+                 AND (                                                                      -- libre, en échec, ou bail expiré (worker mort)
+                       n.run_state IS NULL
+                    OR n.run_state = 'failed'
+                    OR n.lease_owner IS NULL
+                    OR n.lease_until IS NULL
+                    OR n.lease_until < @now
+                 )
+                 AND NOT EXISTS (                                                           -- tous prérequis 'done'
+                   SELECT 1 FROM node_links l JOIN nodes p ON p.id = l.to_id
+                    WHERE l.from_id = n.id AND l.kind = 'requires' AND p.status <> 'done'
+                 )
+               ORDER BY (n.target_date IS NULL), n.target_date, n.depth, n.position, n.id
+               LIMIT 1
+            )
+           RETURNING *`
+        )
+        .get({ repo: rid, owner, leaseUntil, now, ts: now, maxAttempts: Math.max(1, maxAttempts) });
+      if (row) startRun(row.id, owner, branch);
+    })();
+    return row ? rowToNode(row) : null;
+  });
+}
+
+// Prolonge le bail (heartbeat des tâches longues). false → bail perdu (préempté).
+export function renewLease(refOrId, owner, leaseMs = 600000, repoId = null) {
+  return withRepo(repoId, () => {
+    const row = findNodeRow(refOrId, repoId);
+    if (!row) return false;
+    const until = new Date(Date.parse(nowIso()) + Math.max(1000, leaseMs)).toISOString();
+    return (
+      db
+        .prepare("UPDATE nodes SET lease_until=? WHERE id=? AND lease_owner=? AND run_state='running'")
+        .run(until, row.id, owner).changes === 1
+    );
+  });
+}
+
+// Clôt une tâche : seul le détenteur du bail peut clore. hasBlockingReview → la tâche
+// passe 'review' (ne débloque PAS les dépendants) au lieu de 'done'. Lève lease_lost
+// si le bail a changé de main (préemption).
+export function completeNode(refOrId, owner, { summary, branch, testResult, report, hasBlockingReview } = {}, repoId = null) {
+  return withRepo(repoId, () => {
+    const row = findNodeRow(refOrId, repoId);
+    if (!row) throw new Error(`Nœud introuvable : ${refOrId}`);
+    let affected = [];
+    db.transaction(() => {
+      const next = hasBlockingReview ? "review" : "done";
+      const ok =
+        db
+          .prepare("UPDATE nodes SET run_state=?, lease_owner=NULL, lease_until=NULL WHERE id=? AND lease_owner=?")
+          .run(next, row.id, owner).changes === 1;
+      if (!ok) {
+        const e = new Error("bail_perdu");
+        e.code = "lease_lost";
+        throw e;
+      }
+      if (!hasBlockingReview) {
+        _setNodeFields(row.id, { status: "done" }); // → done_at + statut
+        affected = recomputeAncestorProgress(row.id, { bumpSelf: true }).map((r) => r.id); // progression remonte
+      } else {
+        affected = [row.id];
+      }
+      finishRun(row.id, owner, next, { summary, branch, testResult, report });
+    })();
+    return { ok: true, state: hasBlockingReview ? "review" : "done", affectedNodeIds: affected, nodeId: row.id };
+  });
+}
+
+// Échec : libère le bail, laisse run_state='failed' (rejouable tant que attempts < max).
+export function failNode(refOrId, owner, { error, branch } = {}, repoId = null) {
+  return withRepo(repoId, () => {
+    const row = findNodeRow(refOrId, repoId);
+    if (!row) throw new Error(`Nœud introuvable : ${refOrId}`);
+    db.transaction(() => {
+      db.prepare("UPDATE nodes SET run_state='failed', lease_owner=NULL, lease_until=NULL WHERE id=? AND lease_owner=?").run(row.id, owner);
+      finishRun(row.id, owner, "failed", { error, branch });
+    })();
+    return { ok: true, state: "failed", nodeId: row.id };
+  });
+}
+
+// Promeut une tâche en 'done' (chemin de résolution de revue : review→done). Met le
+// statut, le run_state, vide le bail, fait remonter la progression. Renvoie les ids
+// affectés.
+export function markNodeDone(refOrId, repoId = null) {
+  return withRepo(repoId, () => {
+    const row = findNodeRow(refOrId, repoId);
+    if (!row) return [];
+    let affected = [];
+    db.transaction(() => {
+      db.prepare("UPDATE nodes SET run_state='done', lease_owner=NULL, lease_until=NULL WHERE id=?").run(row.id);
+      _setNodeFields(row.id, { status: "done" });
+      affected = recomputeAncestorProgress(row.id, { bumpSelf: true }).map((r) => r.id);
+    })();
+    return affected;
+  });
+}
+
+// Remet une tâche dans la file (rework) : statut 'active', bail/run_state vidés →
+// reréclamable. N'incrémente pas run_attempts (la réclamation le fera).
+export function requeueNode(refOrId, repoId = null) {
+  return withRepo(repoId, () => {
+    const row = findNodeRow(refOrId, repoId);
+    if (!row) return false;
+    db.prepare("UPDATE nodes SET run_state=NULL, lease_owner=NULL, lease_until=NULL, status='active' WHERE id=?").run(row.id);
+    return true;
+  });
+}
+
+// Incrémente le compteur d'auto-revues d'un nœud, renvoie la nouvelle valeur
+// (anti-boucle d'auto-revue — cf. autoReviewForest).
+export function bumpAutoReviews(refOrId, repoId = null) {
+  return withRepo(repoId, () => {
+    const row = findNodeRow(refOrId, repoId);
+    if (!row) return 0;
+    db.prepare("UPDATE nodes SET auto_reviews = auto_reviews + 1 WHERE id=?").run(row.id);
+    return (row.auto_reviews | 0) + 1;
   });
 }
 

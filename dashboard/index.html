@@ -13,6 +13,7 @@
         <button class="tab active" data-view="track">🐞 Suivi</button>
         <button class="tab" data-view="vibes">🌱 Vibes</button>
         <button class="tab" data-view="repo">🔀 Repo</button>
+        <button class="tab" data-view="orch">🤖 Orchestrateur</button>
       </nav>
       <div class="meta" id="meta"></div>
       <span class="live-dot" id="liveDot" title="Synchronisation temps réel"></span>
@@ -352,6 +353,45 @@
           </div>
         </aside>
       </div>
+    </main>
+
+    <!-- Vue Orchestrateur : configuration + file des points de revue -->
+    <main class="view orch-view" id="orchView" hidden>
+      <section class="orch-pane">
+        <h2>🤖 Orchestrateur <span class="orch-sub" id="orchSub"></span></h2>
+        <p class="orch-hint">
+          File de travail exécutable dérivée de l'arbre Vibes : un agent (Claude Code) tire les tâches prêtes, les réalise,
+          puis dépose un rapport <code>.meowtrack/runs/&lt;ref&gt;.json</code>. Les points de revue remontés sont arbitrés ici
+          (manuellement ou en auto-revue par le chat IA).
+        </p>
+
+        <div class="orch-grid">
+          <!-- Configuration éditable (app_settings + override repo) -->
+          <div class="orch-card">
+            <h3>Réglages (repo actif)</h3>
+            <form id="orchCfgForm" class="orch-form"></form>
+            <div class="orch-actions">
+              <button id="orchCfgSave" class="primary">Enregistrer (global)</button>
+              <button id="orchCfgSaveRepo" class="ghost">Enregistrer pour ce repo</button>
+              <span id="orchCfgMsg" class="orch-msg"></span>
+            </div>
+          </div>
+
+          <!-- File des points de revue -->
+          <div class="orch-card">
+            <h3>Points de revue
+              <select id="orchRevState" class="branch-select">
+                <option value="open">Ouverts</option>
+                <option value="resolved">Résolus</option>
+                <option value="dismissed">Rejetés</option>
+                <option value="">Tous</option>
+              </select>
+              <button id="orchRevRefresh" class="ghost" title="Rafraîchir">⟳</button>
+            </h3>
+            <ul id="orchReviewList" class="orch-review-list"><li class="orch-empty">—</li></ul>
+          </div>
+        </div>
+      </section>
     </main>
 
     <!-- Modale diff (fichier ou commit) -->

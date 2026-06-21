@@ -336,13 +336,15 @@ function rootsOf() {
 
 // ── Navigation entre vues ────────────────────────────────────────────────────
 function switchView(v) {
-  if (v !== "vibes" && v !== "repo") v = "track";
+  if (v !== "vibes" && v !== "repo" && v !== "orch") v = "track";
   vibes.view = v;
-  document.body.classList.remove("view-track", "view-vibes", "view-repo");
+  document.body.classList.remove("view-track", "view-vibes", "view-repo", "view-orch");
   document.body.classList.add("view-" + v);
   document.querySelectorAll(".nav-tabs .tab").forEach((t) => t.classList.toggle("active", t.dataset.view === v));
   $("#trackView").hidden = v !== "track";
   $("#repoView").hidden = v !== "repo";
+  const orchView = $("#orchView");
+  if (orchView) orchView.hidden = v !== "orch";
   if (v !== "vibes") {
     $("#vibesBar").hidden = true;
     $("#vibesView").hidden = true;
@@ -355,6 +357,9 @@ function switchView(v) {
   if (location.hash !== want && !(want === "" && location.hash === "")) location.hash = want;
   if (v === "vibes") openVibes();
   else if (v === "repo") openRepoView();
+  // L'onglet Orchestrateur est un module découplé (orchestrator.js) : il s'abonne
+  // à cet événement pour charger sa config + sa file de revue à l'affichage.
+  document.dispatchEvent(new CustomEvent("meow:view", { detail: v }));
 }
 
 // Affiche/masque le panneau de chat « top level » (vue objectifs, hors détail nœud).
@@ -2208,7 +2213,8 @@ export function initVibes() {
   wireGraph();
   setVibesLayout(vibes.layout);
   window.addEventListener("beforeunload", closeStream);
-  const viewFromHash = () => (location.hash === "#vibes" ? "vibes" : location.hash === "#repo" ? "repo" : "track");
+  const viewFromHash = () =>
+    location.hash === "#vibes" ? "vibes" : location.hash === "#repo" ? "repo" : location.hash === "#orch" ? "orch" : "track";
   window.addEventListener("hashchange", () => switchView(viewFromHash()));
   initRepo();
   switchView(viewFromHash()); // état de vue cohérent dès le départ (masque les vues inactives)

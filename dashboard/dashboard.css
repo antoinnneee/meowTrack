@@ -804,3 +804,39 @@ button.xs { padding: 3px 8px; font-size: 11px; }
   /* — Autocomplétion @ : ne déborde plus l'écran — */
   .mention-menu { min-width: 0; max-width: calc(100vw - 24px); }
 }
+
+/* ── Onglet Orchestrateur ─────────────────────────────────────────────────── */
+.orch-view { padding: 18px 24px; overflow: auto; }
+.orch-pane h2 { margin: 0 0 4px; }
+.orch-sub { color: var(--text-dim); font-size: 0.85em; font-weight: normal; }
+.orch-hint { color: var(--text-dim); font-size: 0.85em; max-width: 70ch; margin: 0 0 16px; }
+.orch-hint code { background: var(--bg); padding: 1px 5px; border-radius: 4px; }
+.orch-grid { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(360px, 1.4fr); gap: 18px; align-items: start; }
+@media (max-width: 900px) { .orch-grid { grid-template-columns: 1fr; } }
+.orch-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
+.orch-card h3 { margin: 0 0 12px; font-size: 1em; display: flex; align-items: center; gap: 8px; }
+.orch-form { display: flex; flex-direction: column; gap: 12px; }
+.orch-field { display: flex; flex-direction: column; gap: 4px; font-size: 0.85em; }
+.orch-field input[type="checkbox"] { align-self: flex-start; width: 18px; height: 18px; }
+.orch-field input, .orch-field select, .orch-field textarea {
+  background: var(--bg); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px 8px; font: inherit; width: 100%; box-sizing: border-box;
+}
+.orch-field textarea { resize: vertical; font-family: ui-monospace, monospace; font-size: 0.9em; }
+.orch-flabel { color: var(--text); }
+.orch-origin { color: var(--text-dim); font-style: normal; font-size: 0.85em; }
+.orch-actions { display: flex; align-items: center; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+.orch-msg { color: var(--text-dim); font-size: 0.85em; }
+.orch-review-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; max-height: 70vh; overflow: auto; }
+.orch-empty { color: var(--text-dim); font-size: 0.85em; padding: 8px; }
+.orch-review { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: var(--bg); }
+.orch-review.state-resolved { opacity: 0.6; }
+.orch-review.state-dismissed { opacity: 0.5; }
+.orch-rev-head { display: flex; align-items: center; gap: 8px; font-size: 0.8em; margin-bottom: 6px; flex-wrap: wrap; }
+.orch-kind { text-transform: uppercase; letter-spacing: 0.03em; color: var(--accent); font-weight: 600; }
+.orch-rev-node { color: var(--text-dim); }
+.orch-rev-state { margin-left: auto; color: var(--text-dim); }
+.orch-badge.blocking { background: var(--bug); color: #fff; border-radius: 4px; padding: 1px 6px; font-size: 0.85em; }
+.orch-rev-msg { font-size: 0.9em; margin-bottom: 8px; white-space: pre-wrap; }
+.orch-rev-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.orch-rev-actions button { font-size: 0.8em; padding: 4px 9px; }

@@ -11,9 +11,11 @@
 // moment de l'évaluation des modules — uniquement à l'intérieur des fonctions.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { NODE_REF_RE, MAX_REPORT_BYTES } from "./db/constants.js";
 
 import {
   isGitClone,
@@ -101,6 +103,34 @@ export function rootForRepo(repoOrId) {
 export function invalidateRepo(repoId) {
   _rootCache.delete(repoId);
   for (const key of [..._index.keys()]) if (key.startsWith(`${repoId}|`)) _index.delete(key);
+}
+
+// ── Orchestrateur : lecture du rapport d'exécution .meowtrack/runs/<ref>.json ─
+// Canal de feedback de l'agent (§6). Lecture BORNÉE et FAIL-CLOSED depuis le
+// working tree du clone serveur : `ref` validé (anti-traversal : pas de slash/..),
+// taille plafonnée, parse tolérant. Renvoie { found, report, error }. Ne lève jamais
+// (l'ingestion fail-closed décide quoi faire d'un rapport absent/illisible).
+export function readRunReport(repoId, ref) {
+  const safe = String(ref || "").trim();
+  if (!NODE_REF_RE.test(safe)) return { found: false, error: "ref_invalide" };
+  let root;
+  try {
+    root = rootForRepo(repoId);
+  } catch (e) {
+    return { found: false, error: e.message || String(e) };
+  }
+  const file = join(root, ".meowtrack", "runs", `${safe}.json`);
+  // Garde-fou supplémentaire : le chemin résolu DOIT rester sous <root>/.meowtrack/runs.
+  const runsDir = resolve(root, ".meowtrack", "runs");
+  if (!resolve(file).startsWith(runsDir)) return { found: false, error: "hors_scope" };
+  if (!existsSync(file)) return { found: false };
+  try {
+    if (statSync(file).size > MAX_REPORT_BYTES) return { found: true, error: "trop_volumineux" };
+    const raw = readFileSync(file, "utf8");
+    return { found: true, report: JSON.parse(raw) };
+  } catch (e) {
+    return { found: true, error: e.message || String(e) }; // illisible / JSON invalide → fail-closed côté ingestion
+  }
 }
 
 // ── Magasin tracker.db PAR dépôt (base SQLite cloisonnée + versionnée) ────────

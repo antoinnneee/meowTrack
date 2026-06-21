@@ -21,6 +21,99 @@ export function setSetting(key, value) {
   return getSetting(key);
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Configuration de l'ORCHESTRATEUR (éditable depuis l'UI).
+//
+// Précédence : défaut d'env (bootstrap) → app_settings global (UI) → override par
+// repo. Les overrides vivent aussi dans app_settings (clé préfixée par repo) — pas
+// de changement de schéma de `repos`. getOrchestratorConfig fusionne les 3 couches
+// et renvoie aussi l'ORIGINE de chaque valeur (env|global|repo) pour l'UI.
+// ═══════════════════════════════════════════════════════════════════════════
+const ORCH_SPEC = {
+  leaseMs: { type: "int", env: "MEOWTRACK_RUN_LEASE_MS", def: 600000, scope: "repo", min: 1000 },
+  maxAttempts: { type: "int", env: "MEOWTRACK_RUN_MAX_ATTEMPTS", def: 3, scope: "repo", min: 1, max: 50 },
+  parallel: { type: "int", env: "MEOWTRACK_RUN_PARALLEL", def: 1, scope: "repo", min: 1, max: 16 },
+  branchPrefix: { type: "str", env: "MEOWTRACK_RUN_BRANCH_PREFIX", def: "meow/", scope: "global" },
+  testCommand: { type: "str", env: null, def: "", scope: "repo" },
+  autoApplyUpdates: { type: "bool", env: "MEOWTRACK_RUN_AUTOAPPLY", def: false, scope: "global" },
+  autoReview: { type: "bool", env: "MEOWTRACK_REVIEW_AUTO", def: false, scope: "repo" },
+  autoReviewModel: { type: "str", env: null, def: "sonnet", scope: "global" },
+  autoReviewPrompt: { type: "str", env: "MEOWTRACK_REVIEW_AUTO_PROMPT", def: "", scope: "repo" },
+};
+const ORCH_KEYS = Object.keys(ORCH_SPEC);
+
+function coerce(spec, raw) {
+  if (spec.type === "int") {
+    let n = Number(raw);
+    if (!Number.isFinite(n)) n = spec.def;
+    if (spec.min != null) n = Math.max(spec.min, n);
+    if (spec.max != null) n = Math.min(spec.max, n);
+    return Math.round(n);
+  }
+  if (spec.type === "bool") return raw === true || raw === "1" || raw === 1 || raw === "true";
+  return String(raw ?? "");
+}
+const globalKey = (k) => `orch_${k}`;
+const repoKey = (rid, k) => `orch_${rid}_${k}`;
+
+// Config EFFECTIVE d'un repo (repoId null/omis = défaut), avec l'origine de chaque clé.
+export function getOrchestratorConfig(repoId = null) {
+  let rid = null;
+  try {
+    rid = resolveRepoId(repoId);
+  } catch {
+    rid = null;
+  }
+  const values = {};
+  const origin = {};
+  for (const k of ORCH_KEYS) {
+    const spec = ORCH_SPEC[k];
+    // 1. défaut d'env (ou défaut codé).
+    let v = spec.env != null && (process.env[spec.env] || "").trim() !== "" ? process.env[spec.env].trim() : spec.def;
+    origin[k] = spec.env != null && (process.env[spec.env] || "").trim() !== "" ? "env" : "default";
+    // 2. global (app_settings).
+    const g = registry.prepare("SELECT value FROM app_settings WHERE key = ?").get(globalKey(k));
+    if (g) {
+      v = g.value;
+      origin[k] = "global";
+    }
+    // 3. override par repo (si la clé est scopable repo).
+    if (spec.scope === "repo" && rid != null) {
+      const r = registry.prepare("SELECT value FROM app_settings WHERE key = ?").get(repoKey(rid, k));
+      if (r) {
+        v = r.value;
+        origin[k] = "repo";
+      }
+    }
+    values[k] = coerce(spec, v);
+  }
+  return { ...values, _origin: origin, _repoId: rid };
+}
+
+// Écrit un patch de config. scope='global' → app_settings global ; scope='repo'
+// (repoId requis) → override par repo. Allowlist de clés + bornes (coerce). Une
+// valeur vide pour un override repo le SUPPRIME (retombe sur global/env).
+export function setOrchestratorConfig(patch = {}, { scope = "global", repoId = null } = {}) {
+  let rid = null;
+  if (scope === "repo") {
+    rid = resolveRepoId(repoId); // lève si repo inconnu
+  }
+  for (const [k, raw] of Object.entries(patch)) {
+    if (!ORCH_KEYS.includes(k)) continue; // allowlist stricte
+    const spec = ORCH_SPEC[k];
+    if (scope === "repo" && spec.scope !== "repo") continue; // clé non scopable repo
+    const key = scope === "repo" ? repoKey(rid, k) : globalKey(k);
+    // Override repo vide → suppression (héritage). Global vide → on stocke "" (volonté explicite).
+    if (scope === "repo" && (raw == null || raw === "")) {
+      registry.prepare("DELETE FROM app_settings WHERE key = ?").run(key);
+      continue;
+    }
+    const val = spec.type === "bool" ? (coerce(spec, raw) ? "1" : "0") : String(coerce(spec, raw));
+    setSetting(key, val);
+  }
+  return getOrchestratorConfig(scope === "repo" ? rid : repoId);
+}
+
 // Slug dérivé d'une URL git : dernier segment sans .git, normalisé.
 export function deriveSlug(url) {
   if (!url) return null;

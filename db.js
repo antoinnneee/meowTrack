@@ -20,7 +20,19 @@
 // lectures concurrentes + un seul writer.
 
 // ── Vocabulaire (constantes publiques) ───────────────────────────────────────
-export { TYPES, STATUSES, PRIORITIES, NODE_STATUSES, NODE_COLORS, CHAT_MODELS, MESSAGE_STATES, NODE_LINK_KINDS } from "./db/constants.js";
+export {
+  TYPES,
+  STATUSES,
+  PRIORITIES,
+  NODE_STATUSES,
+  NODE_COLORS,
+  CHAT_MODELS,
+  MESSAGE_STATES,
+  NODE_LINK_KINDS,
+  RUN_STATES,
+  REVIEW_KINDS,
+  REVIEW_STATES,
+} from "./db/constants.js";
 
 // ── Connexions (registre + pool tracker) ─────────────────────────────────────
 export { closeTrackerDb, checkpointTracker } from "./db/connection.js";
@@ -40,6 +52,8 @@ export {
   getHiddenBranches,
   hideBranch,
   unhideBranch,
+  getOrchestratorConfig,
+  setOrchestratorConfig,
 } from "./db/registry.js";
 
 // ── Issues / références / commentaires ───────────────────────────────────────
@@ -78,7 +92,28 @@ export {
   removeNodeLink,
   applyNodeActions,
   applyForestActions,
+  claimNextNode,
+  renewLease,
+  completeNode,
+  failNode,
+  markNodeDone,
+  requeueNode,
+  bumpAutoReviews,
 } from "./db/nodes.js";
+
+// ── Orchestrateur : runs + ingestion des rapports + points de revue ──────────
+export {
+  startRun,
+  finishRun,
+  currentRunId,
+  listRuns,
+  ingestRunReport,
+  addReview,
+  listReviews,
+  getReview,
+  resolveReview,
+  hasOpenBlockingReview,
+} from "./db/runs.js";
 
 // ── Chats (par nœud + forêt) ─────────────────────────────────────────────────
 export {

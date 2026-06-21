@@ -232,17 +232,63 @@ export const TRACKING_SCHEMA = `
     created_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
   );
   CREATE INDEX IF NOT EXISTS idx_forest_messages_repo ON forest_messages(repo_id, id);
+
+  -- ── Orchestrateur : historique d'exécution d'un nœud (un run = un passage agent).
+  CREATE TABLE IF NOT EXISTS node_runs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    node_id     INTEGER NOT NULL,
+    owner       TEXT,                                 -- worker détenteur du bail
+    state       TEXT NOT NULL,                        -- running|done|review|failed
+    branch      TEXT,                                 -- branche de travail (ex. meow/NODE-12)
+    summary     TEXT,                                 -- compte-rendu de l'agent
+    error       TEXT,                                 -- message d'échec
+    test_result TEXT,                                 -- pass|fail|skipped|NULL
+    report      TEXT,                                 -- JSON brut du fichier .meowtrack/runs/<ref>.json
+    started_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    ended_at    TEXT,
+    FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_node_runs_node ON node_runs(node_id, id);
+
+  -- ── Orchestrateur : points de revue soulevés par l'agent (canal de feedback).
+  CREATE TABLE IF NOT EXISTS node_reviews (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    node_id     INTEGER NOT NULL,
+    run_id      INTEGER,                              -- run d'origine (SET NULL si purgé)
+    kind        TEXT NOT NULL,                        -- decision|question|risk|discovery
+    message     TEXT NOT NULL,                        -- le point soulevé
+    blocking    INTEGER NOT NULL DEFAULT 0,           -- 1 = bloque la complétion du nœud
+    suggested   TEXT,                                 -- JSON : actions proposées (catalogue applyNodeActions)
+    state       TEXT NOT NULL DEFAULT 'open',         -- open|resolved|dismissed
+    response    TEXT,                                 -- réponse (humain ou auto-revue)
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    resolved_at TEXT,
+    FOREIGN KEY(node_id) REFERENCES nodes(id) ON DELETE CASCADE,
+    FOREIGN KEY(run_id)  REFERENCES node_runs(id) ON DELETE SET NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_node_reviews_open ON node_reviews(node_id, state);
 `;
 
 function ensureTrackerSchema(conn) {
   conn.pragma("journal_mode = WAL");
   conn.pragma("synchronous = NORMAL");
   conn.pragma("foreign_keys = ON");
+  // Plusieurs workers d'exécution (processus distincts) peuvent contendre sur la
+  // même base lors du compare-and-swap de claimNextNode : busy_timeout fait ATTENDRE
+  // l'écrivain au lieu d'échouer en SQLITE_BUSY (cf. orchestrateur, §11 concurrence).
+  conn.pragma("busy_timeout = 5000");
   conn.exec(TRACKING_SCHEMA);
   // Migrations additives idempotentes (bases tracker antérieures aux colonnes).
   ensureColumn(conn, "nodes", "notes", "notes TEXT NOT NULL DEFAULT ''");
   ensureColumn(conn, "nodes", "pos_x", "pos_x REAL");
   ensureColumn(conn, "nodes", "pos_y", "pos_y REAL");
+  // Orchestrateur : bail (lease) d'exécution sur les nœuds. Séparé de `status`
+  // (intention de planning) ; coordonne les workers concurrents (cf. db/nodes.js).
+  ensureColumn(conn, "nodes", "run_state", "run_state TEXT");                       // NULL|running|review|failed (done = miroir status)
+  ensureColumn(conn, "nodes", "lease_owner", "lease_owner TEXT");                   // worker détenteur
+  ensureColumn(conn, "nodes", "lease_until", "lease_until TEXT");                   // ISO : expiration du bail
+  ensureColumn(conn, "nodes", "run_attempts", "run_attempts INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(conn, "nodes", "auto_reviews", "auto_reviews INTEGER NOT NULL DEFAULT 0"); // compteur d'auto-revues (anti-boucle)
 }
 
 export function trackDbFor(repoId) {

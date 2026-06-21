@@ -20,13 +20,26 @@ import {
   listForestLinks,
   addNodeLink,
   removeNodeLink,
+  claimNextNode,
+  renewLease,
+  completeNode,
+  failNode,
+  currentRunId,
+  listRuns,
+  ingestRunReport,
+  listReviews,
+  getReview,
+  resolveReview,
+  getOrchestratorConfig,
 } from "../db.js";
-import { openStream, forestKey, nodeKey, broadcast, refreshAncestors } from "../sse.js";
+import { readRunReport } from "../repos.js";
+import { openStream, forestKey, nodeKey, broadcast, broadcastAffected, refreshAncestors } from "../sse.js";
 import {
   handleForestChat,
   handleForestChatConfirm,
   handleNodeChat,
   handleNodeChatConfirm,
+  triggerAutoReview,
   nodeAiBusy,
   forestAiBusy,
 } from "../ai/turns.js";
@@ -145,6 +158,29 @@ export async function handle(ctx) {
     }
   }
 
+  // ── Orchestrateur : file de travail (collection). AVANT la route paramétrée. ──
+  // POST /api/nodes/next { owner } — réclame atomiquement la prochaine tâche prête.
+  if (method === "POST" && path === "/api/nodes/next") {
+    const body = await readBody(req);
+    const id = repoOf(q, body);
+    const owner = String(body.owner || "").trim();
+    if (!owner) return send(res, 400, { error: "owner_requis" }), true;
+    const cfg = getOrchestratorConfig(id);
+    const node = claimNextNode(id, owner, { leaseMs: cfg.leaseMs, maxAttempts: cfg.maxAttempts, branch: body.branch || null });
+    if (node) {
+      broadcast(forestKey(node.repoId), "node:updated", node);
+      broadcast(nodeKey(node.repoId, node.id), "node:updated", node);
+    }
+    send(res, 200, { node: node || null, config: { leaseMs: cfg.leaseMs, branchPrefix: cfg.branchPrefix, testCommand: cfg.testCommand } });
+    return true;
+  }
+  // GET /api/nodes/reviews?state= — file globale des points de revue d'un repo.
+  if (method === "GET" && path === "/api/nodes/reviews") {
+    const id = repoOf(q);
+    send(res, 200, listReviews({ state: q.get("state") || null, repoId: id }));
+    return true;
+  }
+
   // /api/nodes/:ref[…] (résolution du code scopée par ?repo=)
   const nodeMatch = path.match(/^\/api\/nodes\/([^/]+)(\/subtree|\/messages|\/move|\/reorder|\/chat(?:\/confirm)?|\/stream)?$/);
   if (nodeMatch) {
@@ -232,6 +268,111 @@ export async function handle(ctx) {
     }
     if (sub === "/chat/confirm" && method === "POST") {
       handleNodeChatConfirm(req, res, node, await readBody(req));
+      return true;
+    }
+  }
+
+  // ── Orchestrateur : endpoints PAR nœud (hors regex paramétré ci-dessus) ──────
+  const orch = path.match(/^\/api\/nodes\/([^/]+)\/(complete|fail|heartbeat|runs|reviews|reviews\/auto|reviews\/(\d+)\/resolve)$/);
+  if (orch) {
+    const ref = decodeURIComponent(orch[1]);
+    const action = orch[2];
+    const id = repoOf(q);
+    const node = getNode(ref, { repoId: id });
+    if (!node) return send(res, 404, { error: "not_found", ref }), true;
+    const repoId = node.repoId;
+
+    // GET …/runs — historique d'exécution du nœud.
+    if (action === "runs" && method === "GET") {
+      send(res, 200, listRuns(node.id, id));
+      return true;
+    }
+    // GET …/reviews — points de revue du nœud.
+    if (action === "reviews" && method === "GET") {
+      send(res, 200, listReviews({ ref: node.id, state: q.get("state") || null, repoId: id }));
+      return true;
+    }
+    // POST …/heartbeat { owner } — prolonge le bail.
+    if (action === "heartbeat" && method === "POST") {
+      const body = await readBody(req);
+      const owner = String(body.owner || "").trim();
+      const cfg = getOrchestratorConfig(id);
+      const ok = renewLease(node.id, owner, cfg.leaseMs, id);
+      send(res, ok ? 200 : 409, ok ? { ok: true } : { error: "lease_lost" });
+      return true;
+    }
+    // POST …/fail { owner, error, branch? } — échec borné.
+    if (action === "fail" && method === "POST") {
+      const body = await readBody(req);
+      const owner = String(body.owner || "").trim();
+      if (!owner) return send(res, 400, { error: "owner_requis" }), true;
+      const r = failNode(node.id, owner, { error: body.error, branch: body.branch }, id);
+      broadcast(forestKey(repoId), "node:updated", getNode(node.id, { repoId: id }));
+      send(res, 200, r);
+      return true;
+    }
+    // POST …/complete { owner, summary?, branch?, testResult?, report? } — clôt → ingère → débloque|revue.
+    if (action === "complete" && method === "POST") {
+      const body = await readBody(req);
+      const owner = String(body.owner || "").trim();
+      if (!owner) return send(res, 400, { error: "owner_requis" }), true;
+      // Rapport : inline (body.report) sinon lu depuis .meowtrack/runs/<ref>.json du clone.
+      let report = body.report && typeof body.report === "object" && !Array.isArray(body.report) ? body.report : null;
+      if (!report) {
+        const rr = readRunReport(repoId, node.ref);
+        if (rr.found && rr.report) report = rr.report;
+      }
+      const runId = currentRunId(node.id, owner, id);
+      const ingest = report ? ingestRunReport(node.id, runId, report, id) : { hasBlockingReview: false, reviews: [], applied: [] };
+      let r;
+      try {
+        r = completeNode(
+          node.id,
+          owner,
+          { summary: body.summary, branch: body.branch, testResult: body.testResult, report, hasBlockingReview: ingest.hasBlockingReview },
+          id
+        );
+      } catch (e) {
+        if (e.code === "lease_lost") return send(res, 409, { error: "lease_lost" }), true;
+        throw e;
+      }
+      broadcastAffected(repoId, r.affectedNodeIds);
+      const openReviews = ingest.reviews.filter((rv) => rv.state === "open");
+      if (openReviews.length) broadcast(forestKey(repoId), "review:open", { repoId, nodeId: node.id, count: openReviews.length });
+      // Déclenchement AUTOMATIQUE de l'auto-revue si activé et point bloquant (tâche de fond).
+      const cfg = getOrchestratorConfig(id);
+      if (cfg.autoReview && ingest.hasBlockingReview) {
+        const blockingIds = ingest.reviews.filter((rv) => rv.blocking && rv.state === "open").map((rv) => rv.id);
+        triggerAutoReview(repoId, node.id, blockingIds, { model: cfg.autoReviewModel, policyPrompt: cfg.autoReviewPrompt }).catch(() => {});
+      }
+      send(res, 200, { ok: true, state: r.state, affected: r.affectedNodeIds, reviews: ingest.reviews });
+      return true;
+    }
+    // POST …/reviews/auto { reviewIds?, model? } — auto-revue par le chat IA top-level.
+    if (action === "reviews/auto" && method === "POST") {
+      const body = await readBody(req);
+      if (forestAiBusy(repoId)) return send(res, 409, { error: "ai_busy" }), true;
+      const cfg = getOrchestratorConfig(id);
+      const reviewIds = Array.isArray(body.reviewIds) ? body.reviewIds.map(Number).filter(Number.isFinite) : null;
+      // Fire-and-forget : on répond 202 immédiatement, le tour streame via SSE
+      // (forest:<repoId>) puis résout les points de revue (cf. triggerAutoReview).
+      triggerAutoReview(repoId, node.id, reviewIds, {
+        model: body.model || cfg.autoReviewModel,
+        policyPrompt: cfg.autoReviewPrompt,
+      }).catch(() => {});
+      send(res, 202, { ok: true, started: true });
+      return true;
+    }
+    // POST …/reviews/:id/resolve { decision?, applyActions?, response? } — résolution humaine.
+    if (orch[3] && method === "POST") {
+      const body = await readBody(req);
+      const reviewId = Number(orch[3]);
+      const review = getReview(reviewId, id);
+      if (!review || review.nodeId !== node.id) return send(res, 404, { error: "not_found" }), true;
+      const r = resolveReview(reviewId, { decision: body.decision, applyActions: body.applyActions !== false, response: body.response }, id);
+      broadcastAffected(repoId, r.affectedNodeIds || []);
+      broadcast(forestKey(repoId), "review:resolved", { repoId, nodeId: node.id, reviewId, promoted: !!r.promoted });
+      send(res, 200, r);
       return true;
     }
   }
