@@ -6,6 +6,7 @@ import { send, readBody, repoOf } from "../http-util.js";
 import {
   listForestMessages,
   clearForestMessages,
+  deleteForestMessage,
   listForest,
   listRootNodes,
   createNode,
@@ -17,6 +18,7 @@ import {
   reorderChildren,
   listNodeMessages,
   clearNodeMessages,
+  deleteNodeMessage,
   listForestLinks,
   addNodeLink,
   removeNodeLink,
@@ -66,6 +68,16 @@ export async function handle(ctx) {
     const removed = clearForestMessages(id);
     broadcast(forestKey(id), "chat:cleared", { repoId: id, scope: "forest" });
     send(res, 200, { ok: true, removed });
+    return true;
+  }
+  // DELETE /api/forest/messages/:id?repo= — retire un message (refusé pendant un tour IA).
+  const fmDel = path.match(/^\/api\/forest\/messages\/(\d+)$/);
+  if (method === "DELETE" && fmDel) {
+    const id = repoOf(q);
+    if (forestAiBusy(id)) return send(res, 409, { error: "ai_busy" }), true;
+    const removed = deleteForestMessage(Number(fmDel[1]), id);
+    if (removed) broadcast(forestKey(id), "message:deleted", { id: Number(fmDel[1]), scope: "forest" });
+    send(res, removed ? 200 : 404, removed ? { ok: true, removed } : { error: "introuvable" });
     return true;
   }
   // POST /api/forest/chat?repo= — un message → tour IA streaming (objectifs racines…).
@@ -182,7 +194,7 @@ export async function handle(ctx) {
   }
 
   // /api/nodes/:ref[…] (résolution du code scopée par ?repo=)
-  const nodeMatch = path.match(/^\/api\/nodes\/([^/]+)(\/subtree|\/messages|\/move|\/reorder|\/chat(?:\/confirm)?|\/stream)?$/);
+  const nodeMatch = path.match(/^\/api\/nodes\/([^/]+)(\/subtree|\/messages(?:\/\d+)?|\/move|\/reorder|\/chat(?:\/confirm)?|\/stream)?$/);
   if (nodeMatch) {
     const ref = decodeURIComponent(nodeMatch[1]);
     const sub = nodeMatch[2] || "";
@@ -260,6 +272,15 @@ export async function handle(ctx) {
       const removed = clearNodeMessages(node.id, id);
       broadcast(nodeKey(id, node.id), "chat:cleared", { nodeId: node.id });
       send(res, 200, { ok: true, removed });
+      return true;
+    }
+    // DELETE /api/nodes/:ref/messages/:id — retire un message (refusé pendant un tour IA).
+    const msgDel = method === "DELETE" && sub.match(/^\/messages\/(\d+)$/);
+    if (msgDel) {
+      if (nodeAiBusy(node.id)) return send(res, 409, { error: "ai_busy" }), true;
+      const removed = deleteNodeMessage(Number(msgDel[1]), node.id, id);
+      if (removed) broadcast(nodeKey(id, node.id), "message:deleted", { id: Number(msgDel[1]), nodeId: node.id });
+      send(res, removed ? 200 : 404, removed ? { ok: true, removed } : { error: "introuvable" });
       return true;
     }
     if (sub === "/chat" && method === "POST") {

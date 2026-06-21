@@ -1922,6 +1922,17 @@ function messageEl(m) {
   head.innerHTML = who;
   div.appendChild(head);
 
+  // Bouton « retirer ce message » (visible au survol) — messages finalisés uniquement.
+  if (m.id && !streaming) {
+    const del = document.createElement("button");
+    del.className = "msg-delete";
+    del.title = "Retirer ce message";
+    del.setAttribute("aria-label", "Retirer ce message");
+    del.textContent = "✕";
+    del.addEventListener("click", () => deleteMessage(m.id));
+    div.appendChild(del);
+  }
+
   // Zone réflexion repliable (repliée par défaut) — pour l'IA.
   let reasoningBody = null;
   if (m.role === "assistant") {
@@ -2089,6 +2100,23 @@ async function confirmActions(messageId) {
     toast(e.message);
   }
 }
+// Retrait DOM d'un message suite à l'event SSE `message:deleted` (autre client).
+function removeMessageEl(e) {
+  let id = null;
+  try { id = JSON.parse(e.data).id; } catch {}
+  if (id != null) chatFeedEl()?.querySelector(`[data-mid="${cssId(id)}"]`)?.remove();
+}
+// Retire un seul message (node ou forêt selon le chat actif). Refusé pendant un tour IA.
+async function deleteMessage(messageId) {
+  if (!messageId || !confirm("Retirer ce message ? (irréversible)")) return;
+  try {
+    await api.send("DELETE", vibes.chat.url("/messages/" + encodeURIComponent(messageId)));
+    chatFeedEl()?.querySelector(`[data-mid="${cssId(messageId)}"]`)?.remove(); // retrait local immédiat
+  } catch (e) {
+    if (/ai_busy/.test(e.message)) toast("Claude répond en ce moment — réessaie après le tour.");
+    else toast("Échec : " + e.message);
+  }
+}
 async function clearChatHistory() {
   const ctx = vibes.chat;
   if (!ctx.ready()) return;
@@ -2163,6 +2191,7 @@ function subscribeForest() {
   });
   es.addEventListener("node:ghost", (e) => applyGhostForest(JSON.parse(e.data)));
   es.addEventListener("chat:cleared", () => renderChat([]));
+  es.addEventListener("message:deleted", (e) => removeMessageEl(e)); // un autre client a retiré un message
   const applyNode = (raw, kind) => {
     if (!raw) return;
     const ex = vibes.byId.get(raw.id);
@@ -2218,6 +2247,7 @@ function subscribeNode(ref) {
   es.addEventListener("subtree:dirty", () => scheduleSubtreeRefetch());
   es.addEventListener("links:changed", () => refreshCurrentNode()); // prérequis du nœud modifié
   es.addEventListener("chat:cleared", () => renderChat([])); // un autre client a vidé l'historique
+  es.addEventListener("message:deleted", (e) => removeMessageEl(e)); // un autre client a retiré un message
   es.addEventListener("node:deleted", (e) => {
     const d = JSON.parse(e.data);
     if (vibes.currentNode && d.id === vibes.currentNode.id) { toast("Ce nœud a été supprimé."); backToForest(); }

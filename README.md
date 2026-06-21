@@ -402,12 +402,14 @@ Auth du flux par `?token=`. Un pseudo (`localStorage`) identifie chaque particip
 | `GET` | `/api/nodes/links` | tous les liens de prérequis du repo (`[{id,fromId,toId,kind}]`) |
 | `POST` | `/api/nodes/links` | créer un lien `{fromId,toId}` (`from` dépend de `to`, anti-cycle) |
 | `DELETE` | `/api/nodes/links` | retirer un lien `{fromId,toId}` |
-| `GET` | `/api/nodes/:ref/messages` | historique du chat du nœud |
+| `GET/DELETE` | `/api/nodes/:ref/messages` | historique du chat du nœud / le vider |
+| `DELETE` | `/api/nodes/:ref/messages/:id` | retirer un seul message (refusé pendant un tour IA → `409`) |
 | `POST` | `/api/nodes/:ref/chat` | message (lance le tour IA streaming, `202`, résultat via SSE) |
 | `POST` | `/api/nodes/:ref/chat/confirm` | confirmer une proposition destructive |
 | `GET` | `/api/nodes/:ref/stream` | flux SSE du nœud (chat + stream + état du sous-arbre) |
 | `GET` | `/api/nodes/stream` | flux SSE de la forêt (graphe/grille **+ chat « top level »**) |
 | `GET/DELETE` | `/api/forest/messages` | historique du chat « top level » du repo / le vider |
+| `DELETE` | `/api/forest/messages/:id` | retirer un seul message « top level » (refusé pendant un tour IA → `409`) |
 | `POST` | `/api/forest/chat` | message « top level » (tour IA streaming, `202`, résultat via SSE forêt) |
 | `POST` | `/api/forest/chat/confirm` | confirmer une proposition destructive du chat « top level » |
 

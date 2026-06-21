@@ -45,6 +45,14 @@ export function clearNodeMessages(nodeRefOrId, repoId = null) {
   });
 }
 
+export function deleteNodeMessage(messageId, nodeRefOrId, repoId = null) {
+  return withRepo(repoId, () => {
+    const node = findNodeRow(nodeRefOrId, repoId);
+    if (!node) throw new Error(`Nœud introuvable : ${nodeRefOrId}`);
+    return db.prepare("DELETE FROM node_messages WHERE id = ? AND node_id = ?").run(messageId, node.id).changes;
+  });
+}
+
 export function listNodeMessages(nodeId, { afterId = 0, limit = 500, repoId = null } = {}) {
   return withRepo(repoId, () =>
     db
@@ -137,6 +145,12 @@ function rowToForestMessage(r) {
 export function clearForestMessages(repoId) {
   if (repoId == null) throw new Error("repoId requis");
   return withRepo(repoId, () => db.prepare("DELETE FROM forest_messages WHERE repo_id = ?").run(resolveRepoId(repoId)).changes);
+}
+
+export function deleteForestMessage(messageId, repoId) {
+  if (repoId == null) throw new Error("repoId requis");
+  return withRepo(repoId, () =>
+    db.prepare("DELETE FROM forest_messages WHERE id = ? AND repo_id = ?").run(messageId, resolveRepoId(repoId)).changes);
 }
 
 export function listForestMessages(repoId, { afterId = 0, limit = 500 } = {}) {
