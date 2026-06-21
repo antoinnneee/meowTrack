@@ -2076,6 +2076,12 @@ function scrollFeed(force) {
   if (force) vibes.stickToBottom = true;
   if (vibes.stickToBottom) feed.scrollTop = feed.scrollHeight;
 }
+// Agrandit le textarea du chat selon son contenu (borné par le max-height CSS, puis scroll).
+function autoGrowChat(ta) {
+  if (!ta) return;
+  ta.style.height = "auto";
+  ta.style.height = ta.scrollHeight + "px";
+}
 async function sendChat() {
   const ctx = vibes.chat;
   const ta = $(ctx.inputSel);
@@ -2086,6 +2092,7 @@ async function sendChat() {
   vibes.stickToBottom = true; // envoyer un message réactive le suivi du bas
   appendMessage({ id: 0, role: "user", author: vibes.user, body: text, state: "complete", clientNonce: nonce });
   ta.value = "";
+  autoGrowChat(ta);
   try {
     await api.send("POST", ctx.url("/chat"), { author: vibes.user, model: vibes.model, body: text, clientNonce: nonce });
   } catch (e) {
@@ -2094,6 +2101,7 @@ async function sendChat() {
     else toast("Échec : " + e.message);
     chatFeedEl()?.querySelector(`[data-nonce="${cssId(nonce)}"]`)?.remove();
     ta.value = text;
+    autoGrowChat(ta);
   }
 }
 async function confirmActions(messageId) {
@@ -2361,7 +2369,7 @@ export function initVibes() {
   // Autocomplete dans le chat : @ fichier + # nœud (même UX que la modale d'entrée).
   const chatInput = $("#chatInput");
   const chatMenu = $("#chatMentionMenu");
-  chatInput.addEventListener("input", () => handleChatMention(chatInput, chatMenu, state.branch || "", null));
+  chatInput.addEventListener("input", () => { handleChatMention(chatInput, chatMenu, state.branch || "", null); autoGrowChat(chatInput); });
   chatInput.addEventListener("blur", () => setTimeout(() => hideMenu(chatMenu), 150));
   chatInput.addEventListener("keydown", (e) => {
     if (menuKeydown(chatMenu, e)) return; // menu ouvert : flèches / Entrée / Tab / Échap pour lui
@@ -2378,7 +2386,7 @@ export function initVibes() {
   $("#forestChatFeed").addEventListener("scroll", () => { vibes.stickToBottom = isFeedAtBottom($("#forestChatFeed")); });
   const forestChatInput = $("#forestChatInput");
   const forestChatMenu = $("#forestChatMentionMenu");
-  forestChatInput.addEventListener("input", () => handleChatMention(forestChatInput, forestChatMenu, state.branch || "", null));
+  forestChatInput.addEventListener("input", () => { handleChatMention(forestChatInput, forestChatMenu, state.branch || "", null); autoGrowChat(forestChatInput); });
   forestChatInput.addEventListener("blur", () => setTimeout(() => hideMenu(forestChatMenu), 150));
   forestChatInput.addEventListener("keydown", (e) => {
     if (menuKeydown(forestChatMenu, e)) return; // menu ouvert : flèches / Entrée / Tab / Échap pour lui

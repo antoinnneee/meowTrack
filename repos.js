@@ -119,6 +119,28 @@ export function invalidateRepo(repoId) {
   for (const key of [..._index.keys()]) if (key.startsWith(`${repoId}|`)) _index.delete(key);
 }
 
+// Supprime le clone LOCAL géré par meowtrack (dossier `.repos/<slug>/`) d'un repo.
+// Strictement local : ne touche JAMAIS le dépôt distant. Ne supprime QUE notre
+// propre clone — jamais un `local_path` fourni par l'utilisateur (clone géré à la
+// main / dev in-repo), ni le checkout courant. No-op (sans erreur) si le repo n'a
+// pas de clone géré ou si le dossier est déjà absent. Renvoie { removed, path?, reason? }.
+// Passer la ROW du repo (et non l'id) si la suppression de registre a déjà eu lieu.
+export function removeManagedClone(repoOrId) {
+  const repo = typeof repoOrId === "object" ? repoOrId : getRepoRow(repoOrId);
+  if (!repo) return { removed: false, reason: "unknown" };
+  // Un local_path = clone géré par l'utilisateur (utilisé sur place) : on n'y touche pas.
+  if (repo.local_path && String(repo.local_path).trim()) return { removed: false, reason: "local_path" };
+  // Garde-fou : ne supprimer que `.repos/<slug>` exactement (jamais le toplevel,
+  // ni quoi que ce soit hors du dossier de clones géré).
+  const managed = resolve(HERE, ".repos", repo.slug);
+  const root = rootForRepo(repo);
+  if (root !== managed) return { removed: false, reason: "not_managed" };
+  invalidateRepo(repo.id);
+  if (!existsSync(root)) return { removed: false, reason: "absent" };
+  rmSync(root, { recursive: true, force: true });
+  return { removed: true, path: root };
+}
+
 // ── Orchestrateur : lecture du rapport d'exécution .meowtrack/runs/<ref>.json ─
 // Canal de feedback de l'agent (§6). Lecture BORNÉE et FAIL-CLOSED depuis le
 // working tree du clone serveur : `ref` validé (anti-traversal : pas de slash/..),

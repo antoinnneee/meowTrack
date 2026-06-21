@@ -19,7 +19,18 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 // chemin littéral fourni (défense en profondeur, en plus du rejet « : » de normalizePath).
 // GIT_TERMINAL_PROMPT=0 : jamais de prompt interactif (pas de TTY côté serveur) →
 // une auth manquante échoue immédiatement avec un message clair au lieu de bloquer.
-const GIT_ENV = { ...process.env, GIT_LITERAL_PATHSPECS: "1", GIT_TERMINAL_PROMPT: "0" };
+// GIT_SSH_COMMAND avec StrictHostKeyChecking=accept-new : TOFU (trust-on-first-use).
+// La clé d'hôte d'un serveur inconnu (ex. github.com sur un serveur fraîchement
+// provisionné, sans known_hosts) est acceptée ET épinglée au 1er contact, puis
+// vérifiée ensuite — évite l'échec « Host key verification failed » au clone ssh,
+// sans désactiver la vérification (≠ StrictHostKeyChecking=no). Un override
+// explicite de l'environnement est préservé.
+const GIT_ENV = {
+  ...process.env,
+  GIT_LITERAL_PATHSPECS: "1",
+  GIT_TERMINAL_PROMPT: "0",
+  GIT_SSH_COMMAND: process.env.GIT_SSH_COMMAND || "ssh -o StrictHostKeyChecking=accept-new",
+};
 
 // Exécute git dans `cwd` et retourne stdout trimé (ou null si échec). Lecture seule.
 function git(args, cwd) {
