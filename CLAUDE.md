@@ -14,6 +14,7 @@ node test/parse_ai_turn.test.mjs  # regression test for parseAiTurn (AI action p
 node test/ghost_payload.test.mjs   # regression test for ghostPayloadFromAction
 node test/node_links.test.mjs      # regression test for prerequisite-link guards (cycle/cap/self)
 node test/issue_actions.test.mjs   # regression test for issue manual order + AI issue actions
+node test/node_waiting.test.mjs    # regression test for the `waiting` status + pending_info lifecycle
 ./deploy.sh                       # SCP + npm install + systemctl restart (reads gitignored .deployEnv)
 ./install-service.sh              # one-shot: create+enable the systemd unit (run on the server)
 ```
@@ -30,7 +31,7 @@ The MCP server and dashboard share the DB and run **simultaneously** (SQLite WAL
 
 **Two domains live in the same DB:**
 - **Issues** (`BUG-1`, `FEAT-2`…): bug/feature/task/chore tracker with file/folder *references*, comments, tags, captured branch/commit. Exposed via MCP tools (`meowtrack_create/list/get/update/...`) and `/api/issues`. Carry a **manual `position`** column: `listIssues` sorts by `position` first (manual order wins over status/priority), `createIssue` appends at the bottom, and the order is editable by **drag & drop** in the Suivi list (`POST /api/issues/reorder` → `reorderIssues`, MCP `meowtrack_reorder`) — same append-the-rest semantics as node `reorderChildren`.
-- **Nodes** ("Vibes", `NODE-1`…): a recursive tree of goals/milestones with per-node AI chat. One node type at any depth; progress is the recursive average of children. Exposed via `/api/nodes/*` and `meowtrack_node_*` tools.
+- **Nodes** ("Vibes", `NODE-1`…): a recursive tree of goals/milestones with per-node AI chat. One node type at any depth; progress is the recursive average of children. Exposed via `/api/nodes/*` and `meowtrack_node_*` tools. Statuses are `active|paused|waiting|done|abandoned`; **`waiting`** means *blocked on user-supplied info* (API key, config, decision) before it can be built — the missing info is described in the free-text `pending_info` column (**never** a secret value), the orchestrator skips it (`claimNextNode` requires `status='active'`), the node chat **switches to "intake" mode** (`buildNodePrompt` injects a collection-mode block when `scopeNode.status==='waiting'`), and the AI flips it back to `active` (which clears `pending_info`) — or the user clicks "Prêt à implémenter". MCP entry point: `meowtrack_node_request_input`.
 
 The two domains are **bridged** by `issue_nodes` (`issue_id`, `node_id`, composite PK → idempotent, `ON DELETE CASCADE` both ways): an issue can reference one or more milestone nodes of the **same repo** — a **live** link (the node's title/status/progress is always re-read, never copied). Surfaced both ways: "Jalons liés" on the issue detail (`POST /api/issues/:ref/nodes`, `DELETE …/nodes/:nodeId`; `GET /api/issues/:ref` returns `nodes`) and "Suivis liés" on the node detail with a **create-issue-from-milestone** flow (`GET /api/nodes/:ref` returns `issues`).
 

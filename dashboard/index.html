@@ -79,8 +79,14 @@
     <main class="view graph-view" id="graphView" hidden>
       <svg id="graphSvg" class="graph-svg" preserveAspectRatio="xMidYMid meet"></svg>
       <div class="graph-controls">
+        <div class="graph-filters" id="graphFilters">
+          <button class="graph-filter-btn active" data-status="done" title="Afficher / masquer les nœuds terminés">✅ Terminés</button>
+          <button class="graph-filter-btn active" data-status="abandoned" title="Afficher / masquer les nœuds abandonnés">🚫 Abandonnés</button>
+          <button class="graph-filter-btn active" data-status="paused" title="Afficher / masquer les nœuds en pause">⏸ En pause</button>
+        </div>
         <button id="graphFit" class="ghost" title="Recentrer">⤢ Recentrer</button>
       </div>
+      <svg id="graphMinimap" class="graph-minimap"></svg>
     </main>
 
     <!-- Vue Vibes : grille des objectifs racines -->
@@ -140,6 +146,16 @@
             <div class="bar"><div class="bar-fill" id="ndBar"></div></div>
           </div>
           <div class="gd-desc" id="ndDesc"></div>
+
+          <!-- En attente d'info utilisateur (status='waiting') : ce qui manque + bouton « prêt ». -->
+          <div class="nd-pending" id="ndPending" hidden>
+            <div class="nd-pending-head">
+              <span class="nd-pending-title">⏳ En attente d'une information de ta part</span>
+              <button id="ndReadyBtn" class="primary" title="Marquer ce nœud comme prêt à implémenter">✅ Prêt à implémenter</button>
+            </div>
+            <div class="nd-pending-body" id="ndPendingBody"></div>
+            <div class="hint">Une fois l'info fournie (clé API, config…), le chat de ce nœud t'aide à la réunir ; clique « Prêt » pour le rendre implémentable.</div>
+          </div>
 
           <!-- Notes markdown : plusieurs sections collapsables, lecture/édition. Le bot y a accès. -->
           <div class="nd-notes" id="ndNotes">
@@ -226,6 +242,7 @@
             <select id="nStatus">
               <option value="active">🌱 Actif</option>
               <option value="paused">⏸️ En pause</option>
+              <option value="waiting">⏳ En attente d'info</option>
               <option value="done">🏆 Atteint</option>
               <option value="abandoned">🪦 Abandonné</option>
             </select>

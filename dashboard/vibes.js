@@ -11,7 +11,7 @@ import { openRepoView, initRepo } from "./repo.js";
 // Réutilise les helpers du Suivi ($/esc/api/getToken). N'altère PAS init().
 // ═══════════════════════════════════════════════════════════════════════════
 
-const NODE_STATUS_LABEL = { active: "🌱 Actif", paused: "⏸️ En pause", done: "🏆 Atteint", abandoned: "🪦 Abandonné" };
+const NODE_STATUS_LABEL = { active: "🌱 Actif", paused: "⏸️ En pause", waiting: "⏳ En attente d'info", done: "🏆 Atteint", abandoned: "🪦 Abandonné" };
 const NODE_COLORS = ["accent", "feature", "task", "bug", "high"];
 
 // Palette « par cascade » : chaque sous-arbre de 1er niveau (tête de cascade =
@@ -70,6 +70,7 @@ export const vibes = {
     reqDel: null,           // { fromId, toId } du prérequis dont la poubelle est affichée
     pendingCreatePos: null, // position graphe où créer le prochain nœud (menu fond)
     suppressClick: false,   // ignore le prochain click (après un drag)
+    hiddenStatuses: new Set(), // statuts masqués par les filtres (done/abandoned/paused)
   },
 };
 
@@ -861,6 +862,54 @@ function graphDefs() {
   defs.appendChild(reqArrowMarker("reqArrowBlocked", "g-req-arrow-blocked"));
   return defs;
 }
+// Calcule les ids de nœuds masqués par les filtres de statut.
+// Un nœud est masqué si son propre statut est filtré OU si un ancêtre est masqué
+// (on ne laisse pas des enfants visibles suspendus sans parent visible).
+function computeHiddenNodes() {
+  const hidden = new Set();
+  const h = vibes.graph.hiddenStatuses;
+  if (!h.size) return hidden;
+  const visit = (n) => {
+    if (h.has(n.status) || (n.parentId != null && hidden.has(n.parentId))) hidden.add(n.id);
+    for (const c of childrenOf(n.id)) visit(c);
+  };
+  for (const root of rootsOf()) visit(root);
+  return hidden;
+}
+// Dessine la minimap : vue d'ensemble de tout le graphe avec le rectangle de viewport.
+function renderMinimap(pos, hiddenIds) {
+  const mm = $("#graphMinimap");
+  if (!mm || !pos || !pos.size) return;
+  // Bounding box de tous les nœuds (visibles ET masqués, pour que la minimap reste stable).
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const p of pos.values()) {
+    minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y);
+  }
+  if (!isFinite(minX)) { mm.style.display = "none"; return; }
+  mm.style.display = "";
+  const pad = 60;
+  mm.setAttribute("viewBox", `${minX - pad} ${minY - pad} ${maxX - minX + pad * 2} ${maxY - minY + pad * 2}`);
+  while (mm.firstChild) mm.removeChild(mm.firstChild);
+  // Arêtes hiérarchiques (lignes fines).
+  for (const n of vibes.forest) {
+    if (n.parentId == null) continue;
+    const pp = pos.get(n.parentId), pc = pos.get(n.id);
+    if (!pp || !pc) continue;
+    const dim = hiddenIds && (hiddenIds.has(n.id) || hiddenIds.has(n.parentId));
+    mm.appendChild(svgEl("line", { x1: pp.x, y1: pp.y, x2: pc.x, y2: pc.y, stroke: "rgba(255,255,255,.18)", "stroke-width": "6", opacity: dim ? "0.3" : "1" }));
+  }
+  // Nœuds (petits disques colorés).
+  for (const n of vibes.forest) {
+    const p = pos.get(n.id);
+    if (!p) continue;
+    const dim = hiddenIds && hiddenIds.has(n.id);
+    mm.appendChild(svgEl("circle", { cx: p.x, cy: p.y, r: "14", fill: cascadeColorOf(n), opacity: dim ? "0.25" : "0.9" }));
+  }
+  // Rectangle de viewport courant.
+  const v = vibes.graph.view;
+  mm.appendChild(svgEl("rect", { id: "minimapViewport", x: v.x, y: v.y, width: v.w, height: v.h, fill: "rgba(255,255,255,.07)", stroke: "rgba(255,255,255,.55)", "stroke-width": "10" }));
+}
 function renderGraph() {
   const svg = $("#graphSvg");
   if (!svg || $("#graphView").hidden) return;
@@ -881,8 +930,10 @@ function renderGraph() {
   svg.appendChild(gEdges);
   svg.appendChild(gReq);
   svg.appendChild(gNodes);
+  const hiddenIds = computeHiddenNodes();
   for (const n of vibes.forest) {
     if (n.parentId == null) continue;
+    if (hiddenIds.has(n.id) || hiddenIds.has(n.parentId)) continue;
     const pp = pos.get(n.parentId), pc = pos.get(n.id);
     if (pp && pc) gEdges.appendChild(edgePath(pp, pc, n));
   }
@@ -891,12 +942,14 @@ function renderGraph() {
   const center = graphCenter(pos);
   for (const l of vibes.links) {
     if (l.kind !== "requires") continue;
+    if (hiddenIds.has(l.fromId) || hiddenIds.has(l.toId)) continue;
     const pf = pos.get(l.fromId), pt = pos.get(l.toId);
     if (!pf || !pt) continue;
     const to = vibes.byId.get(l.toId);
     gReq.appendChild(reqEdgePath(pf, pt, l, to && to.status !== "done", center));
   }
   for (const n of vibes.forest) {
+    if (hiddenIds.has(n.id)) continue;
     const pp = pos.get(n.id);
     if (pp) gNodes.appendChild(nodeGroup(n, pp));
   }
@@ -918,13 +971,15 @@ function renderGraph() {
     gNodes.appendChild(t);
   }
   // Le fit englobe aussi les fantômes (sinon ils apparaîtraient hors cadre).
-  let fitPos = pos;
-  if (gpos && gpos.size) { fitPos = new Map(pos); let i = 0; for (const v of gpos.values()) fitPos.set("ghost:" + i++, v); }
+  // On exclut les nœuds masqués par le filtre pour que la vue s'adapte aux nœuds visibles.
+  let fitPos = hiddenIds.size ? new Map([...pos].filter(([id]) => !hiddenIds.has(id))) : pos;
+  if (gpos && gpos.size) { fitPos = new Map(fitPos); let i = 0; for (const v of gpos.values()) fitPos.set("ghost:" + i++, v); }
   // Pendant un tour de création (fantômes présents), on RECADRE toujours : l'arbre en
   // cours de génération reste centré au lieu de « filer » à droite hors cadre quand
   // l'utilisateur avait pané/zoomé (userView). Sinon on respecte sa vue manuelle.
   if (!vibes.graph.userView || vibes._ghostNodes.length) fitView(fitPos, svg);
   else applyViewBox(svg);
+  renderMinimap(pos, hiddenIds);
   // Feu d'artifice sur les nœuds qui viennent d'apparaître / d'être atteints.
   if (!REDUCED) {
     for (const id of vibes.graph.spawned) sparkleNode(svg, id, false);
@@ -955,6 +1010,27 @@ function fitView(pos, svg) {
 function applyViewBox(svg) {
   const v = vibes.graph.view;
   svg.setAttribute("viewBox", `${v.x} ${v.y} ${v.w} ${v.h}`);
+  updateLOD(svg);
+  updateMinimapViewport();
+}
+// LOD : masque les labels quand les nœuds sont trop petits à l'écran (dézoom extrême).
+function updateLOD(svg) {
+  if (!svg) svg = $("#graphSvg");
+  if (!svg) return;
+  const rect = svg.getBoundingClientRect();
+  const v = vibes.graph.view;
+  if (!rect.width || !v.w) return;
+  const pxPerSvg = rect.width / v.w; // pixels réels pour 1 unité SVG
+  const smallestNodeDiameter = 24;   // r=12, le plus petit nœud
+  svg.classList.toggle("lod-compact", smallestNodeDiameter * pxPerSvg < 16);
+}
+// Met à jour uniquement le rectangle de viewport dans la minimap (sans tout reconstruire).
+function updateMinimapViewport() {
+  const vp = document.getElementById("minimapViewport");
+  if (!vp) return;
+  const v = vibes.graph.view;
+  vp.setAttribute("x", v.x); vp.setAttribute("y", v.y);
+  vp.setAttribute("width", v.w); vp.setAttribute("height", v.h);
 }
 // Zoom clavier (+ / -) : zoom centré sur le milieu de la vue courante.
 // factor < 1 = zoom avant ; factor > 1 = zoom arrière.
@@ -1201,6 +1277,102 @@ function wireGraph() {
     applyViewBox(svg);
   }, { passive: false });
 
+  // ── Tactile (Android/iOS) ─────────────────────────────────────────────────
+  // Sans ces handlers + `touch-action:none` (CSS), le navigateur capte le geste
+  // et zoome/scrolle la PAGE au lieu du graphe. Deux doigts = pinch-zoom + pan ;
+  // un doigt = pan du fond ou drag d'un nœud (comme la souris). On laisse passer
+  // le clic synthétique (pas de preventDefault sur un simple tap) pour que le
+  // handler `click` existant ouvre le nœud / pose la poubelle de prérequis.
+  svg.addEventListener("touchstart", (e) => {
+    if (vibes.graph.linking) return; // mode lien : la sélection se fait au clic
+    hideCtxMenu(); hideEdgeDel(); hideReqDel();
+    if (e.touches.length === 2) {
+      e.preventDefault();
+      vibes.graph.nodeDrag = null;
+      vibes.graph.drag = null;
+      const a = e.touches[0], b = e.touches[1];
+      vibes.graph.pinch = {
+        dist: Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY) || 1,
+        midX: (a.clientX + b.clientX) / 2,
+        midY: (a.clientY + b.clientY) / 2,
+      };
+      return;
+    }
+    if (e.touches.length !== 1) return;
+    const t = e.touches[0];
+    const gNode = e.target.closest(".g-node");
+    if (gNode) {
+      const id = Number(gNode.dataset.id);
+      const ids = subtreeIds(id);
+      const start = new Map(ids.map((i) => [i, { ...(vibes.graph.posMap.get(i) || { x: 0, y: 0 }) }]));
+      vibes.graph.nodeDrag = { id, ids, start, cx: t.clientX, cy: t.clientY, moved: false, ref: gNode.dataset.ref };
+    } else {
+      vibes.graph.drag = { x: t.clientX, y: t.clientY, vx: vibes.graph.view.x, vy: vibes.graph.view.y };
+    }
+  }, { passive: false });
+
+  svg.addEventListener("touchmove", (e) => {
+    const p = vibes.graph.pinch;
+    if (p && e.touches.length >= 2) {
+      e.preventDefault();
+      const a = e.touches[0], b = e.touches[1];
+      const dist = Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY) || 1;
+      const midX = (a.clientX + b.clientX) / 2, midY = (a.clientY + b.clientY) / 2;
+      const rect = svg.getBoundingClientRect();
+      const v = vibes.graph.view;
+      const f = p.dist / dist; // doigts qui s'écartent → f<1 → zoom avant
+      const ax = v.x + ((midX - rect.left) / rect.width) * v.w;
+      const ay = v.y + ((midY - rect.top) / rect.height) * v.h;
+      v.w *= f; v.h *= f;
+      v.x = ax - ((midX - rect.left) / rect.width) * v.w;
+      v.y = ay - ((midY - rect.top) / rect.height) * v.h;
+      // Pan à deux doigts : translation du milieu entre les doigts.
+      v.x -= ((midX - p.midX) / rect.width) * v.w;
+      v.y -= ((midY - p.midY) / rect.height) * v.h;
+      p.dist = dist; p.midX = midX; p.midY = midY;
+      vibes.graph.userView = true;
+      applyViewBox(svg);
+      return;
+    }
+    if (e.touches.length !== 1) return;
+    const t = e.touches[0];
+    const nd = vibes.graph.nodeDrag;
+    if (nd) {
+      if (!nd.moved && Math.hypot(t.clientX - nd.cx, t.clientY - nd.cy) < NODE_DRAG_THRESHOLD) return;
+      e.preventDefault();
+      nd.moved = true;
+      const ctm = svg.getScreenCTM();
+      const dx = ctm ? (t.clientX - nd.cx) / ctm.a : 0;
+      const dy = ctm ? (t.clientY - nd.cy) / ctm.d : 0;
+      for (const i of nd.ids) {
+        const s = nd.start.get(i);
+        vibes.graph.posMap.set(i, { x: s.x + dx, y: s.y + dy });
+      }
+      liveUpdateGraphPositions();
+      return;
+    }
+    const d = vibes.graph.drag;
+    if (!d) return;
+    e.preventDefault();
+    const v = vibes.graph.view;
+    const ctm = svg.getScreenCTM();
+    v.x = d.vx - (ctm ? (t.clientX - d.x) / ctm.a : 0);
+    v.y = d.vy - (ctm ? (t.clientY - d.y) / ctm.d : 0);
+    vibes.graph.userView = true;
+    applyViewBox(svg);
+  }, { passive: false });
+
+  svg.addEventListener("touchend", (e) => {
+    if (vibes.graph.pinch && e.touches.length < 2) vibes.graph.pinch = null;
+    const nd = vibes.graph.nodeDrag;
+    if (nd && nd.moved) {
+      vibes.graph.userView = true;     // on ne re-fit pas après un placement manuel
+      vibes.graph.suppressClick = true; // évite l'ouverture via le clic synthétique
+      persistPositions(nd.ids);
+    }
+    if (e.touches.length === 0) { vibes.graph.nodeDrag = null; vibes.graph.drag = null; }
+  });
+
   // mousedown : démarre soit un drag de nœud (sur un nœud), soit un pan (sur le fond).
   svg.addEventListener("mousedown", (e) => {
     if (e.button !== 0) return; // gauche uniquement (le clic droit → contextmenu)
@@ -1326,6 +1498,22 @@ function wireGraph() {
     renderGraph();
   });
 
+  // Boutons de filtre par statut : toggle actif/masqué, re-rendu du graphe.
+  document.querySelectorAll(".graph-filter-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const s = btn.dataset.status;
+      if (vibes.graph.hiddenStatuses.has(s)) {
+        vibes.graph.hiddenStatuses.delete(s);
+        btn.classList.add("active");
+      } else {
+        vibes.graph.hiddenStatuses.add(s);
+        btn.classList.remove("active");
+      }
+      vibes.graph.userView = true; // préserver le zoom/pan courant après le filtre
+      renderGraph();
+    });
+  });
+
   // Zoom au clavier : + (ou =) zoom avant, - (ou _) zoom arrière. Actif seulement
   // en vue graphe et hors saisie dans un champ.
   document.addEventListener("keydown", (e) => {
@@ -1392,7 +1580,9 @@ function renderNodeHeader(n) {
   $("#ndEmoji").textContent = n.emoji || "🎯";
   $("#ndTitle").textContent = n.title;
   $("#ndRef").textContent = n.ref;
-  $("#ndStatus").textContent = NODE_STATUS_LABEL[n.status] || n.status;
+  const stEl = $("#ndStatus");
+  stEl.textContent = NODE_STATUS_LABEL[n.status] || n.status;
+  stEl.className = "badge status-" + n.status; // colore le badge selon le statut (ex. waiting)
   $("#ndBar").style.width = n.progress + "%";
   $("#ndPct").textContent = n.progress + "%";
   const tgt = $("#ndTarget");
@@ -1402,6 +1592,18 @@ function renderNodeHeader(n) {
   desc.hidden = !n.description;
   const blk = $("#ndBlocked");
   if (blk) blk.hidden = !isNodeBlocked(n);
+  // Panneau « en attente d'info » : visible uniquement au statut waiting.
+  const pend = $("#ndPending");
+  if (pend) {
+    const waiting = n.status === "waiting";
+    pend.hidden = !waiting;
+    if (waiting) {
+      const body = $("#ndPendingBody");
+      if (body) body.innerHTML = n.pendingInfo
+        ? renderMarkdown(n.pendingInfo)
+        : '<span class="hint">(aucun détail fourni sur l\'info attendue)</span>';
+    }
+  }
   renderNotes(n);
   renderLinks(n);
   renderNodeIssues(n);
@@ -1695,7 +1897,7 @@ function treeHtml(n, depth, fx) {
       <span class="temoji">${esc(n.emoji || "🎯")}</span>
       <span class="ttitle" title="Ouvrir le chat de ce nœud">${esc(n.title)}</span>
       <span class="tpct">${n.progress}%</span>
-      <select class="tstatus" title="Statut">${["active", "paused", "done", "abandoned"].map((s) => `<option value="${s}" ${s === n.status ? "selected" : ""}>${esc(NODE_STATUS_LABEL[s])}</option>`).join("")}</select>
+      <select class="tstatus" title="Statut">${["active", "paused", "waiting", "done", "abandoned"].map((s) => `<option value="${s}" ${s === n.status ? "selected" : ""}>${esc(NODE_STATUS_LABEL[s])}</option>`).join("")}</select>
       <button class="tadd" title="Ajouter un sous-jalon">＋</button>
       <button class="tdel danger" title="Supprimer">🗑</button>
     </div>
@@ -1852,6 +2054,10 @@ async function patchNode(id, fields) {
   } catch (e) {
     toast(e.message);
   }
+}
+// waiting → active : le nœud redevient implémentable (le data layer efface pending_info).
+async function markNodeReady(id) {
+  await patchNode(id, { status: "active" });
 }
 async function deleteNodeById(id) {
   try {
@@ -2396,6 +2602,9 @@ export function initVibes() {
   $("#ndEdit").addEventListener("click", () => openNodeModal(vibes.currentNode, null));
   $("#ndDel").addEventListener("click", deleteCurrentNode);
   $("#ndAddChild").addEventListener("click", () => openNodeModal(null, vibes.currentNode ? vibes.currentNode.id : null));
+  // « Prêt à implémenter » : sort le nœud de l'attente (waiting → active). Le data
+  // layer efface alors l'info en attente. Secours manuel quand on ne passe pas par l'IA.
+  $("#ndReadyBtn").addEventListener("click", () => { if (vibes.currentNode) markNodeReady(vibes.currentNode.id); });
   // Crée une entrée de suivi pré-remplie et auto-liée à ce jalon (puis bascule sur Suivi).
   $("#ndAddIssue").addEventListener("click", () => { if (vibes.currentNode) createIssueFromNode(vibes.currentNode); });
   // Notes markdown : éditeur multi-notes (chaque éditeur gère son @ / aperçu).

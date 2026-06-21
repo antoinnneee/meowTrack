@@ -117,6 +117,7 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .badge.type-task { color: var(--task); border-color: var(--task); }
 .badge.type-chore { color: var(--chore); border-color: var(--chore); }
 .badge.status-in_progress { color: var(--high); border-color: var(--high); }
+.badge.status-waiting { color: var(--high); border-color: var(--high); background: color-mix(in srgb, var(--high) 14%, transparent); }
 .badge.status-done { color: var(--feature); border-color: var(--feature); }
 .badge.tag { background: var(--surface-2); }
 .badge.refcount { color: var(--accent-2); border-color: var(--accent-2); }
@@ -278,6 +279,14 @@ body:not(.view-repo) .repo-only { display: none; }
 .gd-progress .bar-fill { height: 100%; background: var(--accent); transition: width .35s; }
 .gd-pct { font-size: 12px; color: var(--text-dim); white-space: nowrap; }
 .gd-desc { white-space: pre-wrap; color: var(--text-dim); font-size: 13px; margin-bottom: 14px; }
+
+/* En attente d'info utilisateur (status='waiting') : encart visible dans la vue détail. */
+.nd-pending { border: 1px solid var(--high); border-left: 4px solid var(--high); border-radius: var(--radius); padding: 10px 12px; margin-bottom: 14px; background: color-mix(in srgb, var(--high) 9%, var(--surface)); }
+.nd-pending-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+.nd-pending-title { font-weight: 700; color: var(--high); }
+.nd-pending-body { font-size: 13px; color: var(--text); }
+.nd-pending .hint { display: block; margin-top: 6px; }
+.goal-card.status-waiting { border-left-color: var(--high); }
 .ms-section-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .ms-section-head h3 { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-dim); }
 
@@ -422,9 +431,18 @@ body.forest-pinned.view-vibes #vibesView { margin-right: var(--forest-pin-w); }
 
 /* Graphe organique (SVG) */
 .graph-view { flex: 1; min-height: 0; position: relative; overflow: hidden; }
-.graph-svg { width: 100%; height: 100%; display: block; cursor: grab; user-select: none; background: radial-gradient(1200px 800px at 50% 40%, rgba(124, 92, 255, .06), transparent 70%); }
+.graph-svg { width: 100%; height: 100%; display: block; cursor: grab; user-select: none; touch-action: none; background: radial-gradient(1200px 800px at 50% 40%, rgba(124, 92, 255, .06), transparent 70%); }
 .graph-svg:active { cursor: grabbing; }
-.graph-controls { position: absolute; top: 12px; right: 14px; display: flex; gap: 8px; }
+.graph-controls { position: absolute; top: 12px; right: 14px; display: flex; align-items: center; gap: 8px; }
+/* Filtres par statut */
+.graph-filters { display: flex; gap: 4px; }
+.graph-filter-btn { font-size: 11px; padding: 3px 8px; border: 1px solid var(--border); border-radius: 20px; background: var(--surface); color: var(--text-dim); cursor: pointer; transition: background .15s, color .15s, opacity .15s; opacity: .55; }
+.graph-filter-btn.active { background: var(--surface-2); color: var(--text); opacity: 1; }
+.graph-filter-btn:hover { opacity: .85; }
+/* Minimap */
+.graph-minimap { position: absolute; bottom: 14px; left: 14px; width: 180px; height: 100px; background: rgba(10, 10, 20, .72); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; pointer-events: none; opacity: .85; }
+/* LOD : masquer les labels quand on est trop dézoomé */
+.graph-svg.lod-compact .g-label { display: none; }
 .g-edges { pointer-events: none; }
 .g-edge { fill: none; stroke-width: 3; opacity: .5; pointer-events: stroke; cursor: pointer; } /* cliquable (suppression de lien) */
 .g-edge:hover { opacity: .9; stroke-width: 4; }
@@ -436,6 +454,7 @@ body.forest-pinned.view-vibes #vibesView { margin-right: var(--forest-pin-w); }
 .g-ring { fill: none; stroke: var(--feature); stroke-width: 4; stroke-linecap: round; transition: stroke-dasharray .4s ease; }
 .g-disc { stroke: rgba(0, 0, 0, .28); stroke-width: 1.5; }
 .g-node.status-done .g-disc { stroke: var(--feature); stroke-width: 2.5; }
+.g-node.status-waiting .g-disc { stroke: var(--high); stroke-width: 2.5; stroke-dasharray: 5 4; }
 .g-node.status-paused { opacity: .7; }
 .g-node.status-abandoned { opacity: .42; }
 .g-emoji { pointer-events: none; }
