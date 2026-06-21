@@ -329,8 +329,8 @@ body:not(.view-repo) .repo-only { display: none; }
 .confirm-actions { font-size: 11px; padding: 3px 8px; border-color: var(--bug); color: var(--bug); }
 .typing-row { padding: 4px 18px; font-size: 11px; color: var(--text-dim); font-style: italic; }
 .typing-row[hidden] { display: none; }
-.chat-input { display: flex; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--border); }
-.chat-input textarea { flex: 1; resize: none; }
+.chat-input { display: flex; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--border); align-items: flex-end; }
+.chat-input textarea { flex: 1; resize: none; min-height: 2.6em; max-height: 180px; overflow-y: auto; box-sizing: border-box; }
 .chat-ta-wrap { flex: 1; }
 .chat-ta-wrap textarea { width: 100%; }
 
