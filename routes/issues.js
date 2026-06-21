@@ -1,7 +1,8 @@
 // routes/issues.js — entrées de suivi (issues), commentaires et références de chemins.
 
 import { send, readBody, repoOf } from "../http-util.js";
-import { listIssues, createIssue, getIssue, updateIssue, deleteIssue, addComment, addReference, removeReference } from "../db.js";
+import { listIssues, createIssue, getIssue, updateIssue, deleteIssue, reorderIssues, addComment, addReference, removeReference, linkIssueNode, unlinkIssueNode } from "../db.js";
+import { broadcast, forestKey } from "../sse.js";
 
 export async function handle(ctx) {
   const { req, res, method, path, q } = ctx;
@@ -29,12 +30,25 @@ export async function handle(ctx) {
     send(res, 201, createIssue(repoOf(q, body), body));
     return true;
   }
+  // POST /api/issues/reorder?repo= { order:[code|id,…] } — ordre manuel (drag & drop).
+  // AVANT la regex /:ref (sinon « reorder » serait pris pour un code d'entrée).
+  if (method === "POST" && path === "/api/issues/reorder") {
+    const body = await readBody(req);
+    const id = repoOf(q, body);
+    const order = Array.isArray(body.order) ? body.order : [];
+    const issues = reorderIssues(id, order);
+    broadcast(forestKey(id), "issues:changed", { repoId: id }); // autres clients re-listent
+    send(res, 200, { ok: true, issues });
+    return true;
+  }
 
   // /api/issues/:ref… (résolution du code scopée par ?repo=)
-  const issueMatch = path.match(/^\/api\/issues\/([^/]+)(\/comments|\/references)?$/);
+  // /nodes lie/délie un jalon (nœud Vibes) ; /nodes/:id cible un jalon précis (DELETE).
+  const issueMatch = path.match(/^\/api\/issues\/([^/]+)(\/comments|\/references|\/nodes(?:\/(\d+))?)?$/);
   if (issueMatch) {
     const ref = decodeURIComponent(issueMatch[1]);
     const sub = issueMatch[2];
+    const linkNodeId = issueMatch[3]; // présent sur /nodes/:id
     const id = repoOf(q);
 
     if (!sub && method === "GET") {
@@ -61,6 +75,23 @@ export async function handle(ctx) {
       const { path: p } = await readBody(req);
       addReference(issue.id, p, id);
       send(res, 201, getIssue(id, issue.id));
+      return true;
+    }
+    // POST /api/issues/:ref/nodes { node | nodeRef } — lie un jalon (nœud Vibes).
+    if (sub === "/nodes" && method === "POST") {
+      const body = await readBody(req);
+      const nodeRef = body.nodeRef ?? body.node;
+      if (nodeRef == null) return send(res, 400, { error: "node_required" }), true;
+      try {
+        send(res, 201, linkIssueNode(id, ref, nodeRef));
+      } catch (e) {
+        send(res, 400, { error: "link_failed", message: e.message });
+      }
+      return true;
+    }
+    // DELETE /api/issues/:ref/nodes/:nodeId — détache un jalon.
+    if (sub && linkNodeId && method === "DELETE") {
+      send(res, 200, unlinkIssueNode(id, ref, Number(linkNodeId)));
       return true;
     }
   }

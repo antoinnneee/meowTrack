@@ -119,7 +119,7 @@ function buildTree(rows, rootId) {
 }
 
 // ── Lecture ──────────────────────────────────────────────────────────────────
-export function getNode(refOrId, { withMessages = false, withTree = false, withLinks = false, repoId = null } = {}) {
+export function getNode(refOrId, { withMessages = false, withTree = false, withLinks = false, withIssues = false, repoId = null } = {}) {
   return withRepo(repoId, () => {
     const row = findNodeRow(refOrId, repoId);
     if (!row) return null;
@@ -127,6 +127,7 @@ export function getNode(refOrId, { withMessages = false, withTree = false, withL
     if (withTree) node.children = buildTree(loadSubtreeRows(row), row.id).children;
     if (withMessages) node.messages = listNodeMessages(row.id);
     if (withLinks) Object.assign(node, nodeLinksOf(row.id)); // { requires, requiredBy }
+    if (withIssues) node.issues = nodeIssuesOf(row.id); // entrées de suivi liées
     return node;
   });
 }
@@ -544,6 +545,20 @@ export function listNodeLinks(refOrId, repoId = null) {
     if (!row) return { requires: [], requiredBy: [] };
     return nodeLinksOf(row.id);
   });
+}
+
+// Entrées de suivi (issues) liées à ce jalon (table issue_nodes, même base tracker).
+// Lecture directe de la table `issues` (pas d'import de db/issues.js) pour éviter de
+// resserrer le cycle ESM ; on ne renvoie qu'un résumé d'affichage.
+function nodeIssuesOf(id) {
+  return db
+    .prepare(
+      `SELECT i.id, i.ref, i.title, i.type, i.status, i.priority
+         FROM issue_nodes il JOIN issues i ON i.id = il.issue_id
+        WHERE il.node_id = ?
+        ORDER BY i.id`
+    )
+    .all(id);
 }
 
 // Tous les liens d'un repo, à plat — pour le graphe (mêmes ids que listForest).

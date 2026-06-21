@@ -91,6 +91,7 @@ FILES=(
     "config.js"
     "http-util.js"
     "sse.js"
+    "git-watch.js"
     "github.js"
     "mcp-endpoint.js"
     "package.json"
@@ -114,6 +115,8 @@ DASHBOARD_FILES=(
     "dashboard/vibes.js"
     "dashboard/repo.js"
     "dashboard/orchestrator.js"
+    "dashboard/highlight.js"
+    "dashboard/hljs-theme.css"
 )
 
 COPY_ERRORS=0

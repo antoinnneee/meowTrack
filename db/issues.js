@@ -6,8 +6,10 @@
 // touchIssue, setReferences…) supposent une portée déjà ouverte par l'appelant.
 
 import { db, withRepo, nowIso, nextRef } from "./connection.js";
-import { TYPES, STATUSES, PRIORITIES } from "./constants.js";
+import { resolveRepoId } from "./registry.js";
+import { TYPES, STATUSES, PRIORITIES, MAX_ACTIONS } from "./constants.js";
 import { inspectPathFor, gitContextFor, branchContextFor, normalizePathFor } from "../repos.js";
+import { findNodeRow } from "./nodes.js"; // résolution code/id d'un jalon (cycle SÛR : corps de fonction uniquement)
 
 // Extrait les tokens `@chemin` d'un texte (description). Accepte lettres, chiffres,
 // `_ . / -`. Renvoie la liste dédupliquée (ordre d'apparition).
@@ -63,9 +65,11 @@ function rowToIssue(row, { withDetail = false } = {}) {
     tags: JSON.parse(row.tags || "[]"),
     branch: row.branch,
     commit: row.git_commit,
+    position: row.position | 0,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     references: listReferences(row.id),
+    nodes: listIssueNodes(row.id),
   };
   if (withDetail) issue.comments = listComments(row.id);
   return issue;
@@ -137,6 +141,58 @@ function setReferences(issueId, repoId, specs, branch = null) {
   }
 }
 
+// ── Jalons liés (nœuds Vibes) ────────────────────────────────────────────────
+// Lien VIVANT (pas de copie) issue → jalon : on relit toujours l'état courant du
+// nœud (titre/statut/progression). repoId omis quand l'appel hérite d'une portée
+// withRepo déjà ouverte (sous-appel de rowToIssue).
+export function listIssueNodes(issueId, repoId = null) {
+  return withRepo(repoId, () =>
+    db
+      .prepare(
+        `SELECT n.id, n.ref, n.title, n.status, n.color, n.emoji, n.progress
+           FROM issue_nodes il JOIN nodes n ON n.id = il.node_id
+          WHERE il.issue_id = ?
+          ORDER BY n.id`
+      )
+      .all(issueId)
+      .map((n) => ({
+        id: n.id,
+        ref: n.ref,
+        title: n.title,
+        status: n.status,
+        color: n.color,
+        emoji: n.emoji,
+        progress: Math.max(0, Math.min(100, n.progress | 0)),
+      }))
+  );
+}
+
+// Lie un jalon (code NODE-1 ou id) à une issue. Idempotent (UNIQUE). Les deux vivent
+// forcément dans le même dépôt (une seule base tracker) — on le vérifie par cohérence.
+export function linkIssueNode(repoId, issueRefOrId, nodeRefOrId) {
+  return withRepo(repoId, () => {
+    const issue = findRow(repoId, issueRefOrId);
+    if (!issue) throw new Error(`Issue introuvable : ${issueRefOrId}`);
+    const node = findNodeRow(nodeRefOrId, issue.repo_id);
+    if (!node) throw new Error(`Jalon introuvable : ${nodeRefOrId}`);
+    if (node.repo_id !== issue.repo_id) throw new Error("Jalon et issue de dépôts différents");
+    const res = db.prepare("INSERT OR IGNORE INTO issue_nodes(issue_id, node_id) VALUES(?, ?)").run(issue.id, node.id);
+    if (res.changes) touchIssue(issue.id);
+    return getIssueById(issue.id);
+  });
+}
+
+// Détache un jalon d'une issue (par id de nœud).
+export function unlinkIssueNode(repoId, issueRefOrId, nodeId) {
+  return withRepo(repoId, () => {
+    const issue = findRow(repoId, issueRefOrId);
+    if (!issue) throw new Error(`Issue introuvable : ${issueRefOrId}`);
+    const res = db.prepare("DELETE FROM issue_nodes WHERE issue_id = ? AND node_id = ?").run(issue.id, Number(nodeId));
+    if (res.changes) touchIssue(issue.id);
+    return getIssueById(issue.id);
+  });
+}
+
 // ── Commentaires ─────────────────────────────────────────────────────────────
 export function listComments(issueId, repoId = null) {
   return withRepo(repoId, () =>
@@ -196,12 +252,14 @@ export function createIssue(repoId, input = {}) {
 
   const ref = nextRef(repoId, type);
   const tx = db.transaction(() => {
+    // Position = fin de liste (ordre manuel : la nouvelle entrée s'ajoute en bas).
+    const nextPos = db.prepare("SELECT COALESCE(MAX(position), -1) + 1 AS p FROM issues WHERE repo_id = ?").get(repoId).p;
     const res = db
       .prepare(
-        `INSERT INTO issues(repo_id, ref, type, title, description, status, priority, tags, branch, git_commit)
-         VALUES(?,?,?,?,?,?,?,?,?,?)`
+        `INSERT INTO issues(repo_id, ref, type, title, description, status, priority, tags, branch, git_commit, position)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?)`
       )
-      .run(repoId, ref, type, title, description, status, priority, tags, ctx.branch, ctx.commit);
+      .run(repoId, ref, type, title, description, status, priority, tags, ctx.branch, ctx.commit, nextPos);
     const id = res.lastInsertRowid;
     setReferences(id, repoId, specs, ctx.branch);
     return id;
@@ -304,16 +362,131 @@ export function listIssues(repoId, filter = {}) {
     const like = `%${filter.text}%`;
     vals.push(like, like, like);
   }
+  // Ordre MANUEL prioritaire (réordonnancement drag & drop / actions IA via la
+  // colonne `position`). Pour les entrées jamais réordonnées (toutes à 0, ex. bases
+  // antérieures), repli sur l'activité récente puis l'id (ordre stable).
   const sql =
     "SELECT * FROM issues WHERE " +
     where.join(" AND ") +
-    " ORDER BY " +
-    "CASE status WHEN 'in_progress' THEN 0 WHEN 'open' THEN 1 WHEN 'wontfix' THEN 2 WHEN 'done' THEN 3 END, " +
-    "CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 END, " +
-    "updated_at DESC";
+    " ORDER BY position ASC, updated_at DESC, id DESC";
   const rows = db.prepare(sql).all(...vals);
   const limit = filter.limit ? Math.max(1, Math.min(500, filter.limit)) : 200;
   return rows.slice(0, limit).map((r) => rowToIssue(r));
+  });
+}
+
+// Réordonne les entrées d'un repo par réécriture de `position`. `ordered` = liste de
+// codes (BUG-1…) ou ids dans l'ordre voulu. Les entrées non citées conservent leur
+// ordre relatif et sont reléguées APRÈS (même logique que _reorderChildrenRows côté
+// nœuds : tolérant aux listes partielles / filtrées). Retourne la liste réordonnée.
+export function reorderIssues(repoId, ordered = []) {
+  if (repoId == null) throw new Error("repoId requis");
+  return withRepo(repoId, () => {
+    const rid = resolveRepoId(repoId);
+    const existing = db
+      .prepare("SELECT id FROM issues WHERE repo_id = ? ORDER BY position ASC, updated_at DESC, id DESC")
+      .all(rid)
+      .map((r) => r.id);
+    const set = new Set(existing);
+    const seen = new Set();
+    let pos = 0;
+    const upd = db.prepare("UPDATE issues SET position = ? WHERE id = ?");
+    db.transaction(() => {
+      for (const raw of ordered) {
+        const row = findRow(rid, raw);
+        const n = row && row.id;
+        if (n != null && set.has(n) && !seen.has(n)) {
+          seen.add(n);
+          upd.run(pos++, n);
+        }
+      }
+      for (const id of existing) if (!seen.has(id)) upd.run(pos++, id);
+    })();
+    return listIssues(rid, { includeClosed: true, limit: 500 });
+  });
+}
+
+// ── Application des actions IA sur les ISSUES (catalogue fermé, scope repo) ─────
+// Pendant de applyNodeActions/applyForestActions pour le domaine Suivi : les chats
+// IA (par nœud ET forêt) peuvent créer / modifier / supprimer / réordonner des
+// entrées du repo courant. Réutilise les CRUD publics (chacun transactionnel) ; non
+// atomique entre actions, mais chaque action l'est. Reste fail-closed : op inconnu
+// ou action en erreur → `rejected`, jamais d'effet deviné. `delete_issue` est traité
+// comme destructif EN AMONT (confirmation, cf. ai/parse.js describeDestructive).
+export function applyIssueActions(repoIdParam, actions = []) {
+  if (repoIdParam == null) throw new Error("repoId requis");
+  return withRepo(repoIdParam, () => {
+    const repoId = resolveRepoId(repoIdParam);
+    const applied = [];
+    const rejected = [];
+    const list = Array.isArray(actions) ? actions.slice(0, MAX_ACTIONS) : [];
+    let issuesChanged = false;
+    for (const a of list) {
+      const op = a && a.op;
+      try {
+        switch (op) {
+          case "add_issue": {
+            const issue = createIssue(repoId, {
+              type: a.type,
+              title: a.title,
+              description: a.description,
+              status: a.status,
+              priority: a.priority,
+              tags: a.tags,
+              branch: a.branch,
+            });
+            applied.push({ op, id: issue.id, ref: issue.ref, title: issue.title });
+            issuesChanged = true;
+            break;
+          }
+          case "update_issue": {
+            const target = a.ref != null ? a.ref : a.id;
+            if (target == null) {
+              rejected.push({ op, reason: "ref_requise" });
+              break;
+            }
+            const issue = updateIssue(repoId, target, {
+              title: a.title,
+              description: a.description,
+              type: a.type,
+              status: a.status,
+              priority: a.priority,
+              tags: a.tags,
+              branch: a.branch,
+            });
+            applied.push({ op, id: issue.id, ref: issue.ref });
+            issuesChanged = true;
+            break;
+          }
+          case "delete_issue": {
+            const target = a.ref != null ? a.ref : a.id;
+            if (target == null) {
+              rejected.push({ op, reason: "ref_requise" });
+              break;
+            }
+            if (deleteIssue(repoId, target)) {
+              applied.push({ op, ref: String(target) });
+              issuesChanged = true;
+            } else rejected.push({ op, ref: String(target), reason: "introuvable" });
+            break;
+          }
+          case "reorder_issues": {
+            const order = Array.isArray(a.order) ? a.order : [];
+            reorderIssues(repoId, order);
+            applied.push({ op, count: order.length });
+            issuesChanged = true;
+            break;
+          }
+          default:
+            rejected.push({ op: op || "?", reason: "op_inconnu" });
+        }
+      } catch (e) {
+        rejected.push({ op: op || "?", reason: e.message || String(e) });
+      }
+    }
+    if (rejected.length)
+      console.error(`[meowtrack] applyIssueActions: ${applied.length} appliquée(s), ${rejected.length} rejetée(s) → ${JSON.stringify(rejected)}`);
+    return { applied, rejected, issuesChanged };
   });
 }
 

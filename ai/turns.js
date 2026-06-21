@@ -28,6 +28,8 @@ import {
   resolveReview,
   listRuns,
   bumpAutoReviews,
+  listIssues,
+  applyIssueActions,
 } from "../db.js";
 import { MAX_AUTO_REVIEWS } from "../db/constants.js";
 import { send, readBody } from "../http-util.js";
@@ -54,6 +56,46 @@ import {
 const aiLocks = new Map(); // nodeId | forest:<repoId> → { child } : 1 tour IA en vol (sinon 409 ai_busy)
 let aiInFlight = 0; // nb de spawns claude simultanés (sémaphore global)
 const MAX_CONCURRENT_AI = 4;
+
+// ── Actions mixtes (nœuds Vibes + entrées de SUIVI) ──────────────────────────
+// Les chats IA produisent un seul flux d'actions ; les ops du domaine SUIVI sont
+// appliquées par db/issues.js (scope repo), les autres par le moteur de nœuds
+// (scope sous-arbre / repo). On scinde le flux puis on fusionne les deux résultats.
+const ISSUE_OPS = new Set(["add_issue", "update_issue", "delete_issue", "reorder_issues"]);
+const isIssueAction = (a) => !!a && ISSUE_OPS.has(a.op);
+const EMPTY_ISSUE_RES = { applied: [], rejected: [], issuesChanged: false };
+
+function mergeActionResults(nodeRes, issueRes) {
+  return {
+    applied: [...nodeRes.applied, ...issueRes.applied],
+    rejected: [...nodeRes.rejected, ...issueRes.rejected],
+    affectedNodeIds: nodeRes.affectedNodeIds || [],
+    roots: nodeRes.roots || [],
+    linksChanged: !!nodeRes.linksChanged,
+    issuesChanged: !!issueRes.issuesChanged,
+  };
+}
+// Applique un flux d'actions dans le scope d'un nœud (nœuds + issues du repo).
+function applyMixedNodeActions(repoId, nodeId, actions) {
+  const issueActions = (actions || []).filter(isIssueAction);
+  const nodeActions = (actions || []).filter((a) => a && !isIssueAction(a));
+  const nodeRes = applyNodeActions(nodeId, nodeActions, repoId);
+  const issueRes = issueActions.length ? applyIssueActions(repoId, issueActions) : EMPTY_ISSUE_RES;
+  return mergeActionResults(nodeRes, issueRes);
+}
+// Applique un flux d'actions au niveau forêt (nœuds + issues du repo).
+function applyMixedForestActions(repoId, actions) {
+  const issueActions = (actions || []).filter(isIssueAction);
+  const nodeActions = (actions || []).filter((a) => a && !isIssueAction(a));
+  const nodeRes = applyForestActions(repoId, nodeActions);
+  const issueRes = issueActions.length ? applyIssueActions(repoId, issueActions) : EMPTY_ISSUE_RES;
+  return mergeActionResults(nodeRes, issueRes);
+}
+// Diffuse « entrées de suivi modifiées » sur le canal forêt du repo (la vue Suivi y
+// est abonnée → recharge sa liste). Best-effort.
+function broadcastIssuesChanged(repoId) {
+  broadcast(forestKey(repoId), "issues:changed", { repoId });
+}
 
 // Prédicats exposés au routeur (refus de vider l'historique pendant un tour IA),
 // sans fuiter la Map interne.
@@ -99,7 +141,7 @@ function broadcastLinksChanged(repoId, nodeId) {
 }
 
 // ── Tour de chat IA STREAMING (async, détaché ; le HTTP a déjà répondu 202) ──
-async function runNodeTurn(repoId, nodeId, scopeSnapshot, descendants, history, userText, author, model, pendingId, root, repo, links) {
+async function runNodeTurn(repoId, nodeId, scopeSnapshot, descendants, history, userText, author, model, pendingId, root, repo, links, issues) {
   const batcher = makeStreamBatcher(nodeKey(repoId, nodeId), pendingId);
   let reasoning = "";
   let answer = "";
@@ -158,7 +200,7 @@ async function runNodeTurn(repoId, nodeId, scopeSnapshot, descendants, history, 
     broadcastMessage(repoId, nodeId, m);
   };
   try {
-    const prompt = buildNodePrompt(scopeSnapshot, descendants, history, userText, author, repo, links);
+    const prompt = buildNodePrompt(scopeSnapshot, descendants, history, userText, author, repo, links, issues);
     const result = await runClaudeStreaming(prompt, model, root, {
       onChild: (child) => { const l = aiLocks.get(nodeId); if (l) l.child = child; },
       onThinking: (d) => {
@@ -204,7 +246,7 @@ async function runNodeTurn(repoId, nodeId, scopeSnapshot, descendants, history, 
       return;
     }
 
-    const applied = applyNodeActions(nodeId, actions, repoId);
+    const applied = applyMixedNodeActions(repoId, nodeId, actions);
     console.error(
       `[meowtrack] runNodeTurn node=${nodeId}: ${applied.applied.length} appliquée(s), ${applied.rejected.length} rejetée(s)` +
         (applied.rejected.length ? ` → rejets: ${JSON.stringify(applied.rejected)}` : "")
@@ -215,6 +257,7 @@ async function runNodeTurn(repoId, nodeId, scopeSnapshot, descendants, history, 
     broadcastMessage(repoId, nodeId, msg);
     broadcastAffected(repoId, applied.affectedNodeIds);
     if (applied.linksChanged) broadcastLinksChanged(repoId, nodeId); // l'IA a (dé)lié des prérequis
+    if (applied.issuesChanged) broadcastIssuesChanged(repoId); // l'IA a créé/modifié des entrées de suivi
   } catch (e) {
     batcher.end();
     const emsg = aiErrorMessage(e);
@@ -261,6 +304,11 @@ export async function handleNodeChat(req, res, node) {
   try {
     links = listForestLinks(repoId).filter((l) => subtreeIds.has(l.fromId) && subtreeIds.has(l.toId));
   } catch { /* pas de liens → prompt sans bloc */ }
+  // Snapshot des entrées de suivi du repo (contexte pour update/delete/reorder issues).
+  let issues = [];
+  try {
+    issues = listIssues(repoId, { includeClosed: true, limit: 200 });
+  } catch { /* pas d'issues → prompt sans bloc */ }
   const history = listNodeMessages(node.id, { limit: 1000, repoId }).filter((m) => m.state === "complete" && m.id !== userMessage.id);
 
   aiLocks.set(node.id, { child: null }); // atomique (pas d'await entre check et set)
@@ -282,7 +330,7 @@ export async function handleNodeChat(req, res, node) {
     /* repo introuvable → libellé générique dans le prompt */
   }
   send(res, 202, { userMessage, pendingMessage });
-  runNodeTurn(repoId, node.id, snapshot, descendants, history, text, author, model, pendingMessage.id, root, repo, links).catch(() => {});
+  runNodeTurn(repoId, node.id, snapshot, descendants, history, text, author, model, pendingMessage.id, root, repo, links, issues).catch(() => {});
 }
 
 // POST /api/nodes/:ref/chat/confirm { messageId } — applique une proposition
@@ -294,7 +342,7 @@ export function handleNodeChatConfirm(req, res, node, body) {
   if (!msg || msg.nodeId !== node.id) return send(res, 404, { error: "not_found" });
   const proposal = Array.isArray(msg.actions) ? msg.actions.find((a) => a && a.proposed) : null;
   if (!proposal) return send(res, 400, { error: "Aucune proposition à confirmer" });
-  const result = applyNodeActions(node.id, proposal.ops || [], repoId);
+  const result = applyMixedNodeActions(repoId, node.id, proposal.ops || []);
   const cleaned = String(msg.body || "").replace(/⚠️[\s\S]*$/u, "").trim();
   const updated = updateNodeMessage(messageId, {
     body: `${cleaned}\n\n✅ ${result.applied.length} action(s) confirmée(s).`,
@@ -303,6 +351,7 @@ export function handleNodeChatConfirm(req, res, node, body) {
   broadcastMessage(repoId, node.id, updated);
   broadcastAffected(repoId, result.affectedNodeIds);
   if (result.linksChanged) broadcastLinksChanged(repoId, node.id);
+  if (result.issuesChanged) broadcastIssuesChanged(repoId);
   return send(res, 200, { ok: true, applied: result.applied });
 }
 
@@ -318,7 +367,7 @@ function forestStructuralChange(applied) {
   return (applied || []).some((a) => a && (a.op === "delete_node" || a.op === "move_node" || a.op === "reorder_children"));
 }
 
-async function runForestTurn(repoId, forestSnapshot, history, userText, author, model, pendingId, root, links, policyPrompt = "") {
+async function runForestTurn(repoId, forestSnapshot, history, userText, author, model, pendingId, root, links, issues, policyPrompt = "") {
   const room = forestKey(repoId);
   const batcher = makeStreamBatcher(room, pendingId);
   let reasoning = "";
@@ -379,7 +428,7 @@ async function runForestTurn(repoId, forestSnapshot, history, userText, author, 
     /* repo introuvable → libellé générique */
   }
   try {
-    const prompt = buildForestPrompt(forestSnapshot, history, userText, author, repo, links, policyPrompt);
+    const prompt = buildForestPrompt(forestSnapshot, history, userText, author, repo, links, issues, policyPrompt);
     const result = await runClaudeStreaming(prompt, model, root, {
       onChild: (child) => { const l = aiLocks.get(forestLockKey(repoId)); if (l) l.child = child; },
       onThinking: (d) => {
@@ -424,7 +473,7 @@ async function runForestTurn(repoId, forestSnapshot, history, userText, author, 
       return;
     }
 
-    const applied = applyForestActions(repoId, actions);
+    const applied = applyMixedForestActions(repoId, actions);
     console.error(
       `[meowtrack] runForestTurn repo=${repoId}: ${applied.applied.length} appliquée(s), ${applied.rejected.length} rejetée(s)` +
         (applied.rejected.length ? ` → rejets: ${JSON.stringify(applied.rejected)}` : "")
@@ -436,6 +485,7 @@ async function runForestTurn(repoId, forestSnapshot, history, userText, author, 
     broadcastAffected(repoId, applied.affectedNodeIds);
     if (forestStructuralChange(applied.applied)) broadcast(room, "nodes:reordered", { forest: true });
     if (applied.linksChanged) broadcast(room, "links:changed", { repoId });
+    if (applied.issuesChanged) broadcastIssuesChanged(repoId);
   } catch (e) {
     batcher.end();
     const emsg = aiErrorMessage(e);
@@ -476,6 +526,8 @@ export function handleForestChat(res, repoId, body) {
   const forestSnapshot = listForest(repoId);
   let forestLinks = [];
   try { forestLinks = listForestLinks(repoId); } catch { /* pas de liens */ }
+  let issues = [];
+  try { issues = listIssues(repoId, { includeClosed: true, limit: 200 }); } catch { /* pas d'issues */ }
   const history = listForestMessages(repoId, { limit: 1000 }).filter((m) => m.state === "complete" && m.id !== userMessage.id);
 
   aiLocks.set(lockKey, { child: null });
@@ -489,7 +541,7 @@ export function handleForestChat(res, repoId, body) {
     /* repo sans clone résolvable → IA sans accès fichiers */
   }
   send(res, 202, { userMessage, pendingMessage });
-  runForestTurn(repoId, forestSnapshot, history, text, author, model, pendingMessage.id, root, forestLinks).catch(() => {});
+  runForestTurn(repoId, forestSnapshot, history, text, author, model, pendingMessage.id, root, forestLinks, issues).catch(() => {});
 }
 
 // POST /api/forest/chat/confirm { messageId } — confirme une proposition destructive
@@ -500,7 +552,7 @@ export function handleForestChatConfirm(req, res, repoId, body) {
   if (!msg || msg.repoId !== repoId) return send(res, 404, { error: "not_found" });
   const proposal = Array.isArray(msg.actions) ? msg.actions.find((a) => a && a.proposed) : null;
   if (!proposal) return send(res, 400, { error: "Aucune proposition à confirmer" });
-  const result = applyForestActions(repoId, proposal.ops || []);
+  const result = applyMixedForestActions(repoId, proposal.ops || []);
   const cleaned = String(msg.body || "").replace(/⚠️[\s\S]*$/u, "").trim();
   const updated = updateForestMessage(messageId, {
     body: `${cleaned}\n\n✅ ${result.applied.length} action(s) confirmée(s).`,
@@ -510,6 +562,7 @@ export function handleForestChatConfirm(req, res, repoId, body) {
   broadcastAffected(repoId, result.affectedNodeIds);
   if (forestStructuralChange(result.applied)) broadcast(forestKey(repoId), "nodes:reordered", { forest: true });
   if (result.linksChanged) broadcast(forestKey(repoId), "links:changed", { repoId });
+  if (result.issuesChanged) broadcastIssuesChanged(repoId);
   return send(res, 200, { ok: true, applied: result.applied });
 }
 
@@ -577,6 +630,8 @@ export async function triggerAutoReview(repoId, nodeId, reviewIds, { model, poli
   const forestSnapshot = listForest(repoId);
   let forestLinks = [];
   try { forestLinks = listForestLinks(repoId); } catch { /* pas de liens */ }
+  let issues = [];
+  try { issues = listIssues(repoId, { includeClosed: true, limit: 200 }); } catch { /* pas d'issues */ }
   const history = listForestMessages(repoId, { limit: 1000 }).filter(
     (m) => m.state === "complete" && m.id !== userMessage.id && m.id !== pendingMessage.id
   );
@@ -589,7 +644,7 @@ export async function triggerAutoReview(repoId, nodeId, reviewIds, { model, poli
   try { root = rootForRepo(repoId); } catch { /* IA sans accès fichiers */ }
 
   // Exécute le tour (runForestTurn libère le verrou en finally), puis résout les revues.
-  await runForestTurn(repoId, forestSnapshot, history, syntheticText, "auto-review", mdl, pendingMessage.id, root, forestLinks, policyPrompt);
+  await runForestTurn(repoId, forestSnapshot, history, syntheticText, "auto-review", mdl, pendingMessage.id, root, forestLinks, issues, policyPrompt);
 
   let affected = [];
   for (const rv of reviews) {

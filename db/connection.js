@@ -109,6 +109,7 @@ export const TRACKING_SCHEMA = `
     tags        TEXT NOT NULL DEFAULT '[]',
     branch      TEXT,
     git_commit  TEXT,
+    position    INTEGER NOT NULL DEFAULT 0,           -- ordre manuel (drag & drop + actions IA)
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     UNIQUE(repo_id, ref)
@@ -216,6 +217,22 @@ export const TRACKING_SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_node_links_from ON node_links(from_id);
   CREATE INDEX IF NOT EXISTS idx_node_links_to   ON node_links(to_id);
 
+  -- Liens vivants ISSUE → JALON (nœud Vibes) : une entrée de suivi peut référencer
+  -- un ou plusieurs jalons de l'arbre, dans le MÊME dépôt (une seule base tracker —
+  -- un lien ne traverse jamais 2 repos, structurellement). Purement relationnel :
+  -- n'altère NI le suivi NI la progression du nœud, juste un affichage croisé.
+  -- UNIQUE rend l'ajout idempotent ; ON DELETE CASCADE purge le lien si l'issue ou
+  -- le nœud disparaît.
+  CREATE TABLE IF NOT EXISTS issue_nodes (
+    issue_id   INTEGER NOT NULL,
+    node_id    INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    PRIMARY KEY (issue_id, node_id),
+    FOREIGN KEY(issue_id) REFERENCES issues(id) ON DELETE CASCADE,
+    FOREIGN KEY(node_id)  REFERENCES nodes(id)  ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_issue_nodes_node ON issue_nodes(node_id);
+
   -- Chat « top level » d'un repo : discussion globale avec l'IA pour créer/gérer
   -- les objectifs racines (pas d'ancrage à un nœud précis ; scope = repo entier).
   CREATE TABLE IF NOT EXISTS forest_messages (
@@ -282,6 +299,7 @@ function ensureTrackerSchema(conn) {
   ensureColumn(conn, "nodes", "notes", "notes TEXT NOT NULL DEFAULT ''");
   ensureColumn(conn, "nodes", "pos_x", "pos_x REAL");
   ensureColumn(conn, "nodes", "pos_y", "pos_y REAL");
+  ensureColumn(conn, "issues", "position", "position INTEGER NOT NULL DEFAULT 0");
   // Orchestrateur : bail (lease) d'exécution sur les nœuds. Séparé de `status`
   // (intention de planning) ; coordonne les workers concurrents (cf. db/nodes.js).
   ensureColumn(conn, "nodes", "run_state", "run_state TEXT");                       // NULL|running|review|failed (done = miroir status)

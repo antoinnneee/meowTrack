@@ -271,6 +271,23 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
     guard(async ({ repo, ref }) => apiFetch("DELETE", "/api/issues/" + encodeURIComponent(ref) + qs({ repo: repoOf(repo) })))
   );
 
+  // ── meowtrack_reorder ────────────────────────────────────────────────────────
+  server.registerTool(
+    "meowtrack_reorder",
+    {
+      title: "Réordonner les entrées",
+      description:
+        "Définit l'ordre MANUEL des entrées de suivi d'un repo (le tri statut/priorité ne s'applique plus : c'est " +
+        "cet ordre qui prime). `order` = liste de codes (BUG-1, FEAT-2…) ou ids dans l'ordre voulu. Les entrées non " +
+        "citées conservent leur ordre relatif et sont placées après. Retourne la liste réordonnée.",
+      inputSchema: {
+        repo: repoParam,
+        order: z.array(z.union([z.string(), z.number()])).describe("Codes/ids des entrées dans le nouvel ordre."),
+      },
+    },
+    guard(async ({ repo, order }) => apiFetch("POST", "/api/issues/reorder" + qs({ repo: repoOf(repo) }), { order }))
+  );
+
   // ── meowtrack_add_reference ──────────────────────────────────────────────────
   server.registerTool(
     "meowtrack_add_reference",

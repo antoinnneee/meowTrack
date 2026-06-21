@@ -77,6 +77,28 @@ function linksBlockOf(links, titleById) {
   return list.slice(0, 200).map((l) => `- ${label(l.fromId)} dépend de ${label(l.toId)}`).join("\n");
 }
 
+// Rend la liste compacte des entrées de SUIVI existantes du dépôt (UNTRUSTED, champs
+// strippés). Vide → message « aucune ». Sert de contexte pour update/delete/reorder.
+function issuesBlockOf(issues) {
+  const list = Array.isArray(issues) ? issues : [];
+  if (!list.length) return "(aucune entrée de suivi pour l'instant)";
+  return list
+    .slice(0, 200)
+    .map((it) => `- ${it.ref} [${it.type}/${it.status}/${it.priority}] ${stripUntrustedMarkers(it.title).slice(0, 100)}`)
+    .join("\n");
+}
+
+// Catalogue d'actions sur le domaine SUIVI (issues), identique pour le chat par nœud
+// et le chat forêt (les entrées sont scopées au dépôt, pas au sous-arbre). `ref` =
+// code lisible d'une entrée (BUG-1, FEAT-2…).
+const ISSUE_ACTION_LINES = [
+  "Tu peux AUSSI gérer les ENTRÉES DE SUIVI (bugs/features/tâches/chores) de CE dépôt via ces actions :",
+  '- {"op":"add_issue","type?":"bug|feature|task|chore","title":"…","description?":"…","priority?":"low|medium|high|critical","status?":"open|in_progress|done|wontfix","tags?":["…"]}  (NOUVELLE entrée ; un @chemin dans description devient une référence fichier)',
+  '- {"op":"update_issue","ref":"BUG-1","title?":"…","description?":"…","status?":"…","priority?":"…","type?":"…","tags?":["…"]}',
+  '- {"op":"delete_issue","ref":"BUG-1"}  (destructif → demande confirmation)',
+  '- {"op":"reorder_issues","order":["FEAT-2","BUG-1",…]}  (ordre manuel des entrées du dépôt ; codes dans l\'ordre voulu)',
+];
+
 // Bloc commun « accès LECTURE SEULE au code source » (ou non) selon AI_REPO_ACCESS.
 function repoAccessLine(repoLabel) {
   return AI_REPO_ACCESS
@@ -90,7 +112,7 @@ function repoAccessLine(repoLabel) {
 // Construit le prompt scopé : préambule + état du nœud + SON SOUS-ARBRE (UNTRUSTED)
 // + historique du chat de CE nœud + dernier message. Le scope (nœud) vient de la
 // route ; l'IA ne peut agir que dans subtree(scope) (validé en base à l'apply).
-export function buildNodePrompt(scopeNode, descendants, history, userMessage, author, repo, links) {
+export function buildNodePrompt(scopeNode, descendants, history, userMessage, author, repo, links, issues) {
   const repoLabel = (repo && (repo.name || repo.slug)) || "ce dépôt";
   const stateJson = JSON.stringify(
     {
@@ -103,6 +125,7 @@ export function buildNodePrompt(scopeNode, descendants, history, userMessage, au
   );
   const titleById = new Map([scopeNode, ...(descendants || [])].map((n) => [n.id, n.title]));
   const linksBlock = linksBlockOf(links, titleById);
+  const issuesBlock = issuesBlockOf(issues);
   const historyBlock = historyBlockOf(history);
 
   return [
@@ -143,12 +166,17 @@ export function buildNodePrompt(scopeNode, descendants, history, userMessage, au
     "Un PRÉREQUIS (add_link) sert quand un même nœud est requis par plusieurs autres : ne duplique pas le nœud,",
     "crée-le une fois puis relie les dépendants avec add_link. Refusé si cela crée un cycle de prérequis.",
     "",
+    ...ISSUE_ACTION_LINES,
+    "",
     "<<<UNTRUSTED>>>",
     "ÉTAT DU NŒUD COURANT + SOUS-ARBRE (JSON) :",
     stateJson,
     "",
     "LIENS DE PRÉREQUIS EXISTANTS (dans ce sous-arbre) :",
     linksBlock,
+    "",
+    "ENTRÉES DE SUIVI DU DÉPÔT (codes pour update_issue/delete_issue/reorder_issues) :",
+    issuesBlock,
     "",
     "HISTORIQUE DE LA CONVERSATION (de ce nœud) :",
     historyBlock || "(début de conversation)",
@@ -162,7 +190,7 @@ export function buildNodePrompt(scopeNode, descendants, history, userMessage, au
 // Construit le prompt du chat « top level » : préambule + TOUTE la forêt du repo
 // (UNTRUSTED, notes tronquées) + historique du chat de forêt + dernier message.
 // Le scope est le repo entier : add_node SANS parentId crée un OBJECTIF RACINE.
-export function buildForestPrompt(forestNodes, history, userMessage, author, repo, links, policyPrompt = "") {
+export function buildForestPrompt(forestNodes, history, userMessage, author, repo, links, issues, policyPrompt = "") {
   const repoLabel = (repo && (repo.name || repo.slug)) || "ce dépôt";
   // Politique d'auto-revue (§6.6) : consigne de CONFIANCE posée par l'administrateur
   // via l'UI — injectée DANS le préambule (hors bloc UNTRUSTED). Bornée en longueur
@@ -175,6 +203,7 @@ export function buildForestPrompt(forestNodes, history, userMessage, author, rep
   );
   const titleById = new Map((forestNodes || []).map((n) => [n.id, n.title]));
   const linksBlock = linksBlockOf(links, titleById);
+  const issuesBlock = issuesBlockOf(issues);
   const historyBlock = historyBlockOf(history);
 
   return [
@@ -221,12 +250,17 @@ export function buildForestPrompt(forestNodes, history, userMessage, author, rep
     "Quand une brique sert à PLUSIEURS objectifs (ex. « réseau » requis par « chat » et « multijoueur »), ne la",
     "duplique pas : crée-la une fois, puis relie chaque dépendant avec add_link. Cycle de prérequis refusé.",
     "",
+    ...ISSUE_ACTION_LINES,
+    "",
     "<<<UNTRUSTED>>>",
     "ÉTAT DE LA FORÊT D'OBJECTIFS DU DÉPÔT (JSON, liste à plat ; parentId=null = objectif racine) :",
     stateJson,
     "",
     "LIENS DE PRÉREQUIS EXISTANTS (tout le dépôt) :",
     linksBlock,
+    "",
+    "ENTRÉES DE SUIVI DU DÉPÔT (codes pour update_issue/delete_issue/reorder_issues) :",
+    issuesBlock,
     "",
     "HISTORIQUE DE LA CONVERSATION (de cette forêt) :",
     historyBlock || "(début de conversation)",

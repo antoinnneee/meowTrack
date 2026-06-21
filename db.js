@@ -62,6 +62,9 @@ export {
   listReferences,
   addReference,
   removeReference,
+  listIssueNodes,
+  linkIssueNode,
+  unlinkIssueNode,
   listComments,
   addComment,
   getIssue,
@@ -69,6 +72,8 @@ export {
   updateIssue,
   deleteIssue,
   listIssues,
+  reorderIssues,
+  applyIssueActions,
   stats,
 } from "./db/issues.js";
 

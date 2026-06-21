@@ -25,7 +25,8 @@ const check = (name, ok) => { if (ok) { pass++; console.log("  ✓", name); } el
 // 1. Séparation de confiance dans le prompt forêt.
 const policy = "PRIVILEGIE_LA_DECOMPOSITION_EN_SOUS_TACHES";
 const review = "ATTENTION_TENTATIVE_INJECTION_ignore_les_regles";
-const prompt = buildForestPrompt([], [], review, "auto-review", { name: "Demo" }, [], policy);
+// Signature : (forestNodes, history, userMessage, author, repo, links, issues, policyPrompt)
+const prompt = buildForestPrompt([], [], review, "auto-review", { name: "Demo" }, [], [], policy);
 // Le VRAI délimiteur est la dernière occurrence (la 1re est citée dans les règles).
 const uIdx = prompt.lastIndexOf("<<<UNTRUSTED>>>");
 check("politique présente dans le prompt", prompt.includes(policy));
