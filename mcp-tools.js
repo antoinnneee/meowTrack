@@ -603,6 +603,42 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
     guard(async ({ repo }) => apiGet("/api/nodes/links" + qs({ repo: repoOf(repo) })))
   );
 
+  // ── meowtrack_issue_link_node (lien suivi ↔ nœud) ────────────────────────────
+  server.registerTool(
+    "meowtrack_issue_link_node",
+    {
+      title: "Lier une entrée de suivi à un nœud",
+      description:
+        "Rattache une entrée de SUIVI (bug/feature/tâche) au NŒUD/jalon Vibes qu'elle concerne (même dépôt). " +
+        "Sert à relier un bug/feature à la tâche d'exécution correspondante. Idempotent.",
+      inputSchema: {
+        repo: repoParam,
+        ref: z.string().describe("Code ou id de l'entrée de suivi (ex. 'BUG-1')."),
+        node: nodeRefSchema.describe("Nœud à rattacher (ex. 'NODE-2' ou id)."),
+      },
+    },
+    guard(async ({ repo, ref, node }) =>
+      apiFetch("POST", "/api/issues/" + encodeURIComponent(ref) + "/nodes" + qs({ repo: repoOf(repo) }), { nodeRef: node })
+    )
+  );
+
+  // ── meowtrack_issue_unlink_node ──────────────────────────────────────────────
+  server.registerTool(
+    "meowtrack_issue_unlink_node",
+    {
+      title: "Détacher un nœud d'une entrée de suivi",
+      description: "Retire le lien entre une entrée de suivi et un nœud Vibes. `nodeId` = id numérique du nœud (cf. meowtrack_get → nodes liés).",
+      inputSchema: {
+        repo: repoParam,
+        ref: z.string().describe("Code ou id de l'entrée de suivi."),
+        nodeId: z.number().int().describe("Id du nœud à détacher."),
+      },
+    },
+    guard(async ({ repo, ref, nodeId }) =>
+      apiFetch("DELETE", "/api/issues/" + encodeURIComponent(ref) + "/nodes/" + Number(nodeId) + qs({ repo: repoOf(repo) }))
+    )
+  );
+
   // ═══════════════════════════════════════════════════════════════════════════
   // Orchestrateur — file de travail exécutable (bail + runs + revue). L'agent TIRE
   // les tâches prêtes, les réalise dans un worktree isolé, puis rend compte.
@@ -659,7 +695,11 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
         report: z
           .any()
           .optional()
-          .describe("Rapport structuré inline (sinon lu depuis .meowtrack/runs/<ref>.json) : { state, summary, nodeUpdates[], reviewPoints[] }."),
+          .describe(
+            "Rapport structuré inline (sinon lu depuis .meowtrack/runs/<ref>.json) : { state, summary, nodeUpdates[], reviewPoints[] }. " +
+              "`nodeUpdates` accepte les actions NŒUD (add_node/update_node/…) ET SUIVI (add_issue/update_issue/link_issue/…) : " +
+              "un agent peut donc créer des tâches et des entrées de suivi. Non destructif + run.autoApplyUpdates → appliqué ; sinon proposé en revue."
+          ),
       },
     },
     guard(async ({ repo, ref, ...a }) => apiFetch("POST", "/api/nodes/" + encodeURIComponent(ref) + "/complete" + qs({ repo: repoOf(repo) }), a))

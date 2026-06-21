@@ -337,6 +337,7 @@ export async function handle(ctx) {
         throw e;
       }
       broadcastAffected(repoId, r.affectedNodeIds);
+      if (ingest.issuesChanged) broadcast(forestKey(repoId), "issues:changed", { repoId });
       const openReviews = ingest.reviews.filter((rv) => rv.state === "open");
       if (openReviews.length) broadcast(forestKey(repoId), "review:open", { repoId, nodeId: node.id, count: openReviews.length });
       // Déclenchement AUTOMATIQUE de l'auto-revue si activé et point bloquant (tâche de fond).
@@ -371,6 +372,7 @@ export async function handle(ctx) {
       if (!review || review.nodeId !== node.id) return send(res, 404, { error: "not_found" }), true;
       const r = resolveReview(reviewId, { decision: body.decision, applyActions: body.applyActions !== false, response: body.response }, id);
       broadcastAffected(repoId, r.affectedNodeIds || []);
+      if (r.issuesChanged) broadcast(forestKey(repoId), "issues:changed", { repoId });
       broadcast(forestKey(repoId), "review:resolved", { repoId, nodeId: node.id, reviewId, promoted: !!r.promoted });
       send(res, 200, r);
       return true;

@@ -65,5 +65,16 @@ check("point de revue ouvert listé", openReviews.length === 1);
 const res = db.resolveReview(openReviews[0].id, { decision: "approve", applyActions: false }, rd.id);
 check("résolution promeut review→done", res.promoted === true && db.getNode(leaf.id, { repoId: rd.id }).status === "done");
 
+// 6. Rapport MIXTE : un agent peut ajouter du SUIVI (add_issue) et le LIER au nœud.
+db.setOrchestratorConfig({ autoApplyUpdates: true }, { scope: "global" });
+const sp = db.createNode(rid, null, { title: "SP" });
+const isg = db.ingestRunReport(sp.id, null, { nodeUpdates: [{ op: "add_issue", type: "task", title: "Tâche de suivi agent" }] }, rid);
+check("rapport crée une entrée de suivi (add_issue)", isg.applied.some((a) => a.op === "add_issue") && isg.issuesChanged === true);
+const issue = db.listIssues(rid, { includeClosed: true }).find((i) => i.title === "Tâche de suivi agent");
+check("entrée de suivi effectivement créée", !!issue);
+const isl = db.ingestRunReport(sp.id, null, { nodeUpdates: [{ op: "link_issue", ref: issue.ref, node: sp.id }] }, rid);
+check("rapport lie suivi↔nœud (link_issue)", isl.applied.some((a) => a.op === "link_issue"));
+check("lien suivi↔nœud créé", db.listIssueNodes(issue.id, rid).some((n) => n.id === sp.id));
+
 console.log(`\n${pass} OK, ${fail} échec(s)`);
 process.exit(fail ? 1 : 0);

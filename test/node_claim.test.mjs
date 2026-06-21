@@ -68,5 +68,21 @@ await new Promise((r) => setTimeout(r, 1200));
 const e3 = db.claimNextNode(r2.id, "wy", { leaseMs: 1000 });
 check("bail expiré → reréclamable par un autre", e3 && e3.id === e.id && e3.leaseOwner === "wy");
 
+// 7. ORDRE DU PLAN : DFS par position, pas « feuilles peu profondes d'abord ».
+const ord = db.createRepo({ slug: "ord" });
+const rr = db.createNode(ord.id, null, { title: "R" });
+const m1 = db.createNode(ord.id, rr.id, { title: "M1" }); // jalon (aura des enfants)
+const t1 = db.createNode(ord.id, m1.id, { title: "T1" });
+const t2 = db.createNode(ord.id, m1.id, { title: "T2" });
+const l = db.createNode(ord.id, rr.id, { title: "L" }); // feuille peu profonde, position APRÈS M1
+const o1 = db.claimNextNode(ord.id, "wo");
+check("ordre du plan : T1 (sous le 1er jalon) avant la feuille peu profonde L", o1 && o1.id === t1.id);
+db.completeNode(t1.id, "wo", {}, ord.id); // repoId explicite (ids numériques par-repo)
+const o2 = db.claimNextNode(ord.id, "wo");
+check("puis T2 (même jalon, position suivante)", o2 && o2.id === t2.id);
+db.completeNode(t2.id, "wo", {}, ord.id);
+const o3 = db.claimNextNode(ord.id, "wo");
+check("puis L (après tout le sous-arbre du 1er jalon)", o3 && o3.id === l.id);
+
 console.log(`\n${pass} OK, ${fail} échec(s)`);
 process.exit(fail ? 1 : 0);

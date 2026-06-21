@@ -19,10 +19,42 @@ import {
   MAX_ACTIONS,
 } from "./constants.js";
 import { findNodeRow, applyNodeActions, markNodeDone, requeueNode } from "./nodes.js";
+import { applyIssueActions } from "./issues.js";
 
 // Catalogue d'actions DESTRUCTIVES (jamais auto-appliquées depuis un rapport :
 // proposées pour confirmation humaine). Aligné sur le pipeline de chat IA.
-const DESTRUCTIVE_OPS = new Set(["delete_node", "move_node", "reorder_children"]);
+const DESTRUCTIVE_OPS = new Set(["delete_node", "move_node", "reorder_children", "delete_issue"]);
+// Actions du domaine SUIVI (issues) — appliquées par applyIssueActions (scope repo),
+// le reste par applyNodeActions (scope sous-arbre de la tâche).
+const ISSUE_OPS = new Set(["add_issue", "update_issue", "delete_issue", "reorder_issues", "link_issue", "unlink_issue"]);
+
+// Sépare un flux d'actions en : actions NŒUD sûres, actions SUIVI sûres, destructives.
+function splitActions(actions) {
+  const list = Array.isArray(actions) ? actions.slice(0, MAX_ACTIONS) : [];
+  const safeNode = [];
+  const safeIssue = [];
+  const destructive = [];
+  for (const a of list) {
+    if (!a || !a.op) continue;
+    if (DESTRUCTIVE_OPS.has(a.op)) destructive.push(a);
+    else if (ISSUE_OPS.has(a.op)) safeIssue.push(a);
+    else safeNode.push(a);
+  }
+  return { safeNode, safeIssue, destructive };
+}
+
+// Applique un flux MIXTE (nœuds + suivi) : nœuds via applyNodeActions (scope = la
+// tâche), suivi via applyIssueActions (scope = repo). Fusionne les deux résultats.
+function applyMixed(scopeNodeId, repoId, nodeActions, issueActions) {
+  const nodeRes = nodeActions.length ? applyNodeActions(scopeNodeId, nodeActions, repoId) : { applied: [], rejected: [], affectedNodeIds: [] };
+  const issueRes = issueActions.length ? applyIssueActions(repoId, issueActions) : { applied: [], rejected: [], issuesChanged: false };
+  return {
+    applied: [...nodeRes.applied, ...issueRes.applied],
+    rejected: [...(nodeRes.rejected || []), ...(issueRes.rejected || [])],
+    affectedNodeIds: nodeRes.affectedNodeIds || [],
+    issuesChanged: !!issueRes.issuesChanged,
+  };
+}
 
 // ── Sérialisation ────────────────────────────────────────────────────────────
 function rowToRun(r) {
@@ -166,44 +198,38 @@ export function hasOpenBlockingReview(nodeId, repoId = null) {
   });
 }
 
-// Sépare les actions destructives (jamais auto-appliquées) du reste.
-function splitDestructive(actions) {
-  const list = Array.isArray(actions) ? actions.slice(0, MAX_ACTIONS) : [];
-  const safe = [];
-  const destructive = [];
-  for (const a of list) (a && DESTRUCTIVE_OPS.has(a.op) ? destructive : safe).push(a);
-  return { safe, destructive };
-}
-
 // ── Ingestion d'un rapport (fail-closed) ─────────────────────────────────────
 // `report` = objet déjà parsé depuis .meowtrack/runs/<ref>.json (ou inline). Persiste
-// les reviewPoints en node_reviews ; applique les nodeUpdates NON destructifs via
-// applyNodeActions (scope sous-arbre) SI run.autoApplyUpdates ; les actions
-// destructives (ou tout, si autoApply off) sont PROPOSÉES (review 'decision' avec
-// suggested) pour confirmation. Renvoie { hasBlockingReview, applied, reviews, proposed }.
+// les reviewPoints en node_reviews ; applique les `nodeUpdates` NON destructifs —
+// nœuds (tâches) ET suivi (issues : add_issue/link_issue…) — SI run.autoApplyUpdates ;
+// les actions destructives (ou tout, si autoApply off) sont PROPOSÉES (review
+// 'decision' + suggested) pour confirmation. Renvoie
+// { hasBlockingReview, applied, reviews, proposed, issuesChanged }.
 export function ingestRunReport(nodeId, runId, report, repoId = null) {
   return withRepo(repoId, () => {
-    const out = { hasBlockingReview: false, applied: [], rejected: [], reviews: [], proposed: 0 };
+    const out = { hasBlockingReview: false, applied: [], rejected: [], reviews: [], proposed: 0, issuesChanged: false };
     if (!report || typeof report !== "object" || Array.isArray(report)) return out; // fail-closed
     const cfg = getOrchestratorConfig(repoId);
 
     // 1. nodeUpdates → application sûre (non destructif + autoApply) sinon proposition.
+    //    Flux MIXTE : un agent peut ajouter des tâches (nœuds) ET du suivi (issues).
     const updates = Array.isArray(report.nodeUpdates) ? report.nodeUpdates : [];
     if (updates.length) {
-      const { safe, destructive } = splitDestructive(updates);
-      if (cfg.autoApplyUpdates && safe.length) {
-        const r = applyNodeActions(nodeId, safe, repoId);
+      const { safeNode, safeIssue, destructive } = splitActions(updates);
+      if (cfg.autoApplyUpdates && (safeNode.length || safeIssue.length)) {
+        const r = applyMixed(nodeId, repoId, safeNode, safeIssue);
         out.applied = r.applied;
         out.rejected = r.rejected;
+        out.issuesChanged = r.issuesChanged;
       }
-      const toPropose = cfg.autoApplyUpdates ? destructive : [...safe, ...destructive];
+      const toPropose = cfg.autoApplyUpdates ? destructive : [...safeNode, ...safeIssue, ...destructive];
       if (toPropose.length) {
         const rev = addReview(
           nodeId,
           {
             runId,
             kind: "decision",
-            message: `L'agent propose ${toPropose.length} modification(s) du graphe à confirmer.`,
+            message: `L'agent propose ${toPropose.length} modification(s) (nœuds/suivi) à confirmer.`,
             blocking: false,
             suggested: toPropose,
           },
@@ -254,12 +280,18 @@ export function resolveReview(reviewId, { decision = "approve", applyActions = t
     const ts = nowIso();
     let applied = [];
     let affectedNodeIds = [];
+    let issuesChanged = false;
 
     if (decision === "approve") {
       if (applyActions && review.suggested.length) {
-        const r = applyNodeActions(review.nodeId, review.suggested, repoId);
+        // Approbation humaine : on applique TOUT le suggested (y compris destructif),
+        // flux MIXTE nœuds + suivi (un suggested peut contenir add_issue/link_issue…).
+        const nodeActions = review.suggested.filter((a) => a && !ISSUE_OPS.has(a.op));
+        const issueActions = review.suggested.filter((a) => a && ISSUE_OPS.has(a.op));
+        const r = applyMixed(review.nodeId, repoId, nodeActions, issueActions);
         applied = r.applied;
         affectedNodeIds = r.affectedNodeIds;
+        issuesChanged = r.issuesChanged;
       }
       db.prepare("UPDATE node_reviews SET state='resolved', response=?, resolved_at=? WHERE id=?").run(response, ts, reviewId);
     } else if (decision === "rework") {
@@ -277,6 +309,6 @@ export function resolveReview(reviewId, { decision = "approve", applyActions = t
       affectedNodeIds = [...new Set([...affectedNodeIds, ...aff])];
       promoted = true;
     }
-    return { ok: true, review: rowToReview(db.prepare("SELECT * FROM node_reviews WHERE id = ?").get(reviewId)), applied, affectedNodeIds, promoted };
+    return { ok: true, review: rowToReview(db.prepare("SELECT * FROM node_reviews WHERE id = ?").get(reviewId)), applied, affectedNodeIds, issuesChanged, promoted };
   });
 }

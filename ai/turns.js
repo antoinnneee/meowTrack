@@ -61,7 +61,7 @@ const MAX_CONCURRENT_AI = 4;
 // Les chats IA produisent un seul flux d'actions ; les ops du domaine SUIVI sont
 // appliquées par db/issues.js (scope repo), les autres par le moteur de nœuds
 // (scope sous-arbre / repo). On scinde le flux puis on fusionne les deux résultats.
-const ISSUE_OPS = new Set(["add_issue", "update_issue", "delete_issue", "reorder_issues"]);
+const ISSUE_OPS = new Set(["add_issue", "update_issue", "delete_issue", "reorder_issues", "link_issue", "unlink_issue"]);
 const isIssueAction = (a) => !!a && ISSUE_OPS.has(a.op);
 const EMPTY_ISSUE_RES = { applied: [], rejected: [], issuesChanged: false };
 

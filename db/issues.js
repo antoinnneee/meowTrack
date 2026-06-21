@@ -477,6 +477,35 @@ export function applyIssueActions(repoIdParam, actions = []) {
             issuesChanged = true;
             break;
           }
+          case "link_issue": {
+            // Rattache une entrée de suivi à un nœud (jalon/tâche) : « ref dépend
+            // de / concerne node ». ref = code/ id d'issue, node = code/id de nœud.
+            const issueRef = a.ref != null ? a.ref : a.issue;
+            if (issueRef == null || a.node == null) {
+              rejected.push({ op, reason: "ref_et_node_requis" });
+              break;
+            }
+            linkIssueNode(repoId, issueRef, a.node);
+            applied.push({ op, ref: String(issueRef), node: String(a.node) });
+            issuesChanged = true;
+            break;
+          }
+          case "unlink_issue": {
+            const issueRef = a.ref != null ? a.ref : a.issue;
+            if (issueRef == null || a.node == null) {
+              rejected.push({ op, reason: "ref_et_node_requis" });
+              break;
+            }
+            const node = findNodeRow(a.node, repoId); // résout le code → id pour le détachement
+            if (!node) {
+              rejected.push({ op, reason: "noeud_introuvable" });
+              break;
+            }
+            unlinkIssueNode(repoId, issueRef, node.id);
+            applied.push({ op, ref: String(issueRef), node: String(a.node) });
+            issuesChanged = true;
+            break;
+          }
           default:
             rejected.push({ op: op || "?", reason: "op_inconnu" });
         }

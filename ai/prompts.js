@@ -97,6 +97,8 @@ const ISSUE_ACTION_LINES = [
   '- {"op":"update_issue","ref":"BUG-1","title?":"…","description?":"…","status?":"…","priority?":"…","type?":"…","tags?":["…"]}',
   '- {"op":"delete_issue","ref":"BUG-1"}  (destructif → demande confirmation)',
   '- {"op":"reorder_issues","order":["FEAT-2","BUG-1",…]}  (ordre manuel des entrées du dépôt ; codes dans l\'ordre voulu)',
+  '- {"op":"link_issue","ref":"BUG-1","node":<id|NODE-2>}  (RATTACHE une entrée de suivi au nœud/jalon qu\'elle concerne)',
+  '- {"op":"unlink_issue","ref":"BUG-1","node":<id|NODE-2>}  (détache une entrée de suivi d\'un nœud)',
 ];
 
 // Bloc commun « accès LECTURE SEULE au code source » (ou non) selon AI_REPO_ACCESS.

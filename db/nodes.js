@@ -809,50 +809,80 @@ export function applyNodeActions(scopeNodeId, actions = [], repoId = null) {
 // libre. La réclamation est un compare-and-swap en UNE instruction (pas de TOCTOU).
 // ═══════════════════════════════════════════════════════════════════════════
 
-// Réclame atomiquement la prochaine tâche PRÊTE pour `owner`. null si rien n'est
-// prêt. Démarre un run (node_runs) lié au bail. SQLite sérialise les écritures :
-// deux workers concurrents n'obtiennent jamais la même tâche (CAS sur l'UPDATE).
+// Ordre d'exécution = ORDRE DU PLAN : parcours en profondeur (DFS) de l'arbre, frères
+// triés par `position` (l'ordre tel que défini / réordonné dans Vibes), feuilles
+// collectées dans cet ordre. C'est l'ordre dans lequel les tâches apparaissent dans
+// le plan — pas « toutes les feuilles peu profondes d'abord », ni un tri par date.
+// Les prérequis restent une CONTRAINTE DURE (filtrée au claim), pas un critère de tri.
+function orderedLeafIds(repoId) {
+  const rows = db.prepare("SELECT id, parent_id FROM nodes WHERE repo_id = ? ORDER BY position, id").all(repoId);
+  const childrenOf = new Map(); // parentId (0 = racines) → [ids] dans l'ordre position,id
+  const hasChildren = new Set();
+  for (const r of rows) {
+    const key = r.parent_id == null ? 0 : r.parent_id;
+    if (!childrenOf.has(key)) childrenOf.set(key, []);
+    childrenOf.get(key).push(r.id);
+    if (r.parent_id != null) hasChildren.add(r.parent_id);
+  }
+  const leaves = [];
+  const walk = (key) => {
+    for (const id of childrenOf.get(key) || []) {
+      if (hasChildren.has(id)) walk(id); // descend dans les sous-jalons (DFS)
+      else leaves.push(id);              // feuille = tâche exécutable
+    }
+  };
+  walk(0);
+  return leaves;
+}
+
+// Réclame la prochaine tâche PRÊTE pour `owner`, dans l'ORDRE DU PLAN. null si rien
+// n'est prêt. Démarre un run (node_runs) lié au bail. L'exclusivité tient : chaque
+// candidat est réclamé par un compare-and-swap (UPDATE … WHERE <encore réclamable>
+// RETURNING) ; si deux workers visent la même feuille, un seul UPDATE matche, l'autre
+// passe à la suivante. Le tri (DFS par position) est calculé en amont, la garde de
+// réclamabilité (feuille active, débloquée, bail libre/expiré) reste dans le CAS.
 export function claimNextNode(repoId, owner, { leaseMs = 600000, maxAttempts = 3, branch = null } = {}) {
   if (!owner) throw new Error("owner requis pour réclamer une tâche");
   return withRepo(repoId, () => {
     const rid = resolveRepoId(repoId);
     const now = nowIso();
     const leaseUntil = new Date(Date.parse(now) + Math.max(1000, leaseMs)).toISOString();
-    let row;
+    const cas = db.prepare(
+      `UPDATE nodes
+          SET run_state='running', lease_owner=@owner, lease_until=@leaseUntil,
+              run_attempts = run_attempts + 1, version = version + 1, updated_at=@ts
+        WHERE id = @id
+          AND repo_id = @repo
+          AND status  = 'active'
+          AND NOT EXISTS (SELECT 1 FROM nodes c WHERE c.parent_id = nodes.id)              -- feuille
+          AND run_state IS NOT 'done'                                                      -- pas terminée
+          AND run_state IS NOT 'review'                                                    -- pas en attente de revue
+          AND run_attempts < @maxAttempts
+          AND (                                                                            -- libre, en échec, ou bail expiré (worker mort)
+                run_state IS NULL
+             OR run_state = 'failed'
+             OR lease_owner IS NULL
+             OR lease_until IS NULL
+             OR lease_until < @now
+          )
+          AND NOT EXISTS (                                                                 -- tous prérequis 'done'
+            SELECT 1 FROM node_links l JOIN nodes p ON p.id = l.to_id
+             WHERE l.from_id = nodes.id AND l.kind = 'requires' AND p.status <> 'done'
+          )
+        RETURNING *`
+    );
+    let claimed = null;
     db.transaction(() => {
-      row = db
-        .prepare(
-          `UPDATE nodes
-              SET run_state='running', lease_owner=@owner, lease_until=@leaseUntil,
-                  run_attempts = run_attempts + 1, version = version + 1, updated_at=@ts
-            WHERE id = (
-              SELECT n.id FROM nodes n
-               WHERE n.repo_id = @repo
-                 AND n.status  = 'active'
-                 AND NOT EXISTS (SELECT 1 FROM nodes c WHERE c.parent_id = n.id)            -- feuille
-                 AND n.run_state IS NOT 'done'                                              -- pas terminée
-                 AND n.run_state IS NOT 'review'                                            -- pas en attente de revue
-                 AND n.run_attempts < @maxAttempts
-                 AND (                                                                      -- libre, en échec, ou bail expiré (worker mort)
-                       n.run_state IS NULL
-                    OR n.run_state = 'failed'
-                    OR n.lease_owner IS NULL
-                    OR n.lease_until IS NULL
-                    OR n.lease_until < @now
-                 )
-                 AND NOT EXISTS (                                                           -- tous prérequis 'done'
-                   SELECT 1 FROM node_links l JOIN nodes p ON p.id = l.to_id
-                    WHERE l.from_id = n.id AND l.kind = 'requires' AND p.status <> 'done'
-                 )
-               ORDER BY (n.target_date IS NULL), n.target_date, n.depth, n.position, n.id
-               LIMIT 1
-            )
-           RETURNING *`
-        )
-        .get({ repo: rid, owner, leaseUntil, now, ts: now, maxAttempts: Math.max(1, maxAttempts) });
-      if (row) startRun(row.id, owner, branch);
+      for (const id of orderedLeafIds(rid)) {
+        const row = cas.get({ id, repo: rid, owner, leaseUntil, now, ts: now, maxAttempts: Math.max(1, maxAttempts) });
+        if (row) {
+          startRun(row.id, owner, branch);
+          claimed = row;
+          break; // 1re feuille réclamable dans l'ordre du plan
+        }
+      }
     })();
-    return row ? rowToNode(row) : null;
+    return claimed ? rowToNode(claimed) : null;
   });
 }
 
