@@ -422,7 +422,7 @@ body.forest-pinned.view-vibes #vibesView { margin-right: var(--forest-pin-w); }
 
 /* Graphe organique (SVG) */
 .graph-view { flex: 1; min-height: 0; position: relative; overflow: hidden; }
-.graph-svg { width: 100%; height: 100%; display: block; cursor: grab; user-select: none; background: radial-gradient(1200px 800px at 50% 40%, rgba(124, 92, 255, .06), transparent 70%); }
+.graph-svg { width: 100%; height: 100%; display: block; cursor: grab; user-select: none; touch-action: none; background: radial-gradient(1200px 800px at 50% 40%, rgba(124, 92, 255, .06), transparent 70%); }
 .graph-svg:active { cursor: grabbing; }
 .graph-controls { position: absolute; top: 12px; right: 14px; display: flex; gap: 8px; }
 .g-edges { pointer-events: none; }

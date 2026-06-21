@@ -1201,6 +1201,102 @@ function wireGraph() {
     applyViewBox(svg);
   }, { passive: false });
 
+  // ── Tactile (Android/iOS) ─────────────────────────────────────────────────
+  // Sans ces handlers + `touch-action:none` (CSS), le navigateur capte le geste
+  // et zoome/scrolle la PAGE au lieu du graphe. Deux doigts = pinch-zoom + pan ;
+  // un doigt = pan du fond ou drag d'un nœud (comme la souris). On laisse passer
+  // le clic synthétique (pas de preventDefault sur un simple tap) pour que le
+  // handler `click` existant ouvre le nœud / pose la poubelle de prérequis.
+  svg.addEventListener("touchstart", (e) => {
+    if (vibes.graph.linking) return; // mode lien : la sélection se fait au clic
+    hideCtxMenu(); hideEdgeDel(); hideReqDel();
+    if (e.touches.length === 2) {
+      e.preventDefault();
+      vibes.graph.nodeDrag = null;
+      vibes.graph.drag = null;
+      const a = e.touches[0], b = e.touches[1];
+      vibes.graph.pinch = {
+        dist: Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY) || 1,
+        midX: (a.clientX + b.clientX) / 2,
+        midY: (a.clientY + b.clientY) / 2,
+      };
+      return;
+    }
+    if (e.touches.length !== 1) return;
+    const t = e.touches[0];
+    const gNode = e.target.closest(".g-node");
+    if (gNode) {
+      const id = Number(gNode.dataset.id);
+      const ids = subtreeIds(id);
+      const start = new Map(ids.map((i) => [i, { ...(vibes.graph.posMap.get(i) || { x: 0, y: 0 }) }]));
+      vibes.graph.nodeDrag = { id, ids, start, cx: t.clientX, cy: t.clientY, moved: false, ref: gNode.dataset.ref };
+    } else {
+      vibes.graph.drag = { x: t.clientX, y: t.clientY, vx: vibes.graph.view.x, vy: vibes.graph.view.y };
+    }
+  }, { passive: false });
+
+  svg.addEventListener("touchmove", (e) => {
+    const p = vibes.graph.pinch;
+    if (p && e.touches.length >= 2) {
+      e.preventDefault();
+      const a = e.touches[0], b = e.touches[1];
+      const dist = Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY) || 1;
+      const midX = (a.clientX + b.clientX) / 2, midY = (a.clientY + b.clientY) / 2;
+      const rect = svg.getBoundingClientRect();
+      const v = vibes.graph.view;
+      const f = p.dist / dist; // doigts qui s'écartent → f<1 → zoom avant
+      const ax = v.x + ((midX - rect.left) / rect.width) * v.w;
+      const ay = v.y + ((midY - rect.top) / rect.height) * v.h;
+      v.w *= f; v.h *= f;
+      v.x = ax - ((midX - rect.left) / rect.width) * v.w;
+      v.y = ay - ((midY - rect.top) / rect.height) * v.h;
+      // Pan à deux doigts : translation du milieu entre les doigts.
+      v.x -= ((midX - p.midX) / rect.width) * v.w;
+      v.y -= ((midY - p.midY) / rect.height) * v.h;
+      p.dist = dist; p.midX = midX; p.midY = midY;
+      vibes.graph.userView = true;
+      applyViewBox(svg);
+      return;
+    }
+    if (e.touches.length !== 1) return;
+    const t = e.touches[0];
+    const nd = vibes.graph.nodeDrag;
+    if (nd) {
+      if (!nd.moved && Math.hypot(t.clientX - nd.cx, t.clientY - nd.cy) < NODE_DRAG_THRESHOLD) return;
+      e.preventDefault();
+      nd.moved = true;
+      const ctm = svg.getScreenCTM();
+      const dx = ctm ? (t.clientX - nd.cx) / ctm.a : 0;
+      const dy = ctm ? (t.clientY - nd.cy) / ctm.d : 0;
+      for (const i of nd.ids) {
+        const s = nd.start.get(i);
+        vibes.graph.posMap.set(i, { x: s.x + dx, y: s.y + dy });
+      }
+      liveUpdateGraphPositions();
+      return;
+    }
+    const d = vibes.graph.drag;
+    if (!d) return;
+    e.preventDefault();
+    const v = vibes.graph.view;
+    const ctm = svg.getScreenCTM();
+    v.x = d.vx - (ctm ? (t.clientX - d.x) / ctm.a : 0);
+    v.y = d.vy - (ctm ? (t.clientY - d.y) / ctm.d : 0);
+    vibes.graph.userView = true;
+    applyViewBox(svg);
+  }, { passive: false });
+
+  svg.addEventListener("touchend", (e) => {
+    if (vibes.graph.pinch && e.touches.length < 2) vibes.graph.pinch = null;
+    const nd = vibes.graph.nodeDrag;
+    if (nd && nd.moved) {
+      vibes.graph.userView = true;     // on ne re-fit pas après un placement manuel
+      vibes.graph.suppressClick = true; // évite l'ouverture via le clic synthétique
+      persistPositions(nd.ids);
+    }
+    if (e.touches.length === 0) { vibes.graph.nodeDrag = null; vibes.graph.drag = null; }
+  });
+
   // mousedown : démarre soit un drag de nœud (sur un nœud), soit un pan (sur le fond).
   svg.addEventListener("mousedown", (e) => {
     if (e.button !== 0) return; // gauche uniquement (le clic droit → contextmenu)
