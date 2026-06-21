@@ -347,15 +347,17 @@ body:not(.view-repo) .repo-only { display: none; }
 .forest-chat-toggle { font-size: 14px; font-weight: 600; }
 /* Réduit : on ne garde que l'en-tête (clic sur le titre pour replier/déplier).
    Sans effet quand le chat est épinglé (le panneau pleine hauteur reste déployé). */
-.forest-chat.collapsed:not(.pinned) { height: auto; }
-.forest-chat.collapsed:not(.pinned) .chat-feed,
-.forest-chat.collapsed:not(.pinned) .typing-row,
-.forest-chat.collapsed:not(.pinned) .chat-input { display: none; }
+.forest-chat.collapsed:not(.pinned):not(.fullscreen) { height: auto; }
+.forest-chat.collapsed:not(.pinned):not(.fullscreen) .chat-feed,
+.forest-chat.collapsed:not(.pinned):not(.fullscreen) .typing-row,
+.forest-chat.collapsed:not(.pinned):not(.fullscreen) .chat-input { display: none; }
 @media (max-width: 640px) {
   .forest-chat { right: 8px; bottom: 8px; width: calc(100vw - 16px); height: min(60vh, 480px); }
 }
 .forest-chat-pin { font-size: 14px; line-height: 1; }
 .forest-chat-pin.active { background: var(--accent); border-color: var(--accent); }
+.forest-chat-expand { font-size: 14px; line-height: 1; }
+.forest-chat-expand.active { background: var(--accent); border-color: var(--accent); }
 
 /* Épinglé : le chat occupe toute la colonne de droite (du bas de l'en-tête au bas
    de l'écran). --topbar-h est mesurée en JS ; --forest-pin-w pilote aussi la marge
@@ -379,6 +381,19 @@ body.forest-pinned.view-vibes #vibesView { margin-right: var(--forest-pin-w); }
   body.forest-pinned.view-vibes #graphView,
   body.forest-pinned.view-vibes #vibesView { margin-right: 0; }
 }
+/* Plein écran : la discussion occupe tout l'espace sous l'en-tête (prioritaire sur
+   l'état épinglé/réduit — règle placée après .pinned pour gagner à spécificité égale). */
+.forest-chat.fullscreen {
+  top: var(--topbar-h, 58px); right: 0; bottom: 0; left: 0;
+  width: auto; max-width: none; height: auto;
+  border-radius: 0; border: none;
+  box-shadow: none; z-index: 60;
+}
+@media (max-width: 640px) {
+  .forest-chat.fullscreen { top: 0; right: 0; bottom: 0; left: 0;
+    width: auto; height: auto; border: none; border-radius: 0; }
+}
+
 /* Menu de mentions du chat : s'ouvre vers le HAUT (le champ est en bas de l'écran). */
 .mention-menu.up { top: auto; bottom: 100%; margin: 0 0 4px; }
 

@@ -41,6 +41,8 @@ export const vibes = {
   user: "",
   // Chat « top level » épinglé sur toute la colonne de droite (vue graphe/grille).
   pinned: localStorage.getItem("meowtrack_forest_pin") === "1",
+  // Chat « top level » en plein écran (transitoire, non persisté).
+  fullscreen: false,
   wasDown: false,
   stickToBottom: true, // chat : suivre le bas tant que l'utilisateur n'a pas scrollé vers le haut
   _editing: null,
@@ -396,6 +398,24 @@ function setForestPinned(on) {
   if (on) measureTopbar();
 }
 
+// Met la discussion « top level » en plein écran (ou l'en sort). Prioritaire sur
+// l'état réduit (toujours déployé en plein écran). Transitoire (non persisté).
+function setForestFullscreen(on) {
+  vibes.fullscreen = on;
+  const chat = $("#forestChat");
+  if (chat) {
+    chat.classList.toggle("fullscreen", on);
+    if (on) chat.classList.remove("collapsed"); // plein écran = toujours déployé
+  }
+  const btn = $("#forestChatExpandBtn");
+  if (btn) {
+    btn.classList.toggle("active", on);
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
+    btn.title = on ? "Quitter le plein écran" : "Mettre la discussion en plein écran";
+  }
+  if (on) measureTopbar();
+}
+
 export async function openVibes() {
   $("#nodeView").hidden = true;
   $("#vibesBar").hidden = false;
@@ -408,6 +428,7 @@ export async function openVibes() {
   applyLayoutToggle();
   setForestChatVisible(true);
   setForestPinned(vibes.pinned); // restaure l'état épinglé persisté
+  setForestFullscreen(vibes.fullscreen); // état plein écran (transitoire)
   await loadForest();
   subscribeForest();
   loadForestChat();
@@ -2381,6 +2402,7 @@ export function initVibes() {
   $("#forestChatClearBtn").addEventListener("click", clearChatHistory);
   $("#forestChatToggle").addEventListener("click", () => $("#forestChat").classList.toggle("collapsed"));
   $("#forestChatPinBtn").addEventListener("click", () => setForestPinned(!vibes.pinned));
+  $("#forestChatExpandBtn").addEventListener("click", () => setForestFullscreen(!vibes.fullscreen));
   // En-tête redimensionné (barre qui passe à la ligne) : recale le panneau épinglé.
   window.addEventListener("resize", () => { if (vibes.pinned && !$("#forestChat").hidden) measureTopbar(); });
   $("#forestChatFeed").addEventListener("scroll", () => { vibes.stickToBottom = isFeedAtBottom($("#forestChatFeed")); });
