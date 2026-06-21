@@ -3,7 +3,7 @@
 // gestionnaire de dépôts) et les ponts openVibes / initVibes.
 
 import { $, esc, api, getToken, injectRepo } from "./core.js";
-import { state, handleMentionInput, menuKeydown, hideMenu, createIssueFromNode, openIssueInTrack } from "./issues.js";
+import { state, handleMentionInput, handleChatMention, menuKeydown, hideMenu, createIssueFromNode, openIssueInTrack } from "./issues.js";
 import { openRepoView, initRepo } from "./repo.js";
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2325,10 +2325,10 @@ export function initVibes() {
   // Suivi du scroll : on coupe l'auto-défilement dès que l'utilisateur remonte,
   // on le rétablit quand il revient en bas (pendant la génération comme après).
   $("#chatFeed").addEventListener("scroll", () => { vibes.stickToBottom = isFeedAtBottom($("#chatFeed")); });
-  // Autocomplete @ fichier dans le chat (même UX que la modale d'entrée du tracker).
+  // Autocomplete dans le chat : @ fichier + # nœud (même UX que la modale d'entrée).
   const chatInput = $("#chatInput");
   const chatMenu = $("#chatMentionMenu");
-  chatInput.addEventListener("input", () => handleMentionInput(chatInput, chatMenu, state.branch || "", null));
+  chatInput.addEventListener("input", () => handleChatMention(chatInput, chatMenu, state.branch || "", null));
   chatInput.addEventListener("blur", () => setTimeout(() => hideMenu(chatMenu), 150));
   chatInput.addEventListener("keydown", (e) => {
     if (menuKeydown(chatMenu, e)) return; // menu ouvert : flèches / Entrée / Tab / Échap pour lui
@@ -2344,7 +2344,11 @@ export function initVibes() {
   window.addEventListener("resize", () => { if (vibes.pinned && !$("#forestChat").hidden) measureTopbar(); });
   $("#forestChatFeed").addEventListener("scroll", () => { vibes.stickToBottom = isFeedAtBottom($("#forestChatFeed")); });
   const forestChatInput = $("#forestChatInput");
+  const forestChatMenu = $("#forestChatMentionMenu");
+  forestChatInput.addEventListener("input", () => handleChatMention(forestChatInput, forestChatMenu, state.branch || "", null));
+  forestChatInput.addEventListener("blur", () => setTimeout(() => hideMenu(forestChatMenu), 150));
   forestChatInput.addEventListener("keydown", (e) => {
+    if (menuKeydown(forestChatMenu, e)) return; // menu ouvert : flèches / Entrée / Tab / Échap pour lui
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
   });
   $("#forestModelSel").addEventListener("change", (e) => (vibes.model = e.target.value));

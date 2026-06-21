@@ -660,9 +660,12 @@ export async function openIssueInTrack(ref) {
   await selectIssue(ref);
 }
 
-// ── Autocomplete partagé (@ description, chat IA, …) ──────────────────────────
-// target = textarea où insérer ; menu = <ul> à piloter ; onChoose = callback post-insertion.
-let menuState = { items: [], active: 0, target: null, menu: null, onChoose: null };
+// ── Autocomplete partagé (@ fichier, # nœud, …) ───────────────────────────────
+// Moteur générique piloté par des « modes » : chaque mode décrit un caractère
+// déclencheur (@/#), comment chercher les suggestions, comment rendre un item et
+// quel texte insérer. target = textarea cible ; menu = <ul> piloté ; onChoose =
+// callback post-insertion ; mode = mode actif courant.
+let menuState = { items: [], active: 0, target: null, menu: null, onChoose: null, mode: null };
 
 export function hideMenu(menu) {
   menu.hidden = true;
@@ -676,16 +679,9 @@ function renderMenu(menu, items) {
     hideMenu(menu);
     return;
   }
+  const mode = menuState.mode;
   menu.innerHTML = items
-    .map((it, i) => {
-      const slash = it.path.lastIndexOf("/");
-      const dir = slash >= 0 ? it.path.slice(0, slash + 1) : "";
-      const base = slash >= 0 ? it.path.slice(slash + 1) : it.path;
-      return `<li class="${i === 0 ? "active" : ""}" data-i="${i}">
-        <span class="kind">${it.kind === "dir" ? "📁" : "📄"}</span>
-        <span><span class="dir">${esc(dir)}</span><span class="base">${esc(base)}</span></span>
-      </li>`;
-    })
+    .map((it, i) => `<li class="${i === 0 ? "active" : ""}" data-i="${i}">${mode.renderItem(it)}</li>`)
     .join("");
   menu.hidden = false;
   menu.querySelectorAll("li").forEach((li) =>
@@ -697,50 +693,114 @@ function renderMenu(menu, items) {
 }
 
 let searchTimer = null;
-function debouncedSearch(query, cb, branch) {
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(async () => {
-    try {
-      // Scope par branche : celle passée par l'appelant, sinon la branche d'édition.
-      const b = branch != null ? branch : ($("#mBranch") ? $("#mBranch").value : "") || "";
-      const url =
-        "/api/paths?q=" + encodeURIComponent(query) + "&limit=20" + (b ? "&branch=" + encodeURIComponent(b) : "");
-      cb(await api.get(url));
-    } catch {
-      cb([]);
-    }
-  }, 120);
+// Mode @ : fichiers/dossiers du repo (arbre git), scopés à une branche.
+const PATH_MODE = {
+  trigger: "@",
+  re: /@([A-Za-z0-9_./-]*)$/,
+  search(query, cb, ctx) {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(async () => {
+      try {
+        // Scope par branche : celle passée par l'appelant, sinon la branche d'édition.
+        const b = ctx.branch != null ? ctx.branch : ($("#mBranch") ? $("#mBranch").value : "") || "";
+        const url =
+          "/api/paths?q=" + encodeURIComponent(query) + "&limit=20" + (b ? "&branch=" + encodeURIComponent(b) : "");
+        cb(await api.get(url));
+      } catch {
+        cb([]);
+      }
+    }, 120);
+  },
+  renderItem(it) {
+    const slash = it.path.lastIndexOf("/");
+    const dir = slash >= 0 ? it.path.slice(0, slash + 1) : "";
+    const base = slash >= 0 ? it.path.slice(slash + 1) : it.path;
+    return `<span class="kind">${it.kind === "dir" ? "📁" : "📄"}</span>
+        <span><span class="dir">${esc(dir)}</span><span class="base">${esc(base)}</span></span>`;
+  },
+  insert: (it) => "@" + it.path,
+};
+
+// Mode # : nœuds Vibes du repo courant. La forêt est petite : on la charge une
+// fois (cache court de 5 s) et on filtre côté client par ref/titre.
+let nodeCache = { items: null, at: 0 };
+async function fetchForestNodes() {
+  const now = performance.now();
+  if (nodeCache.items && now - nodeCache.at < 5000) return nodeCache.items;
+  const items = await api.get("/api/nodes?view=forest");
+  nodeCache = { items: Array.isArray(items) ? items : [], at: now };
+  return nodeCache.items;
 }
+const NODE_MODE = {
+  trigger: "#",
+  re: /#([A-Za-z0-9_-]*)$/,
+  search(query, cb) {
+    fetchForestNodes()
+      .then((nodes) => {
+        const q = (query || "").toLowerCase().replace(/^node-/, "");
+        const items = nodes
+          .filter((n) => {
+            if (!q) return true;
+            return String(n.ref).includes(q) || (n.title || "").toLowerCase().includes(q);
+          })
+          .slice(0, 20);
+        cb(items);
+      })
+      .catch(() => cb([]));
+  },
+  renderItem(it) {
+    return `<span class="kind">${esc(it.emoji || "🎯")}</span>
+        <span><span class="dir">NODE-${it.ref} </span><span class="base">${esc(it.title || "")}</span></span>`;
+  },
+  insert: (it) => "#NODE-" + it.ref,
+};
 
 function chooseMenuItem(i) {
   const item = menuState.items[i];
   if (!item) return;
-  // Remplace le token @… en cours par le chemin choisi, dans le textarea ciblé.
+  const mode = menuState.mode;
+  if (!mode) return;
+  // Remplace le token déclencheur en cours par le texte du mode, dans le textarea ciblé.
   const ta = menuState.target;
   if (!ta) return;
   const pos = ta.selectionStart;
   const before = ta.value.slice(0, pos);
-  const at = before.lastIndexOf("@");
-  ta.value = before.slice(0, at) + "@" + item.path + " " + ta.value.slice(pos);
-  const newPos = at + 1 + item.path.length + 1;
+  const at = before.lastIndexOf(mode.trigger);
+  const text = mode.insert(item);
+  ta.value = before.slice(0, at) + text + " " + ta.value.slice(pos);
+  const newPos = at + text.length + 1;
   ta.setSelectionRange(newPos, newPos);
   ta.focus();
   if (menuState.menu) hideMenu(menuState.menu);
   if (typeof menuState.onChoose === "function") menuState.onChoose();
 }
 
-// Cœur générique : détecte un token @… avant le curseur et pilote le menu donné.
-export function handleMentionInput(ta, menu, branch, onChoose) {
+// Cœur générique : essaie chaque mode (un seul peut matcher en fin de saisie,
+// les tokens @… et #… sont mutuellement exclusifs) et pilote le menu donné.
+function runMention(ta, menu, modes, ctx, onChoose) {
   const before = ta.value.slice(0, ta.selectionStart);
-  const match = before.match(/@([A-Za-z0-9_./-]*)$/);
-  if (!match) {
-    hideMenu(menu);
+  for (const mode of modes) {
+    const match = before.match(mode.re);
+    if (!match) continue;
+    menuState.target = ta;
+    menuState.menu = menu;
+    menuState.onChoose = onChoose || null;
+    menuState.mode = mode;
+    // Ignore une réponse périmée si le mode a changé entre-temps.
+    mode.search(match[1], (items) => { if (menuState.mode === mode) renderMenu(menu, items); }, ctx);
     return;
   }
-  menuState.target = ta;
-  menuState.menu = menu;
-  menuState.onChoose = onChoose || null;
-  debouncedSearch(match[1], (items) => renderMenu(menu, items), branch);
+  hideMenu(menu);
+}
+
+// Autocomplete @ fichier (description d'entrée, éditeur de notes…).
+export function handleMentionInput(ta, menu, branch, onChoose) {
+  runMention(ta, menu, [PATH_MODE], { branch }, onChoose);
+}
+
+// Autocomplete de chat : @ fichier + # nœud.
+export function handleChatMention(ta, menu, branch, onChoose) {
+  runMention(ta, menu, [PATH_MODE, NODE_MODE], { branch }, onChoose);
 }
 
 function moveMenu(menu, dir) {
