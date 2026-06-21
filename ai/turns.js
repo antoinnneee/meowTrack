@@ -106,8 +106,18 @@ export function forestAiBusy(repoId) {
   return aiLocks.has(forestLockKey(repoId));
 }
 
+// Extrait le motif brut d'une erreur du pipeline IA (result d'erreur du CLI ou
+// tail stderr), tronqué pour rester affichable/journalisable sur une ligne.
+function aiErrorDetail(e) {
+  const raw = (e && (e.detail || e.stderr)) || "";
+  return String(raw).replace(/\s+/g, " ").trim().slice(0, 500);
+}
+
 // Mappe une erreur du pipeline IA en message FR affichable (partagé nœud/forêt).
+// Pour les erreurs renvoyées par le CLI (AI_RESULT_ERROR / AI_EXIT), on annexe le
+// motif brut quand il existe — sinon l'utilisateur n'a aucune piste (« pas de log »).
 function aiErrorMessage(e) {
+  const detail = aiErrorDetail(e);
   return e && e.code === "AI_TIMEOUT"
     ? "Délai dépassé : l'IA n'a pas répondu à temps."
     : e && e.code === "AI_OVERFLOW"
@@ -115,10 +125,21 @@ function aiErrorMessage(e) {
     : e && e.code === "ENOENT"
     ? `CLI Claude introuvable (${CLAUDE_BIN}). Vérifier MEOWTRACK_CLAUDE_BIN sur le serveur.`
     : e && e.code === "AI_RESULT_ERROR"
-    ? "L'IA a renvoyé une erreur."
+    ? detail ? `L'IA a renvoyé une erreur : ${detail}` : "L'IA a renvoyé une erreur."
     : e && e.code === "AI_EXIT"
-    ? "L'IA s'est interrompue (sortie anormale)."
+    ? detail ? `L'IA s'est interrompue (sortie anormale) : ${detail}` : "L'IA s'est interrompue (sortie anormale)."
     : (e && e.message) || "Erreur lors de l'appel à l'IA.";
+}
+
+// Journalise une erreur du pipeline IA côté serveur (code + motif brut), pour que
+// la cause apparaisse dans les logs même quand le message affiché reste générique.
+function logAiError(tag, e) {
+  const detail = aiErrorDetail(e);
+  console.error(
+    `[meowtrack] ${tag}: ${(e && e.code) || "ERR"}` +
+      (e && e.exitCode != null ? ` (exit=${e.exitCode})` : "") +
+      (detail ? ` → ${detail}` : (e && e.message ? ` → ${e.message}` : ""))
+  );
 }
 
 // Dump diagnostic du bloc d'actions brut quand parseAiTurn le juge illisible
@@ -260,6 +281,7 @@ async function runNodeTurn(repoId, nodeId, scopeSnapshot, descendants, history, 
     if (applied.issuesChanged) broadcastIssuesChanged(repoId); // l'IA a créé/modifié des entrées de suivi
   } catch (e) {
     batcher.end();
+    logAiError(`runNodeTurn nœud ${nodeId}`, e);
     const emsg = aiErrorMessage(e);
     try {
       const msg = updateNodeMessage(pendingId, { body: emsg, reasoning, state: "error" }, repoId);
@@ -488,6 +510,7 @@ async function runForestTurn(repoId, forestSnapshot, history, userText, author, 
     if (applied.issuesChanged) broadcastIssuesChanged(repoId);
   } catch (e) {
     batcher.end();
+    logAiError(`runForestTurn repo ${repoId}`, e);
     const emsg = aiErrorMessage(e);
     try {
       const msg = updateForestMessage(pendingId, { body: emsg, reasoning, state: "error" }, repoId);
