@@ -558,6 +558,8 @@ function renderGrid() {
 const NS = "http://www.w3.org/2000/svg";
 const G_LEVEL_GAP = 138; // distance verticale entre deux niveaux (N_k → N_k+1)
 const G_NODE_GAP = 134;  // largeur horizontale d'un emplacement feuille
+const G_ROOT_ROW_GAP = 160; // espace vertical entre deux bandes de racines enroulées
+const G_ROOT_ROW_MAX = 50;  // nombre max de racines par bande (plafond dur)
 function computeGraphLayout() {
   // Layout réel : nœuds de la forêt, épinglage via posX/posY.
   return tidyForest(
@@ -572,6 +574,9 @@ function computeGraphLayout() {
 // donc les sous-arbres frères ne se chevauchent jamais. (Bug corrigé : l'ancienne version
 // avançait la rangée d'un G_NODE_GAP FIXE par racine et ne recalait que la racine sur son
 // slot → un sous-arbre plus large qu'un slot débordait sur les feuilles du voisin.)
+// ENROULEMENT : quand la somme des largeurs de racines dépasse une largeur cible (≈ aire
+// totale au carré, ratio paysage), on passe à une nouvelle bande sous la précédente — évite
+// une seule ligne interminable quand il y a beaucoup de projets/racines.
 function tidyForest(roots, kidsOf, pinOf) {
   // Post-ordre : pose les feuilles à la suite du curseur, centre chaque parent sur
   // l'intervalle [1re … dernière feuille] de ses enfants. Y = profondeur. cur.x final =
@@ -585,13 +590,31 @@ function tidyForest(roots, kidsOf, pinOf) {
     local.set(node.id, { x: (first + last) / 2, y });
   };
   const tidy = new Map(); // layout auto « idéal » (relatif à la hiérarchie)
-  let cursorX = 0;
-  for (const root of roots) {
+  // Pré-calcul par racine : layout local relatif + largeur + hauteur de son sous-arbre.
+  const subtrees = roots.map((root) => {
     const local = new Map();
     const cur = { x: 0 };
     placeSub(root, local, cur);
-    for (const [id, p] of local) tidy.set(id, { x: p.x + cursorX, y: p.y });
-    cursorX += Math.max(cur.x, G_NODE_GAP); // avance de la largeur réelle du sous-arbre
+    let height = 0;
+    for (const p of local.values()) if (p.y > height) height = p.y;
+    return { local, width: Math.max(cur.x, G_NODE_GAP), height };
+  });
+  // Largeur cible d'une bande : ~√(aire totale) × ratio paysage, avec un plancher pour ne
+  // pas enrouler tant qu'il y a peu de racines (une longue ligne reste préférable à 2 bandes
+  // quasi vides). aire = largeur totale × hauteur de bande (sous-arbre le plus haut + gap).
+  const totalW = subtrees.reduce((s, st) => s + st.width, 0);
+  const bandH = subtrees.reduce((m, st) => Math.max(m, st.height), 0) + G_ROOT_ROW_GAP;
+  const maxRowWidth = Math.max(G_NODE_GAP * 6, Math.sqrt(totalW * bandH) * 1.7);
+  let cursorX = 0, rowY = 0, rowHeight = 0, rowCount = 0;
+  for (const st of subtrees) {
+    // Nouvelle bande dès que la largeur cible OU le plafond de 50 racines est atteint.
+    if (rowCount > 0 && (cursorX + st.width > maxRowWidth || rowCount >= G_ROOT_ROW_MAX)) {
+      cursorX = 0; rowY += rowHeight + G_ROOT_ROW_GAP; rowHeight = 0; rowCount = 0;
+    }
+    for (const [id, p] of st.local) tidy.set(id, { x: p.x + cursorX, y: p.y + rowY });
+    cursorX += st.width; // avance de la largeur réelle du sous-arbre
+    if (st.height > rowHeight) rowHeight = st.height;
+    rowCount++;
   }
   // Positions finales : on part du tidy-layout, mais chaque nœud ÉPINGLÉ (drag & drop
   // persisté) « entraîne » tout son sous-arbre auto en le décalant du même delta. Ainsi
