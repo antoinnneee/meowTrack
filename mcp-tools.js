@@ -76,6 +76,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_repos",
     {
+      annotations: { readOnlyHint: true },
       title: "Lister les repos suivis",
       description:
         "Liste les dépôts git du registre (slug, nom, url, branche par défaut, repo par défaut). Le `slug` " +
@@ -87,6 +88,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_repo_add",
     {
+      annotations: { readOnlyHint: false, destructiveHint: false },
       title: "Ajouter un repo",
       description:
         "Enregistre un nouveau dépôt git à suivre (et le clone immédiatement si une `url` est fournie). " +
@@ -105,6 +107,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_repo_import",
     {
+      annotations: { readOnlyHint: false, destructiveHint: false },
       title: "Importer un dossier multi-repos",
       description:
         "Détecte TOUS les clones git d'un dossier (le dossier lui-même + ses sous-dossiers directs, profondeur 1) " +
@@ -119,6 +122,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_repo_update",
     {
+      annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
       title: "Mettre à jour un repo (pull) ou ses métadonnées",
       description:
         "Sans autre champ : clone (si absent) ou git fetch+pull du repo. Avec des champs (name/url/localPath/" +
@@ -146,6 +150,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_repo_remove",
     {
+      annotations: { readOnlyHint: false, destructiveHint: true },
       title: "Supprimer un repo",
       description: "Retire un dépôt du registre ET toutes ses entrées/nœuds (cascade). Le dernier repo ne peut pas être supprimé. Irréversible.",
       inputSchema: { repo: z.union([z.string(), z.number()]).describe("Repo cible (slug ou id).") },
@@ -157,6 +162,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_create",
     {
+      annotations: { readOnlyHint: false, destructiveHint: false },
       title: "Créer un bug / feature / tâche",
       description:
         "Enregistre une nouvelle entrée de suivi dans un repo. `type` ∈ {bug,feature,task,chore}. Les chemins " +
@@ -182,6 +188,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_list",
     {
+      annotations: { readOnlyHint: true },
       title: "Lister / filtrer les entrées",
       description:
         "Liste les entrées de suivi d'un repo, triées par activité puis priorité. Par défaut masque les entrées " +
@@ -206,6 +213,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_get",
     {
+      annotations: { readOnlyHint: true },
       title: "Détail d'une entrée",
       description:
         "Retourne une entrée complète (références + commentaires) par code (ex. 'BUG-1') ou id numérique. " +
@@ -226,6 +234,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_update",
     {
+      annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
       title: "Modifier une entrée",
       description:
         "Met à jour les champs fournis d'une entrée existante. Fournir `paths` REMPLACE l'ensemble des " +
@@ -250,6 +259,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_set_status",
     {
+      annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
       title: "Changer le statut",
       description: "Raccourci pour passer une entrée à open / in_progress / done / wontfix.",
       inputSchema: {
@@ -265,6 +275,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_delete",
     {
+      annotations: { readOnlyHint: false, destructiveHint: true },
       title: "Supprimer une entrée",
       description: "Supprime définitivement une entrée et ses références/commentaires (cascade).",
       inputSchema: { repo: repoParam, ref: z.string().describe("Code ou id de l'entrée.") },
@@ -276,6 +287,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_reorder",
     {
+      annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
       title: "Réordonner les entrées",
       description:
         "Définit l'ordre MANUEL des entrées de suivi d'un repo (le tri statut/priorité ne s'applique plus : c'est " +
@@ -293,6 +305,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_add_reference",
     {
+      annotations: { readOnlyHint: false, destructiveHint: false },
       title: "Ajouter une référence fichier/dossier",
       description:
         "Associe un chemin du repo (validé) à une entrée, avec plage de lignes optionnelle " +
@@ -312,6 +325,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_remove_reference",
     {
+      annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
       title: "Retirer une référence",
       description: "Supprime une référence par son id (visible dans le détail de l'entrée). L'id est global, indépendant du repo.",
       inputSchema: { referenceId: z.number().int().describe("id de la référence à retirer.") },
@@ -326,6 +340,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_comment",
     {
+      annotations: { readOnlyHint: false, destructiveHint: false },
       title: "Ajouter un commentaire",
       description: "Ajoute une note de suivi (avancement, reproduction, piste…) à une entrée.",
       inputSchema: {
@@ -343,6 +358,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_search_paths",
     {
+      annotations: { readOnlyHint: true },
       title: "Rechercher des chemins du repo",
       description:
         "Autocomplete des fichiers/dossiers suivis par git sur le serveur (même source que le « @ » du " +
@@ -361,6 +377,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_branches",
     {
+      annotations: { readOnlyHint: true },
       title: "Lister les branches d'un repo",
       description:
         "Branches connues du clone serveur d'un repo (pour rattacher une entrée ou cibler l'autocomplete d'une " +
@@ -374,6 +391,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_stats",
     {
+      annotations: { readOnlyHint: true },
       title: "Statistiques de suivi",
       description: "Compte des entrées d'un repo par statut / type / priorité, plus le contexte git courant, la racine du clone et le registre des repos.",
       inputSchema: { repo: repoParam },
@@ -385,6 +403,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_refresh_paths",
     {
+      annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
       title: "Rafraîchir l'index des chemins",
       description: "Force un nouveau scan des chemins d'un repo côté serveur (après un pull / changement de branche / nouveaux fichiers).",
       inputSchema: { repo: repoParam },
@@ -404,6 +423,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_node_create",
     {
+      annotations: { readOnlyHint: false, destructiveHint: false },
       title: "Créer un nœud (objectif / jalon)",
       description:
         "Crée un nœud Vibes dans un repo. Sans `parentId` → objectif racine. Avec `parentId` → sous-jalon " +
@@ -429,6 +449,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_node_list",
     {
+      annotations: { readOnlyHint: true },
       title: "Lister les nœuds (forêt ou racines)",
       description:
         "Liste les nœuds d'un repo. `view='forest'` (défaut) renvoie TOUT l'arbre à plat (avec parentId/depth) — " +
@@ -453,6 +474,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_node_get",
     {
+      annotations: { readOnlyHint: true },
       title: "Détail d'un nœud (+ sous-arbre)",
       description: "Retourne un nœud complet (notes incluses) et, par défaut, son sous-arbre imbriqué (children). Préciser `repo` quand on cible par code.",
       inputSchema: {
@@ -478,6 +500,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_node_update",
     {
+      annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
       title: "Modifier un nœud",
       description:
         "Met à jour les champs fournis d'un nœud (titre, description, NOTES markdown, statut, couleur, emoji). " +
@@ -506,6 +529,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_node_set_status",
     {
+      annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
       title: "Changer le statut d'un nœud",
       description:
         "Raccourci : active / paused / waiting / done / abandoned. 'done' marque le jalon atteint ; " +
@@ -524,6 +548,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_node_request_input",
     {
+      annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
       title: "Demander une info à l'utilisateur (mise en attente)",
       description:
         "Met un nœud EN ATTENTE d'information utilisateur (status='waiting') et décrit ce qui manque. " +
@@ -544,6 +569,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_node_set_notes",
     {
+      annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
       title: "Définir les notes d'un nœud",
       description:
         "Remplace la liste de notes markdown d'un nœud. Pour AJOUTER sans perdre l'existant, récupère d'abord " +
@@ -557,6 +583,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_node_move",
     {
+      annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
       title: "Déplacer / rattacher un nœud",
       description:
         "Reparente un nœud (et tout son sous-arbre) DANS LE MÊME repo. `newParentId=null` → en fait un objectif " +
@@ -577,6 +604,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_node_reorder",
     {
+      annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
       title: "Réordonner les enfants d'un nœud",
       description: "Définit l'ordre des sous-nœuds directs d'un parent. `order` = liste d'ids enfants dans l'ordre voulu.",
       inputSchema: {
@@ -592,6 +620,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_node_delete",
     {
+      annotations: { readOnlyHint: false, destructiveHint: true },
       title: "Supprimer un nœud",
       description: "Supprime un nœud ET tout son sous-arbre (cascade). Irréversible.",
       inputSchema: { repo: repoParam, ref: nodeRefSchema },
@@ -603,6 +632,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_node_link_add",
     {
+      annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
       title: "Lier un prérequis entre nœuds",
       description:
         "Crée un lien de PRÉREQUIS hors hiérarchie : « `from` dépend de `to` » (from = le dépendant, to = le " +
@@ -618,6 +648,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_node_link_remove",
     {
+      annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
       title: "Retirer un prérequis",
       description: "Supprime le lien de prérequis « `from` dépend de `to` ». Idempotent (sans effet si absent).",
       inputSchema: { repo: repoParam, from: nodeRefSchema.describe("Le nœud dépendant."), to: nodeRefSchema.describe("Le prérequis à délier.") },
@@ -629,6 +660,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_node_links",
     {
+      annotations: { readOnlyHint: true },
       title: "Lister les liens de prérequis",
       description:
         "Retourne tous les liens de prérequis du repo : [{id, fromId, toId, kind}] (from dépend de to). Pour les " +
@@ -642,6 +674,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_issue_link_node",
     {
+      annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
       title: "Lier une entrée de suivi à un nœud",
       description:
         "Rattache une entrée de SUIVI (bug/feature/tâche) au NŒUD/jalon Vibes qu'elle concerne (même dépôt). " +
@@ -661,6 +694,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_issue_unlink_node",
     {
+      annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
       title: "Détacher un nœud d'une entrée de suivi",
       description: "Retire le lien entre une entrée de suivi et un nœud Vibes. `nodeId` = id numérique du nœud (cf. meowtrack_get → nodes liés).",
       inputSchema: {
@@ -684,6 +718,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_node_next",
     {
+      annotations: { readOnlyHint: false, destructiveHint: false },
       title: "Réclamer la prochaine tâche prête",
       description:
         "Tire ET réclame atomiquement la prochaine tâche exécutable d'un repo : une FEUILLE active, débloquée " +
@@ -703,6 +738,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_node_peek",
     {
+      annotations: { readOnlyHint: true },
       title: "Prochaine tâche dispatchable (sans réclamer)",
       description:
         "Montre la prochaine FEUILLE que meowtrack_node_next dispatcherait — même ordre et mêmes critères — " +
@@ -718,6 +754,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_node_start",
     {
+      annotations: { readOnlyHint: false, destructiveHint: false },
       title: "Marquer un nœud « en cours »",
       description:
         "Démarrage MANUEL d'un nœud (depuis Claude Code) : le marque « en cours » (run_state='running', badge ▶️ dans le graphe) " +
@@ -740,6 +777,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_node_heartbeat",
     {
+      annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
       title: "Prolonger le bail d'une tâche",
       description: "Prolonge le bail d'une tâche longue (évite l'expiration → re-réclamation). Échoue (409) si le bail a été perdu.",
       inputSchema: { repo: repoParam, ref: nodeRefSchema, owner: z.string().describe("Détenteur du bail.") },
@@ -751,6 +789,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_node_complete",
     {
+      annotations: { readOnlyHint: false, destructiveHint: false },
       title: "Clôturer une tâche (+ rapport)",
       description:
         "Clôt une tâche réclamée. Le serveur ingère le rapport (inline via `report`, sinon lu depuis " +
@@ -783,6 +822,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_node_fail",
     {
+      annotations: { readOnlyHint: false, destructiveHint: false },
       title: "Signaler l'échec d'une tâche",
       description: "Marque une tâche en échec (libère le bail ; rejouable tant que le nombre de tentatives reste sous le maximum).",
       inputSchema: {
@@ -802,6 +842,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_node_runs",
     {
+      annotations: { readOnlyHint: true },
       title: "Historique d'exécution d'un nœud",
       description: "Liste les runs d'un nœud (état, branche, résumé, test, rapport), du plus récent au plus ancien.",
       inputSchema: { repo: repoParam, ref: nodeRefSchema },
@@ -813,6 +854,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_node_reviews",
     {
+      annotations: { readOnlyHint: true },
       title: "Lister les points de revue",
       description:
         "Liste les points de revue. Avec `ref` → ceux d'un nœud ; sans `ref` → la file globale du repo. " +
@@ -834,6 +876,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   server.registerTool(
     "meowtrack_review_auto",
     {
+      annotations: { readOnlyHint: false, destructiveHint: false },
       title: "Auto-réviser des points de revue (chat IA top-level)",
       description:
         "Déclenche une AUTO-REVUE : le chat IA « top level » (forêt) répond aux points de revue d'un nœud en " +
