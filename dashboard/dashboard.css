@@ -483,6 +483,7 @@ body.forest-pinned.view-vibes #vibesView { margin-right: var(--forest-pin-w); }
 .g-node.kind-activation.deactivated { opacity: 1; } /* l'inactif n'est PAS grisé (porte en attente, pas abandonnée) */
 .g-emoji { pointer-events: none; }
 .g-state-badge { pointer-events: none; user-select: none; paint-order: stroke; stroke: var(--surface); stroke-width: 2.5px; stroke-linejoin: round; }
+.g-node.status-done .g-state-badge { fill: var(--feature); }
 .g-label { fill: var(--text); font: 12px "Segoe UI", system-ui, sans-serif; pointer-events: none; }
 .g-empty { fill: var(--text-dim); font: 14px "Segoe UI", system-ui, sans-serif; }
 /* Aperçu « fantôme » dans le graphe (chat « top level », non persisté) */
