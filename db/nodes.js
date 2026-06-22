@@ -977,6 +977,26 @@ export function renewLease(refOrId, owner, leaseMs = 600000, repoId = null) {
 // Clôt une tâche : seul le détenteur du bail peut clore. hasBlockingReview → la tâche
 // passe 'review' (ne débloque PAS les dépendants) au lieu de 'done'. Lève lease_lost
 // si le bail a changé de main (préemption).
+// Verse un récap d'implémentation dans une NOTE persistante du nœud (visible/durable
+// dans le panneau détail, contrairement au summary qui ne vit que dans node_runs).
+// Sémantique APPEND : une note par run (titre numéroté + daté) → conserve l'historique
+// multi-tentatives. Best-effort : sans summary, rien n'est ajouté. À appeler DANS la
+// transaction de completeNode, AVANT finishRun (le run courant 'running' existe encore).
+function appendRecapNote(nodeId, { summary, branch, testResult, state } = {}) {
+  const text = String(summary || "").trim();
+  if (!text) return; // rien à consigner
+  const row = db.prepare("SELECT notes FROM nodes WHERE id = ?").get(nodeId);
+  const notes = parseNotes(row && row.notes);
+  const runCount = (db.prepare("SELECT COUNT(*) c FROM node_runs WHERE node_id = ?").get(nodeId) || {}).c || 0;
+  const meta = [];
+  if (branch) meta.push(`Branche : \`${branch}\``);
+  if (testResult) meta.push(`Tests : ${testResult}`);
+  if (state) meta.push(`État : ${state}`);
+  const body = (meta.length ? meta.join(" · ") + "\n\n" : "") + text;
+  notes.push({ title: `📝 Compte-rendu — run #${runCount} (${nowIso().slice(0, 10)})`, body });
+  _setNodeFields(nodeId, { notes });
+}
+
 export function completeNode(refOrId, owner, { summary, branch, testResult, report, hasBlockingReview } = {}, repoId = null) {
   return withRepo(repoId, () => {
     const row = findNodeRow(refOrId, repoId);
@@ -999,6 +1019,9 @@ export function completeNode(refOrId, owner, { summary, branch, testResult, repo
       } else {
         affected = [row.id];
       }
+      // Récap d'implémentation versé en note persistante du nœud (avant finishRun :
+      // le run 'running' courant est encore ouvert → numérotation cohérente).
+      appendRecapNote(row.id, { summary, branch, testResult, state: next });
       finishRun(row.id, owner, next, { summary, branch, testResult, report });
     })();
     return { ok: true, state: hasBlockingReview ? "review" : "done", affectedNodeIds: affected, nodeId: row.id };

@@ -57,10 +57,22 @@ try {
   check("node d'activation refusé", gateBlocked);
 
   // Clôture : run_state revient à 'done', bail libéré.
-  completeNode(child.id, "claude-code", { summary: "fait" }, rid);
+  completeNode(child.id, "claude-code", { summary: "Implémentation faite", branch: "meow/X", testResult: "pass" }, rid);
   const done = getNode(child.id, { repoId: rid });
   check("complete remet run_state='done'", done.runState === "done");
   check("complete libère le bail", done.leaseOwner == null);
+
+  // NODE-303 : un récap d'implémentation est versé en NOTE persistante (append).
+  const recap = (done.notes || []).find((n) => /Compte-rendu/.test(n.title || ""));
+  check("note de récap ajoutée à la clôture", !!recap);
+  check("récap contient summary + méta", recap && /Implémentation faite/.test(recap.body) && /meow\/X/.test(recap.body) && /pass/.test(recap.body));
+
+  // Clôture SANS summary → pas de note ajoutée (best-effort).
+  const c2 = createNode(rid, null, { title: "Sans récap" });
+  startNode(c2.id, "claude-code", {}, rid);
+  completeNode(c2.id, "claude-code", {}, rid);
+  const done2 = getNode(c2.id, { repoId: rid });
+  check("aucune note si pas de summary", (done2.notes || []).length === 0);
 
   console.log(`\n${pass} OK, ${fail} échec(s)`);
   process.exit(fail ? 1 : 0);
