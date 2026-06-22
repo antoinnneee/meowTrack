@@ -190,10 +190,8 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
       annotations: { readOnlyHint: false, destructiveHint: false },
       title: "Créer un bug / feature / tâche",
       description:
-        "Enregistre une nouvelle entrée de suivi dans un repo. `type` ∈ {bug,feature,task,chore}. Les chemins " +
-        "de `paths` sont validés contre le repo cloné (existence + contexte git capturés). Tout token `@chemin` " +
-        "(ou `@chemin:120-145`) présent dans `description` est aussi ajouté en référence. Retourne l'issue créée " +
-        "(code ex. BUG-1, numéroté PAR repo).",
+        "Crée une entrée de suivi (type ∈ {bug,feature,task,chore}). Les `paths` et les `@chemin` cités dans " +
+        "`description` sont validés contre le repo et ajoutés en références. Retourne l'issue créée (ex. BUG-1, par repo).",
       inputSchema: {
         repo: repoParam,
         type: z.enum(TYPES).optional().describe("Type (défaut 'bug')."),
@@ -321,9 +319,8 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
       annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
       title: "Réordonner les entrées",
       description:
-        "Définit l'ordre MANUEL des entrées de suivi d'un repo (le tri statut/priorité ne s'applique plus : c'est " +
-        "cet ordre qui prime). `order` = liste de codes (BUG-1, FEAT-2…) ou ids dans l'ordre voulu. Les entrées non " +
-        "citées conservent leur ordre relatif et sont placées après. Retourne la liste réordonnée.",
+        "Définit l'ordre MANUEL des entrées (prime sur le tri statut/priorité). `order` = codes/ids dans l'ordre voulu ; " +
+        "les entrées non citées suivent (ordre relatif conservé). Retourne la liste réordonnée.",
       inputSchema: {
         repo: repoParam,
         order: z.array(z.union([z.string(), z.number()])).describe("Codes/ids des entrées dans le nouvel ordre."),
@@ -457,9 +454,9 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
       annotations: { readOnlyHint: false, destructiveHint: false },
       title: "Créer un nœud (objectif / jalon)",
       description:
-        "Crée un nœud Vibes dans un repo. Sans `parentId` → objectif racine. Avec `parentId` → sous-jalon " +
-        "(qui hérite du repo du parent). La progression est dérivée automatiquement (ne pas la fixer). Retourne le nœud créé (code NODE-N, numéroté par repo). " +
-        "`kind='activation'` crée un NODE D'ACTIVATION : porte manuelle qui bloque tous les nœuds qui le requièrent (meowtrack_node_link_add) tant qu'il n'est pas 'done' (= activé).",
+        "Crée un nœud Vibes. Sans `parentId` → objectif racine ; sinon sous-jalon (hérite du repo du parent). " +
+        "Progression dérivée automatiquement (ne pas la fixer). `kind='activation'` = porte manuelle bloquant les " +
+        "nœuds qui la requièrent (meowtrack_node_link_add) tant qu'elle n'est pas 'done'. Retourne le nœud (NODE-N, par repo).",
       inputSchema: {
         repo: repoParam,
         title: z.string().describe("Titre du nœud."),
@@ -570,8 +567,8 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
       annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
       title: "Changer le statut d'un nœud",
       description:
-        "Raccourci : active / paused / waiting / done / abandoned. 'done' marque le jalon atteint ; " +
-        "'waiting' = en attente d'info utilisateur (préfère meowtrack_node_request_input pour décrire ce qui manque).",
+        "Raccourci statut : active / paused / waiting / done / abandoned. 'waiting' = en attente d'info utilisateur " +
+        "(préfère meowtrack_node_request_input pour décrire le manque).",
       inputSchema: { repo: repoParam, ref: nodeRefSchema, status: z.enum(NODE_STATUSES) },
     },
     guard(async ({ repo, ref, status }) => apiFetch("PATCH", "/api/nodes/" + encodeURIComponent(ref) + qs({ repo: repoOf(repo) }), { status }))
@@ -589,9 +586,8 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
       annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
       title: "Demander une info à l'utilisateur (mise en attente)",
       description:
-        "Met un nœud EN ATTENTE d'information utilisateur (status='waiting') et décrit ce qui manque. " +
-        "À appeler quand il manque une clé API, une config ou une décision pour une implémentation à venir. " +
-        "N'inclus JAMAIS la valeur d'un secret dans `info` — décris seulement ce qui est attendu.",
+        "Met un nœud EN ATTENTE d'info utilisateur (status='waiting') et décrit le manque (clé API, config, décision) " +
+        "requis avant l'implémentation. N'inclus JAMAIS de secret dans `info`.",
       inputSchema: {
         repo: repoParam,
         ref: nodeRefSchema,
@@ -610,8 +606,8 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
       annotations: { readOnlyHint: false, idempotentHint: true, destructiveHint: false },
       title: "Définir les notes d'un nœud",
       description:
-        "Remplace la liste de notes markdown d'un nœud. Pour AJOUTER sans perdre l'existant, récupère d'abord " +
-        "les notes via meowtrack_node_get puis renvoie l'ancienne liste + la nouvelle entrée.",
+        "Remplace la liste de notes markdown d'un nœud. Pour AJOUTER, récupère d'abord les notes via " +
+        "meowtrack_node_get puis renvoie l'ancienne liste + la nouvelle entrée.",
       inputSchema: { repo: repoParam, ref: nodeRefSchema, notes: notesSchema },
     },
     guard(async ({ repo, ref, notes }) => apiFetch("PATCH", "/api/nodes/" + encodeURIComponent(ref) + qs({ repo: repoOf(repo) }), { notes }))
@@ -830,12 +826,10 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
       annotations: { readOnlyHint: false, destructiveHint: false },
       title: "Clôturer une tâche (+ rapport)",
       description:
-        "Clôt une tâche réclamée. Le serveur ingère le rapport (inline via `report`, sinon lu depuis " +
-        ".meowtrack/runs/<ref>.json du clone) : applique les `nodeUpdates` sûrs et persiste les `reviewPoints`. " +
-        "Sans point bloquant → la tâche passe 'done' (débloque ses dépendants, progression remonte) ; avec un point " +
-        "bloquant → 'review' (attend un arbitrage humain ou auto). Seul le détenteur du bail peut clore. " +
-        "Si le réglage auto_compact est activé, la réponse contient hint:'compact_suggested' (bon point de césure du contexte). " +
-        "Conseillé après clôture : merger la branche de travail dans `main` (+push) avant de réclamer le nœud suivant (intégration continue).",
+        "Clôt une tâche réclamée (détenteur du bail uniquement). Ingère le rapport (inline `report` ou " +
+        ".meowtrack/runs/<ref>.json) : applique les `nodeUpdates` sûrs, persiste les `reviewPoints`. Sans point " +
+        "bloquant → 'done' (débloque les dépendants, progression remonte) ; sinon → 'review'. Réponse " +
+        "hint:'compact_suggested' si auto_compact est ON. Après clôture : merger la branche dans `main` (+push) avant le nœud suivant.",
       inputSchema: {
         repo: repoParam,
         ref: nodeRefSchema,
@@ -847,9 +841,9 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
           .any()
           .optional()
           .describe(
-            "Rapport structuré inline (sinon lu depuis .meowtrack/runs/<ref>.json) : { state, summary, nodeUpdates[], reviewPoints[] }. " +
-              "`nodeUpdates` accepte les actions NŒUD (add_node/update_node/…) ET SUIVI (add_issue/update_issue/link_issue/…) : " +
-              "un agent peut donc créer des tâches et des entrées de suivi. Non destructif + run.autoApplyUpdates → appliqué ; sinon proposé en revue."
+            "Rapport inline (sinon lu depuis .meowtrack/runs/<ref>.json) : { state, summary, nodeUpdates[], reviewPoints[] }. " +
+              "`nodeUpdates` accepte les actions NŒUD (add_node/update_node/…) et SUIVI (add_issue/…). " +
+              "Non destructif + run.autoApplyUpdates → appliqué ; sinon proposé en revue."
           ),
       },
     },
@@ -917,9 +911,8 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
       annotations: { readOnlyHint: false, destructiveHint: false },
       title: "Auto-réviser des points de revue (chat IA top-level)",
       description:
-        "Déclenche une AUTO-REVUE : le chat IA « top level » (forêt) répond aux points de revue d'un nœud en " +
-        "remodelant l'arbre d'objectifs et/ou les tâches (guidé par le prompt de politique configuré). Réutilise le " +
-        "pipeline du chat forêt (actions destructives → proposées pour confirmation). Réponse 202 puis stream SSE.",
+        "Déclenche une AUTO-REVUE : le chat IA forêt traite les points de revue d'un nœud en remodelant l'arbre/les " +
+        "tâches (actions destructives proposées pour confirmation). Réponse 202 puis stream SSE.",
       inputSchema: {
         repo: repoParam,
         ref: nodeRefSchema.describe("Nœud dont on auto-révise les points."),
