@@ -35,7 +35,7 @@ function childCountOf(id) {
   return db.prepare("SELECT COUNT(*) c FROM nodes WHERE parent_id = ?").get(id).c;
 }
 
-function rowToNode(r, { childCount } = {}) {
+function rowToNode(r, { childCount, includeNotes = true } = {}) {
   if (!r) return null;
   const pct = Math.max(0, Math.min(100, r.progress | 0));
   return {
@@ -47,7 +47,7 @@ function rowToNode(r, { childCount } = {}) {
     depth: r.depth,
     title: r.title,
     description: r.description,
-    notes: parseNotes(r.notes),
+    ...(includeNotes ? { notes: parseNotes(r.notes) } : {}),
     status: r.status,
     color: r.color,
     emoji: r.emoji,
@@ -167,13 +167,13 @@ export function listRootNodes(repoId, filter = {}) {
 }
 
 // Forêt entière d'un repo à plat (graphe). childCount dérivé en un passage.
-export function listForest(repoId) {
+export function listForest(repoId, { includeNotes = true } = {}) {
   if (repoId == null) throw new Error("repoId requis");
   return withRepo(repoId, () => {
   const rows = db.prepare("SELECT * FROM nodes WHERE repo_id = ? ORDER BY depth, position, id").all(repoId);
   const counts = new Map();
   for (const r of rows) if (r.parent_id != null) counts.set(r.parent_id, (counts.get(r.parent_id) || 0) + 1);
-  return rows.map((r) => rowToNode(r, { childCount: counts.get(r.id) || 0 }));
+  return rows.map((r) => rowToNode(r, { childCount: counts.get(r.id) || 0, includeNotes }));
   });
 }
 
