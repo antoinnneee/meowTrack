@@ -1106,6 +1106,41 @@ function sparkleNode(svg, id, big) {
     ? { count: 16, dist: 64, size: 20, emojis: ["🎉", "✨", "⭐", "🏆", "💫"] }
     : { count: 10, dist: 46, emojis: ["✨", "💫", "⭐"] });
 }
+// NODE-326 : met en évidence (halo) un nœud du graphe au survol d'une puce du chat.
+// Actif uniquement en vue graphe forêt. Recentre EN DOUCEUR seulement si le nœud est
+// hors du viewport (évite tout pan inutile quand il est déjà visible).
+function highlightGraphNode(id) {
+  if (!id || $("#graphView")?.hidden) return; // pas de graphe visible → no-op
+  const svg = $("#graphSvg");
+  const g = svg?.querySelector(`.g-node[data-id="${cssId(id)}"]`);
+  if (!g) return;
+  clearGraphHighlight(); // un seul halo à la fois
+  g.classList.add("g-highlight");
+  const p = vibes.graph.posMap.get(Number(id));
+  if (!p) return;
+  const v = vibes.graph.view;
+  const visible = p.x >= v.x && p.x <= v.x + v.w && p.y >= v.y && p.y <= v.y + v.h;
+  if (!visible) panViewTo(svg, p.x - v.w / 2, p.y - v.h / 2);
+}
+function clearGraphHighlight() {
+  $("#graphSvg")?.querySelectorAll(".g-node.g-highlight").forEach((g) => g.classList.remove("g-highlight"));
+}
+// Pan doux du viewBox vers (tx,ty) (coin haut-gauche cible), easeOutCubic ~260 ms.
+// Ne touche ni au zoom (w/h) ni à userView : c'est un recadrage transitoire d'aide.
+function panViewTo(svg, tx, ty) {
+  if (vibes.graph._panRaf) cancelAnimationFrame(vibes.graph._panRaf);
+  const v = vibes.graph.view;
+  const sx = v.x, sy = v.y, dur = 260, t0 = performance.now();
+  const step = (now) => {
+    const k = Math.min(1, (now - t0) / dur);
+    const e = 1 - Math.pow(1 - k, 3);
+    v.x = sx + (tx - sx) * e;
+    v.y = sy + (ty - sy) * e;
+    applyViewBox(svg);
+    vibes.graph._panRaf = k < 1 ? requestAnimationFrame(step) : null;
+  };
+  vibes.graph._panRaf = requestAnimationFrame(step);
+}
 function fitView(pos, svg) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const p of pos.values()) {
@@ -2454,13 +2489,19 @@ function messageEl(m) {
       if (btn && m.id) btn.addEventListener("click", () => confirmActions(m.id));
       const ub = node.querySelector(".undo-actions");
       if (ub && m.id) ub.addEventListener("click", () => undoPlacement(m.id));
-      // Chips d'actions appliquées : clic / Entrée → ouvre le nœud concerné.
+      // Chips d'actions appliquées : clic / Entrée → ouvre le nœud concerné ;
+      // survol / focus → met en évidence le nœud dans le graphe forêt (NODE-326).
       node.querySelectorAll(".action-chip.clickable[data-open-node]").forEach((chip) => {
-        const open = () => openNode(chip.dataset.openNode);
+        const id = chip.dataset.openNode;
+        const open = () => openNode(id);
         chip.addEventListener("click", open);
         chip.addEventListener("keydown", (e) => {
           if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
         });
+        chip.addEventListener("mouseenter", () => highlightGraphNode(id));
+        chip.addEventListener("mouseleave", clearGraphHighlight);
+        chip.addEventListener("focus", () => highlightGraphNode(id));
+        chip.addEventListener("blur", clearGraphHighlight);
       });
       div.appendChild(node);
     }

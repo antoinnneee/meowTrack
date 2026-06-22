@@ -549,6 +549,10 @@ body.forest-pinned.view-vibes #vibesView { margin-right: var(--forest-pin-w); }
 .g-node.status-waiting .g-disc { stroke: var(--high); stroke-width: 2.5; stroke-dasharray: 5 4; }
 .g-node.status-paused { opacity: .7; }
 .g-node.status-abandoned { opacity: .42; }
+/* NODE-326 : halo au survol d'une puce de nœud sous un message du chat. Placé APRÈS
+   les règles status-* (même spécificité) pour gagner l'ordre source quel que soit le
+   statut → le halo accent reste visible aussi sur les nœuds done/waiting. Non destructif. */
+.g-node.g-highlight .g-disc { stroke: var(--accent); stroke-width: 3.5; filter: drop-shadow(0 0 7px var(--accent)); }
 /* Node d'activation : losange « porte » derrière le disque (silhouette reconnaissable).
    Inactif = contour ambre tireté atténué ; activé = plein, lumineux (séquence débloquée). */
 .g-act-frame { fill: rgba(255, 212, 59, .07); stroke: #ffd43b; stroke-width: 3; stroke-linejoin: round; }
