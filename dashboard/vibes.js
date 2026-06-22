@@ -90,6 +90,8 @@ const NODE_CHAT_CTX = {
   emptyHtml: '<div class="empty">Discute de ce nœud : décris-le, demande des sous-jalons…</div>',
   url: (sub) => `/api/nodes/${encodeURIComponent(vibes.current)}${sub || ""}`,
   ready: () => !!vibes.current,
+  queue: [], // NODE-327 : messages empilés pendant un tour IA (envoyés à sa fin)
+  busy: false, // un tour IA est en cours pour ce contexte (verrou serveur ai_busy)
 };
 const FOREST_CHAT_CTX = {
   kind: "forest",
@@ -103,6 +105,8 @@ const FOREST_CHAT_CTX = {
   emptyHtml: '<div class="empty">Discute de tes objectifs au plus haut niveau : décris une ambition, demande à créer des objectifs racines…</div>',
   url: (sub) => `/api/forest${sub || ""}`,
   ready: () => true,
+  queue: [], // NODE-327 : messages empilés pendant un tour IA (envoyés à sa fin)
+  busy: false,
 };
 vibes.chat = NODE_CHAT_CTX;
 function chatFeedEl() {
@@ -2354,7 +2358,8 @@ function messageEl(m) {
   const div = document.createElement("div");
   const mine = m.role !== "assistant" && m.author === vibes.user;
   const streaming = m.state === "pending" || m.state === "streaming";
-  div.className = "msg" + (m.role === "assistant" ? " ai" : mine ? " mine" : "") + (streaming ? " streaming" : "") + (m.state === "error" ? " error" : "");
+  const queued = m.state === "queued"; // NODE-327 : message en attente d'envoi (file)
+  div.className = "msg" + (m.role === "assistant" ? " ai" : mine ? " mine" : "") + (streaming ? " streaming" : "") + (m.state === "error" ? " error" : "") + (queued ? " queued" : "");
   if (m.id) div.dataset.mid = String(m.id);
   if (m.clientNonce) div.dataset.nonce = m.clientNonce;
   const who = m.role === "assistant" ? `🤖 Claude${m.model ? " · " + esc(m.model) : ""}` : esc(m.author || "anon");
@@ -2365,6 +2370,15 @@ function messageEl(m) {
   head.style.color = color;
   head.textContent = "";
   head.innerHTML = who;
+  // NODE-327 : badge « en file » + clic sur la bulle pour annuler avant l'envoi.
+  if (queued) {
+    const badge = document.createElement("span");
+    badge.className = "queued-badge";
+    badge.textContent = "⏳ en file";
+    head.appendChild(badge);
+    div.title = "En file — clic pour annuler";
+    div.addEventListener("click", () => cancelQueued(m.clientNonce));
+  }
   div.appendChild(head);
 
   // Bouton « retirer ce message » (visible au survol) — messages finalisés uniquement.
@@ -2535,6 +2549,11 @@ function onStreamDelta(d) {
 function renderChat(messages) {
   const feed = chatFeedEl();
   if (!feed) return;
+  // NODE-327 : (re)chargement d'une conversation → file propre au contexte chargé,
+  // état de génération re-confirmé ensuite par les events ai:turn. Évite qu'une file
+  // ou un verrou « busy » d'un nœud précédent ne fuite vers le nouveau (ctx réutilisé).
+  vibes.chat.queue = [];
+  vibes.chat.busy = false;
   feed.innerHTML = "";
   vibes.seen.clear();
   vibes.streams.clear();
@@ -2567,20 +2586,56 @@ async function sendChat() {
   const text = ta.value.trim();
   if (!text || !ctx.ready()) return;
   const nonce = crypto.randomUUID ? crypto.randomUUID() : "n" + Date.now() + Math.floor(Math.random() * 1e6);
-  vibes.stickToBottom = true; // envoyer un message réactive le suivi du bas
-  appendMessage({ id: 0, role: "user", author: vibes.user, body: text, state: "complete", clientNonce: nonce, sessionId: ctx.sessionId });
   ta.value = "";
   autoGrowChat(ta);
+  // NODE-327 : si un tour IA est déjà en cours pour ce contexte, on EMPILE plutôt
+  // que de refuser — le message part automatiquement à la fin du tour courant.
+  if (ctx.busy) { enqueueChat(ctx, text, nonce); return; }
+  submitChat(ctx, text, nonce);
+}
+// Empile un message « en file » (bulle ⏳ cliquable pour annuler) pour ce contexte.
+function enqueueChat(ctx, text, nonce) {
+  ctx.queue.push({ text, nonce, sessionId: ctx.sessionId });
+  vibes.stickToBottom = true;
+  appendMessage({ id: 0, role: "user", author: vibes.user, body: text, state: "queued", clientNonce: nonce, sessionId: ctx.sessionId });
+}
+// Envoie réellement un message (bulle utilisateur + POST). Sur course `ai_busy`
+// (un tour a démarré entre-temps) → bascule en file au lieu de perdre le message.
+async function submitChat(ctx, text, nonce) {
+  vibes.stickToBottom = true; // envoyer un message réactive le suivi du bas
+  appendMessage({ id: 0, role: "user", author: vibes.user, body: text, state: "complete", clientNonce: nonce, sessionId: ctx.sessionId });
   try {
     await api.send("POST", ctx.url("/chat"), { author: vibes.user, model: vibes.model, body: text, clientNonce: nonce, session: ctx.sessionId });
+    ctx.busy = true; // tour démarré (confirmé ensuite par ai:turn 'start')
   } catch (e) {
-    if (/ai_busy/.test(e.message)) toast(ctx.kind === "forest" ? "Claude répond déjà au niveau objectifs — attends la fin du tour." : "Claude répond déjà sur ce nœud — attends la fin du tour.");
-    else if (/ai_overloaded/.test(e.message)) toast("Trop de discussions IA en cours, réessaie dans un instant.");
+    if (/ai_busy/.test(e.message)) {
+      ctx.busy = true;
+      chatFeedEl()?.querySelector(`[data-nonce="${cssId(nonce)}"]`)?.remove();
+      enqueueChat(ctx, text, nonce);
+      return;
+    }
+    if (/ai_overloaded/.test(e.message)) toast("Trop de discussions IA en cours, réessaie dans un instant.");
     else toast("Échec : " + e.message);
     chatFeedEl()?.querySelector(`[data-nonce="${cssId(nonce)}"]`)?.remove();
-    ta.value = text;
-    autoGrowChat(ta);
+    const ta = $(ctx.inputSel);
+    if (ta) { ta.value = text; autoGrowChat(ta); }
   }
+}
+// Dépile le 1er message en attente d'un contexte (appelé à la fin d'un tour).
+// Enchaîne UN message à la fois : son envoi relance un tour, dont la fin dépilera
+// le suivant. Best-effort : si plus rien en file ou tour encore en cours, no-op.
+function drainQueue(ctx) {
+  if (ctx.busy || !ctx.queue.length) return;
+  const item = ctx.queue.shift();
+  chatFeedEl()?.querySelector(`[data-nonce="${cssId(item.nonce)}"]`)?.remove(); // la bulle ⏳ devient un envoi normal
+  submitChat(ctx, item.text, item.nonce);
+}
+// Annule un message en file (clic sur la bulle ⏳) : le retire de la file + du DOM.
+function cancelQueued(nonce) {
+  const ctx = vibes.chat;
+  const i = ctx.queue.findIndex((q) => q.nonce === nonce);
+  if (i >= 0) ctx.queue.splice(i, 1);
+  chatFeedEl()?.querySelector(`[data-nonce="${cssId(nonce)}"]`)?.remove();
 }
 async function confirmActions(messageId) {
   try {
@@ -2755,6 +2810,15 @@ function applyAiTurnEvent(d) {
   // un tour, masqué sinon) et par l'animation « Claude rédige » dans la bulle.
   const stop = $(vibes.chat.stopSel);
   if (stop) stop.hidden = d.state !== "start";
+  // NODE-327 : suit l'état de génération du contexte actif et, à la fin du tour,
+  // dépile le prochain message en file. (Le Stop n'interrompt que le tour courant ;
+  // la file continue de s'enchaîner — c'est l'intention d'« empiler ».)
+  if (d.state === "start") {
+    vibes.chat.busy = true;
+  } else {
+    vibes.chat.busy = false;
+    drainQueue(vibes.chat);
+  }
 }
 // Interrompt la réponse IA en cours pour le chat actif (nœud ou forêt).
 async function stopChat() {

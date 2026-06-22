@@ -405,6 +405,10 @@ body:not(.view-repo) .repo-only { display: none; }
 .msg.ai { align-self: flex-start; border-color: var(--accent); }
 .msg.pending { opacity: .85; }
 .msg.error { border-color: var(--bug); }
+/* NODE-327 : message « en file » (envoyé à la fin du tour IA), cliquable pour annuler. */
+.msg.queued { align-self: flex-end; opacity: .6; border-style: dashed; cursor: pointer; }
+.msg.queued:hover { opacity: .9; border-color: var(--bug); }
+.msg.queued .queued-badge { margin-left: 8px; font-weight: 400; color: var(--text-dim); }
 .msg-head { font-size: 11px; font-weight: 700; margin-bottom: 3px; }
 .msg-body { font-size: 13px; white-space: pre-wrap; word-break: break-word; }
 /* Points « Claude rédige… » : keyframe dédiée SANS retour à vide (évite le saut de
