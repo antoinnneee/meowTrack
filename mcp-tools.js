@@ -701,6 +701,28 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
     guard(async ({ repo, owner, branch }) => apiFetch("POST", "/api/nodes/next" + qs({ repo: repoOf(repo) }), { owner, branch }))
   );
 
+  // ── meowtrack_node_start ─────────────────────────────────────────────────────
+  server.registerTool(
+    "meowtrack_node_start",
+    {
+      title: "Marquer un nœud « en cours »",
+      description:
+        "Démarrage MANUEL d'un nœud (depuis Claude Code) : le marque « en cours » (run_state='running', badge ▶️ dans le graphe) " +
+        "et pose un bail au nom de `owner`. Contrairement à meowtrack_node_next (orchestrateur), n'exige NI une feuille NI des " +
+        "prérequis satisfaits — c'est un signal explicite « je commence à travailler dessus ». Le nœud doit être 'active' et non " +
+        "déjà pris par un autre worker (sinon 409). Clôture via meowtrack_node_complete / _fail.",
+      inputSchema: {
+        repo: repoParam,
+        ref: nodeRefSchema,
+        owner: z.string().optional().describe("Identifiant du worker (défaut 'claude-code') — détenteur du bail."),
+        branch: z.string().optional().describe("Branche de travail associée au run (ex. 'meow/NODE-12')."),
+      },
+    },
+    guard(async ({ repo, ref, owner, branch }) =>
+      apiFetch("POST", "/api/nodes/" + encodeURIComponent(ref) + "/start" + qs({ repo: repoOf(repo) }), { owner, branch })
+    )
+  );
+
   // ── meowtrack_node_heartbeat ─────────────────────────────────────────────────
   server.registerTool(
     "meowtrack_node_heartbeat",

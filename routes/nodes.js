@@ -27,6 +27,7 @@ import {
   addNodeLink,
   removeNodeLink,
   claimNextNode,
+  startNode,
   renewLease,
   completeNode,
   failNode,
@@ -395,7 +396,7 @@ export async function handle(ctx) {
   }
 
   // ── Orchestrateur : endpoints PAR nœud (hors regex paramétré ci-dessus) ──────
-  const orch = path.match(/^\/api\/nodes\/([^/]+)\/(complete|fail|heartbeat|runs|reviews|reviews\/auto|reviews\/(\d+)\/resolve)$/);
+  const orch = path.match(/^\/api\/nodes\/([^/]+)\/(start|complete|fail|heartbeat|runs|reviews|reviews\/auto|reviews\/(\d+)\/resolve)$/);
   if (orch) {
     const ref = decodeURIComponent(orch[1]);
     const action = orch[2];
@@ -412,6 +413,23 @@ export async function handle(ctx) {
     // GET …/reviews — points de revue du nœud.
     if (action === "reviews" && method === "GET") {
       send(res, 200, listReviews({ ref: node.id, state: q.get("state") || null, repoId: id }));
+      return true;
+    }
+    // POST …/start { owner?, branch? } — démarrage MANUEL : marque le nœud « en cours »
+    // (run_state='running' + bail) depuis Claude Code/MCP. Diffuse node:updated.
+    if (action === "start" && method === "POST") {
+      const body = await readBody(req);
+      const owner = String(body.owner || "claude-code").trim() || "claude-code";
+      const cfg = getOrchestratorConfig(id);
+      try {
+        const n = startNode(node.id, owner, { leaseMs: cfg.leaseMs, branch: body.branch }, id);
+        broadcast(forestKey(repoId), "node:updated", n);
+        broadcast(nodeKey(repoId, node.id), "node:updated", n);
+        send(res, 200, n);
+      } catch (e) {
+        if (e.code === "not_startable") return send(res, 409, { error: "not_startable" }), true;
+        throw e;
+      }
       return true;
     }
     // POST …/heartbeat { owner } — prolonge le bail.

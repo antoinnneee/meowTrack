@@ -782,6 +782,7 @@ function nodeGroup(n, p) {
   inner.appendChild(lbl);
   // Badge d'état (coin haut-droit) : lisible d'un coup d'œil. Le blocage prime sur le statut.
   const badgeIcon = blocked ? "🔒"
+    : n.runState === "running" ? "▶️"
     : n.status === "paused" ? "⏸"
     : n.status === "waiting" ? "⏳"
     : n.status === "done" ? "✓"

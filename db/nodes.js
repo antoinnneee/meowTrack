@@ -918,6 +918,48 @@ export function claimNextNode(repoId, owner, { leaseMs = 600000, maxAttempts = 3
   });
 }
 
+// Démarre MANUELLEMENT un nœud (depuis Claude Code / MCP) : pose run_state='running'
+// + un bail pour `owner`, et ouvre un run (node_runs) pour que le cycle
+// complete/fail fonctionne. Contrairement à claimNextNode (orchestrateur), n'exige
+// PAS une feuille ni des prérequis satisfaits — c'est un démarrage explicite à la
+// main. Refuse un node d'activation (porte) et un nœud non 'active', terminé, en
+// revue, ou dont le bail appartient à un AUTRE worker encore valide. Renvoie le nœud
+// (run_state='running') ou lève { code:'not_startable' }.
+export function startNode(refOrId, owner, { leaseMs = 600000, branch = null } = {}, repoId = null) {
+  if (!owner) throw new Error("owner requis pour démarrer une tâche");
+  return withRepo(repoId, () => {
+    const row = findNodeRow(refOrId, repoId);
+    if (!row) throw new Error(`Nœud introuvable : ${refOrId}`);
+    const now = nowIso();
+    const leaseUntil = new Date(Date.parse(now) + Math.max(1000, leaseMs)).toISOString();
+    let started = null;
+    db.transaction(() => {
+      const r = db
+        .prepare(
+          `UPDATE nodes
+              SET run_state='running', lease_owner=@owner, lease_until=@leaseUntil,
+                  run_attempts = run_attempts + 1, version = version + 1, updated_at=@ts
+            WHERE id = @id
+              AND status = 'active'
+              AND kind IS NOT 'activation'
+              AND run_state IS NOT 'done'
+              AND run_state IS NOT 'review'
+              AND (run_state IS NOT 'running' OR lease_owner = @owner OR lease_until IS NULL OR lease_until < @now)
+            RETURNING *`
+        )
+        .get({ id: row.id, owner, leaseUntil, now, ts: now });
+      if (!r) {
+        const e = new Error("non_demarrable");
+        e.code = "not_startable";
+        throw e;
+      }
+      startRun(r.id, owner, branch);
+      started = r;
+    })();
+    return rowToNode(started);
+  });
+}
+
 // Prolonge le bail (heartbeat des tâches longues). false → bail perdu (préempté).
 export function renewLease(refOrId, owner, leaseMs = 600000, repoId = null) {
   return withRepo(repoId, () => {
