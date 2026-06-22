@@ -73,6 +73,7 @@ async function onRepoChange(slug) {
   await loadMeta();
   await loadBranches();
   await loadList();
+  loadRuns(); // le flux des runs est scopé au repo → recharger au changement
   if (typeof vibes !== "undefined" && vibes.view === "vibes") openVibes();
   else if (typeof vibes !== "undefined" && vibes.view === "repo") openRepoView();
 }
@@ -248,6 +249,52 @@ function renderList() {
   ul.querySelectorAll(".issue-card").forEach((el) =>
     el.addEventListener("click", () => selectIssue(el.dataset.ref))
   );
+}
+
+// ── Activité des agents (flux repo-level des runs, GET /api/nodes/runs) ────────
+// Timeline au-dessus de la liste d'entrées : un item par run (état, nœud cliquable,
+// owner, branche, horodatage). Données fournies par listRecentRuns (jalon 🛰️).
+const RUN_STATE_ICON = { running: "⏳", done: "✓", failed: "✕", review: "👀" };
+// Horodatage compact : HH:MM si aujourd'hui, sinon JJ/MM HH:MM. Tolère les valeurs nulles.
+function fmtRunTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const hm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const today = new Date();
+  const sameDay = d.getFullYear() === today.getFullYear() && d.getMonth() === today.getMonth() && d.getDate() === today.getDate();
+  return sameDay ? hm : `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")} ${hm}`;
+}
+
+async function loadRuns() {
+  const ul = $("#runFeed");
+  if (!ul) return;
+  try {
+    const { runs } = await api.get("/api/nodes/runs?limit=50");
+    if (!runs || !runs.length) {
+      ul.innerHTML = `<li class="empty">Aucune activité d'agent pour l'instant.</li>`;
+      return;
+    }
+    ul.innerHTML = runs
+      .map((r) => {
+        const icon = RUN_STATE_ICON[r.state] || "•";
+        const when = r.state === "running" ? fmtRunTime(r.startedAt) : fmtRunTime(r.endedAt || r.startedAt);
+        const owner = r.owner ? `· ${esc(r.owner)} ` : "";
+        const branch = r.branch ? `· ⎇ ${esc(r.branch)} ` : "";
+        return `<li class="run-item state-${esc(r.state)}">
+          <span class="run-state" title="${esc(r.state)}">${icon}</span>
+          <span class="run-node" data-ref="${esc(r.nodeRef)}" title="Ouvrir dans Vibes">${esc(r.nodeRef)}</span>
+          <span class="run-title">${esc(r.nodeTitle || "")}</span>
+          <span class="run-meta">${owner}${branch}· ${esc(when)}</span>
+        </li>`;
+      })
+      .join("");
+    ul.querySelectorAll(".run-node").forEach((el) =>
+      el.addEventListener("click", () => openNodeInVibes(el.dataset.ref))
+    );
+  } catch (e) {
+    ul.innerHTML = `<li class="empty">Erreur : ${esc(e.message)}</li>`;
+  }
 }
 
 // ── Réordonnancement manuel (drag & drop) ────────────────────────────────────
@@ -902,11 +949,19 @@ export function init() {
 
   initDragReorder(); // glisser-déposer de la liste (ordre manuel)
 
+  // Bouton ⟳ du panneau « Activité des agents » (dans le <summary> → empêcher le toggle).
+  $("#runRefresh")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    loadRuns();
+  });
+
   // loadRepos d'abord (fixe le repo actif), puis le reste utilise ?repo=.
   loadRepos().then(() => {
     loadMeta();
     loadBranches();
     loadList();
+    loadRuns(); // flux d'activité des agents (runs repo-level)
     subscribeIssues(); // flux temps réel des entrées (issues:changed) du repo actif
   });
 }
