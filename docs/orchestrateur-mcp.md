@@ -29,8 +29,30 @@ server-side qui spawne des exécuteurs pointés sur le MCP de meowtrack).
 tant que (t = meowtrack_node_next(repo)) :          # une tâche prête, déjà réclamée
     … faire le travail (Read/Edit/Bash/git) dans un worktree isolé …
     écrire .meowtrack/runs/<ref>.json               # rapport + points de revue (§6)
-    meowtrack_node_complete(t.ref, { … })           # le serveur ingère le rapport
+    r = meowtrack_node_complete(t.ref, { … })        # le serveur ingère le rapport
+    si r.hint == "compact_suggested" et contexte > seuil (≈30 %) :
+        /compact                                     # césure AVANT de réclamer le nœud suivant
 ```
+
+### Consigne de compactage (mode batch « traite les nœuds en attente »)
+
+En mode batch (sans `/loop`), le contexte de la session croît de façon **monotone** :
+chaque nœud ajoute son travail. `meowtrack_node_complete` est le **seul point de
+césure fiable** de la boucle. Quand le réglage `auto_compact` est ON (§5.2), sa
+réponse porte deux champs (cf. NODE-305/306) :
+
+- `hint: "compact_suggested"` — drapeau machine (à tester en code/consigne) ;
+- `advice: "Contexte potentiellement chargé : envisage un /compact …"` — texte lisible.
+
+**meowtrack conseille, il ne décide pas** : il ne mesure pas le % de contexte. Le
+déclenchement reste **côté agent**. Consigne réutilisable à coller dans le prompt de
+traitement par lot :
+
+> Après **chaque** `meowtrack_node_complete`, lis le champ `hint`. S'il vaut
+> `compact_suggested` **et** que ton contexte dépasse ~30 %, lance `/compact` **avant**
+> de réclamer le nœud suivant (`meowtrack_node_next`). Sinon, enchaîne directement.
+
+Le seuil (30 %) est arbitré par l'agent ; meowtrack ne le mesure jamais.
 
 ## 2. Ce qui existe déjà et qu'on réutilise
 
@@ -424,7 +446,7 @@ Additifs, alignés sur les `meowtrack_node_*` existants. Tous prennent `repo`.
 | --- | --- | --- | --- |
 | `meowtrack_node_next` | `{ repo, owner }` | tâche réclamée ou `null` | Tire + réclame la prochaine tâche prête |
 | `meowtrack_node_heartbeat` | `{ ref, owner }` | `{ ok }` | Prolonge le bail (tâches longues) |
-| `meowtrack_node_complete` | `{ ref, owner, summary?, branch?, testResult? }` | `{ ok, state, affected, reviews }` | Clôt → ingère le rapport (§6) → déblocage **ou** revue |
+| `meowtrack_node_complete` | `{ ref, owner, summary?, branch?, testResult? }` | `{ ok, state, affected, reviews, hint?, advice? }` | Clôt → ingère le rapport (§6) → déblocage **ou** revue ; `hint`/`advice` si `auto_compact` ON (§1) |
 | `meowtrack_node_fail` | `{ ref, owner, error, branch? }` | `{ ok }` | Échec borné (retry tant que attempts < max) |
 | `meowtrack_node_runs` | `{ repo, ref }` | `[runs]` | Historique d'exécution d'un nœud |
 | `meowtrack_node_reviews` | `{ repo, ref?, state? }` | `[reviews]` | Lit les points de revue (ouverts/résolus) |
