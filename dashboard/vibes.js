@@ -1218,13 +1218,18 @@ async function persistPositions(ids) {
   try { await api.send("POST", "/api/nodes/positions", { positions }); }
   catch (e) { toast("Positions non enregistrées : " + e.message); }
 }
-// Efface la position manuelle d'un nœud → il retombe dans le tidy-layout auto.
+// Efface la position manuelle d'un nœud ET de tout son sous-arbre → ils retombent
+// dans le tidy-layout auto (NODE-288 : un seul appel positions[] suffit pour le lot ;
+// subtreeIds collecte le nœud + tous ses descendants).
 async function resetNodePosition(id) {
+  const ids = subtreeIds(id);
   try {
-    await api.send("POST", "/api/nodes/positions", { positions: [{ id, x: null, y: null }] });
-    const n = vibes.byId.get(id);
-    if (n) { n.posX = null; n.posY = null; }
-    toast("Position réinitialisée.");
+    await api.send("POST", "/api/nodes/positions", { positions: ids.map((nid) => ({ id: nid, x: null, y: null })) });
+    for (const nid of ids) {
+      const n = vibes.byId.get(nid);
+      if (n) { n.posX = null; n.posY = null; }
+    }
+    toast(ids.length > 1 ? `Positions réinitialisées (${ids.length} nœuds).` : "Position réinitialisée.");
     loadForest();
   } catch (e) { toast("Échec : " + e.message); }
 }
