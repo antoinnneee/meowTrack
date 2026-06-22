@@ -743,7 +743,8 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
         "Clôt une tâche réclamée. Le serveur ingère le rapport (inline via `report`, sinon lu depuis " +
         ".meowtrack/runs/<ref>.json du clone) : applique les `nodeUpdates` sûrs et persiste les `reviewPoints`. " +
         "Sans point bloquant → la tâche passe 'done' (débloque ses dépendants, progression remonte) ; avec un point " +
-        "bloquant → 'review' (attend un arbitrage humain ou auto). Seul le détenteur du bail peut clore.",
+        "bloquant → 'review' (attend un arbitrage humain ou auto). Seul le détenteur du bail peut clore. " +
+        "Si le réglage auto_compact est activé, la réponse contient hint:'compact_suggested' (bon point de césure du contexte).",
       inputSchema: {
         repo: repoParam,
         ref: nodeRefSchema,

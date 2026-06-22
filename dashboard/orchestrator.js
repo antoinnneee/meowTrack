@@ -18,6 +18,7 @@ const FIELDS = [
   { key: "autoReview", label: "Auto-revue sur point bloquant", type: "bool" },
   { key: "autoReviewModel", label: "Modèle d'auto-revue", type: "model" },
   { key: "autoReviewPrompt", label: "Prompt de politique d'auto-revue", type: "text" },
+  { key: "autoCompact", label: "Auto-compact (hint de césure à la clôture)", type: "bool" },
 ];
 const ORIGIN_LABEL = { env: "hérité de l'env", global: "défini globalement", repo: "défini pour ce repo", default: "défaut" };
 

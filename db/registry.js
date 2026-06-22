@@ -39,6 +39,9 @@ const ORCH_SPEC = {
   autoReview: { type: "bool", env: "MEOWTRACK_REVIEW_AUTO", def: false, scope: "repo" },
   autoReviewModel: { type: "str", env: null, def: "sonnet", scope: "global" },
   autoReviewPrompt: { type: "str", env: "MEOWTRACK_REVIEW_AUTO_PROMPT", def: "", scope: "repo" },
+  // ON → node_complete renvoie hint:"compact_suggested" (marqueur de césure de contexte
+  // pour l'agent ; meowtrack ne mesure pas le % de contexte, le seuil est arbitré côté agent).
+  autoCompact: { type: "bool", env: "MEOWTRACK_AUTO_COMPACT", def: false, scope: "repo" },
 };
 const ORCH_KEYS = Object.keys(ORCH_SPEC);
 

@@ -486,7 +486,10 @@ export async function handle(ctx) {
         const blockingIds = ingest.reviews.filter((rv) => rv.blocking && rv.state === "open").map((rv) => rv.id);
         triggerAutoReview(repoId, node.id, blockingIds, { model: cfg.autoReviewModel, policyPrompt: cfg.autoReviewPrompt }).catch(() => {});
       }
-      send(res, 200, { ok: true, state: r.state, affected: r.affectedNodeIds, reviews: ingest.reviews });
+      // auto_compact ON → marqueur de césure de contexte pour l'agent (cf. NODE-305).
+      const out = { ok: true, state: r.state, affected: r.affectedNodeIds, reviews: ingest.reviews };
+      if (cfg.autoCompact) out.hint = "compact_suggested";
+      send(res, 200, out);
       return true;
     }
     // POST …/reviews/auto { reviewIds?, model? } — auto-revue par le chat IA top-level.
