@@ -21,6 +21,14 @@
 }
 
 * { box-sizing: border-box; }
+/* Scrollbars assorties au thème sombre : thumb fin (--border), track transparent,
+   accent au survol. Firefox via scrollbar-width/color ; Chromium/WebKit via ::-webkit. */
+* { scrollbar-width: thin; scrollbar-color: var(--border) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-dim); background-clip: padding-box; }
+::-webkit-scrollbar-corner { background: transparent; }
 html, body { margin: 0; height: 100%; }
 body {
   background: var(--bg);
