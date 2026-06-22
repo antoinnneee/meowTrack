@@ -274,6 +274,15 @@ function _setNodeFields(id, fields = {}) {
   const hasPending = "pendingInfo" in fields || "pending_info" in fields;
   if (fields.status != null) {
     if (!NODE_STATUS_SET.has(fields.status)) throw new Error(`Statut invalide : ${fields.status}`);
+    // NODE-323 : on ne valide (done) un nœud que si TOUS ses enfants directs sont 'done'.
+    // Vérification des enfants directs uniquement : un petit-enfant incomplet implique un
+    // enfant non-done, qui sera lui-même refusé → la contrainte est transitive. Les chemins
+    // SQL directs (recomputeAncestorProgress, auto-promotion) ne passent pas ici, et
+    // completeNode ne porte que sur des feuilles (aucun enfant) → non bloqués.
+    if (fields.status === "done" && row.status !== "done") {
+      const incomplete = db.prepare("SELECT COUNT(*) c FROM nodes WHERE parent_id = ? AND status <> 'done'").get(id).c;
+      if (incomplete > 0) throw new Error(`Impossible de valider : ${incomplete} sous-jalon(s) non terminé(s)`);
+    }
     sets.push("status = ?");
     vals.push(fields.status);
     if (fields.status === "done" && row.status !== "done") {
