@@ -322,6 +322,9 @@ body:not(.view-repo) .repo-only { display: none; }
 .chat-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 18px; border-bottom: 1px solid var(--border); }
 .chat-head h3 { margin: 0; font-size: 14px; }
 .model-select { max-width: 120px; font-size: 12px; }
+.chat-sessions { display: flex; align-items: center; gap: 4px; padding: 6px 18px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.session-select { flex: 1; min-width: 0; font-size: 12px; }
+.chat-sessions .ghost.xs { flex: 0 0 auto; padding: 2px 6px; }
 .chat-feed { flex: 1; overflow: auto; padding: 14px 18px; display: flex; flex-direction: column; gap: 10px; }
 .chat-feed .empty { margin: auto; }
 .msg { position: relative; max-width: 88%; padding: 8px 12px; border-radius: 12px; background: var(--surface-2); border: 1px solid var(--border); align-self: flex-start; }
@@ -334,8 +337,10 @@ body:not(.view-repo) .repo-only { display: none; }
 .msg.error { border-color: var(--bug); }
 .msg-head { font-size: 11px; font-weight: 700; margin-bottom: 3px; }
 .msg-body { font-size: 13px; white-space: pre-wrap; word-break: break-word; }
-.msg .dots::after { content: ""; animation: blinkdots 1.2s steps(4) infinite; }
-@keyframes blinkdots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
+/* Points « Claude rédige… » : keyframe dédiée SANS retour à vide (évite le saut de
+   largeur en fin de cycle) + largeur réservée pour 3 points (aucun jiggle résiduel). */
+.msg .dots::after { content: "."; display: inline-block; min-width: 1.6em; text-align: left; animation: typingdots 1.2s steps(3, end) infinite; }
+@keyframes typingdots { 0% { content: "."; } 33% { content: ".."; } 66% { content: "..."; } }
 .msg-action-status { margin-top: 7px; font-size: 12px; font-weight: 600; color: var(--accent); animation: statuspulse 1.4s ease-in-out infinite; }
 @keyframes statuspulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
 .action-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 7px; align-items: center; }
@@ -344,12 +349,17 @@ body:not(.view-repo) .repo-only { display: none; }
 .action-chip.clickable { cursor: pointer; transition: background .12s, color .12s; }
 .action-chip.clickable:hover, .action-chip.clickable:focus-visible { background: var(--accent); color: var(--bg); outline: none; }
 .confirm-actions { font-size: 11px; padding: 3px 8px; border-color: var(--bug); color: var(--bug); }
-.typing-row { padding: 4px 18px; font-size: 11px; color: var(--text-dim); font-style: italic; }
-.typing-row[hidden] { display: none; }
+.undo-actions { font-size: 11px; padding: 3px 8px; border-radius: 8px; border: 1px solid var(--border); color: var(--text-dim); background: transparent; cursor: pointer; }
+.undo-actions:hover { color: var(--text); border-color: var(--text-dim); }
+.actions-undone { font-size: 10.5px; color: var(--text-dim); font-style: italic; }
 .chat-input { display: flex; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--border); align-items: flex-end; }
 .chat-input textarea { flex: 1; resize: none; min-height: 2.6em; max-height: 180px; overflow-y: auto; box-sizing: border-box; }
 .chat-ta-wrap { flex: 1; }
 .chat-ta-wrap textarea { width: 100%; }
+/* Colonne d'envoi : sélecteur de modèle empilé AU-DESSUS du bouton Envoyer. */
+.chat-send-col { display: flex; flex-direction: column; gap: 6px; flex: 0 0 auto; }
+.chat-send-col .model-select { width: 100%; max-width: none; }
+.chat-send-col .primary, .chat-send-col .chat-stop { width: 100%; }
 
 /* Chat « top level » : dock flottant en bas à droite de la vue objectifs. */
 .forest-chat {
@@ -366,7 +376,7 @@ body:not(.view-repo) .repo-only { display: none; }
    Sans effet quand le chat est épinglé (le panneau pleine hauteur reste déployé). */
 .forest-chat.collapsed:not(.pinned):not(.fullscreen) { height: auto; }
 .forest-chat.collapsed:not(.pinned):not(.fullscreen) .chat-feed,
-.forest-chat.collapsed:not(.pinned):not(.fullscreen) .typing-row,
+.forest-chat.collapsed:not(.pinned):not(.fullscreen) .chat-sessions,
 .forest-chat.collapsed:not(.pinned):not(.fullscreen) .chat-input { display: none; }
 @media (max-width: 640px) {
   .forest-chat { right: 8px; bottom: 8px; width: calc(100vw - 16px); height: min(60vh, 480px); }
@@ -472,6 +482,7 @@ body.forest-pinned.view-vibes #vibesView { margin-right: var(--forest-pin-w); }
 .g-node.kind-activation.activated .g-act-frame { opacity: 1; fill: rgba(255, 212, 59, .18); filter: drop-shadow(0 0 7px rgba(255, 212, 59, .65)); }
 .g-node.kind-activation.deactivated { opacity: 1; } /* l'inactif n'est PAS grisé (porte en attente, pas abandonnée) */
 .g-emoji { pointer-events: none; }
+.g-state-badge { pointer-events: none; user-select: none; paint-order: stroke; stroke: var(--surface); stroke-width: 2.5px; stroke-linejoin: round; }
 .g-label { fill: var(--text); font: 12px "Segoe UI", system-ui, sans-serif; pointer-events: none; }
 .g-empty { fill: var(--text-dim); font: 14px "Segoe UI", system-ui, sans-serif; }
 /* Aperçu « fantôme » dans le graphe (chat « top level », non persisté) */
@@ -713,6 +724,7 @@ body.forest-pinned.view-vibes #vibesView { margin-right: var(--forest-pin-w); }
 @media (prefers-reduced-motion: reduce) { .g-req { animation: none; } }
 /* Nœud bloqué (prérequis non atteint) : halo rouge discret. */
 .g-node.blocked .g-disc { stroke: var(--bug); stroke-width: 2.5; }
+.g-node.blocked .g-ring { stroke: var(--bug); }
 
 /* Badge « bloqué » dans l'en-tête du détail. */
 .badge-blocked { background: color-mix(in srgb, var(--bug) 22%, transparent); color: var(--bug); border-color: var(--bug); }
@@ -766,10 +778,13 @@ body.forest-pinned.view-vibes #vibesView { margin-right: var(--forest-pin-w); }
 .repo-toolbar .cnt { display: inline-block; min-width: 16px; margin-left: 5px; padding: 0 5px; font-size: 11px; border-radius: 10px; background: var(--accent); color: #fff; font-weight: 700; }
 .repo-toolbar .cnt[hidden] { display: none; }
 
-.repo-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 220px 1fr 340px; }
+.repo-body { flex: 1; min-height: 0; display: grid; grid-template-columns: 220px 1fr 5px var(--repo-wc-w, 340px); }
 .repo-side { border-right: 1px solid var(--border); overflow: auto; padding: 10px 0; background: var(--surface); }
 .repo-graph-pane { min-width: 0; overflow: auto; }
+.repo-resizer { cursor: col-resize; background: transparent; transition: background .12s; }
+.repo-resizer:hover, .repo-resizer.dragging { background: var(--accent); }
 .repo-wc { border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; background: var(--surface); }
+body.repo-resizing { cursor: col-resize; user-select: none; }
 
 /* Sidebar : branches / remotes / stashes */
 .side-group { margin-bottom: 6px; }
@@ -1013,6 +1028,7 @@ button.xs { padding: 3px 8px; font-size: 11px; }
 
   /* — Repo (git) : les trois panneaux s'empilent verticalement — */
   .repo-body { display: flex; flex-direction: column; }
+  .repo-resizer { display: none; }
   .repo-side { border-right: none; border-bottom: 1px solid var(--border); flex: 0 0 auto; max-height: 200px; }
   .repo-graph-pane { flex: 1 1 auto; min-height: 260px; }
   .repo-wc { border-left: none; border-top: 1px solid var(--border); flex: 0 0 auto; max-height: 60vh; }

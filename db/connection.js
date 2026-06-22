@@ -252,6 +252,20 @@ export const TRACKING_SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS idx_forest_messages_repo ON forest_messages(repo_id, id);
 
+  -- Sessions de conversation nommées : un même nœud (ou la forêt) peut porter
+  -- PLUSIEURS historiques de chat distincts. scope='node' → owner_id = node_id ;
+  -- scope='forest' → owner_id = repo_id. Les messages référencent la session via
+  -- node_messages.session_id / forest_messages.session_id ; session_id NULL = la
+  -- conversation PAR DÉFAUT (« Conversation ») — rétro-compatible avec l'existant.
+  CREATE TABLE IF NOT EXISTS chat_sessions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope      TEXT NOT NULL,                        -- 'node' | 'forest'
+    owner_id   INTEGER NOT NULL,                     -- node_id (node) | repo_id (forest)
+    name       TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_chat_sessions_owner ON chat_sessions(scope, owner_id, id);
+
   -- ── Orchestrateur : historique d'exécution d'un nœud (un run = un passage agent).
   CREATE TABLE IF NOT EXISTS node_runs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -304,6 +318,10 @@ function ensureTrackerSchema(conn) {
   ensureColumn(conn, "nodes", "pending_info", "pending_info TEXT"); // info attendue (status='waiting')
   ensureColumn(conn, "nodes", "kind", "kind TEXT NOT NULL DEFAULT 'normal'"); // node d'activation
   ensureColumn(conn, "issues", "position", "position INTEGER NOT NULL DEFAULT 0");
+  // Sessions de chat multiples : rattachement d'un message à une session nommée
+  // (NULL = conversation par défaut). Additif, rétro-compatible.
+  ensureColumn(conn, "node_messages", "session_id", "session_id INTEGER");
+  ensureColumn(conn, "forest_messages", "session_id", "session_id INTEGER");
   // Orchestrateur : bail (lease) d'exécution sur les nœuds. Séparé de `status`
   // (intention de planning) ; coordonne les workers concurrents (cf. db/nodes.js).
   ensureColumn(conn, "nodes", "run_state", "run_state TEXT");                       // NULL|running|review|failed (done = miroir status)

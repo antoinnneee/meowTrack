@@ -109,13 +109,19 @@
           <button id="forestChatClearBtn" class="ghost" title="Vider l'historique de la discussion">🗑</button>
         </div>
       </div>
+      <div class="chat-sessions">
+        <select id="forestSessionSel" class="session-select" title="Conversation active"></select>
+        <button id="forestSessionNew" class="ghost xs" title="Nouvelle conversation">＋</button>
+        <button id="forestSessionRename" class="ghost xs" title="Renommer la conversation">✎</button>
+        <button id="forestSessionDel" class="ghost xs" title="Supprimer la conversation">🗑</button>
+      </div>
       <div class="chat-feed" id="forestChatFeed"></div>
-      <div class="typing-row" id="forestTypingRow" hidden></div>
       <div class="chat-input">
         <div class="ta-wrap chat-ta-wrap">
           <textarea id="forestChatInput" rows="2" placeholder="Décris une ambition… @ pour citer un fichier, # pour citer un nœud · Entrée pour envoyer"></textarea>
           <ul id="forestChatMentionMenu" class="mention-menu up" hidden></ul>
         </div>
+        <button id="forestChatStopBtn" class="ghost chat-stop" title="Interrompre la réponse en cours" hidden>⏹️ Stop</button>
         <button id="forestChatSend" class="primary">Envoyer</button>
       </div>
     </aside>
@@ -219,22 +225,30 @@
           <div class="chat-head">
             <h3>💬 Discussion</h3>
             <div class="chat-head-actions">
-              <select id="modelSel" class="model-select" title="Modèle Claude">
-                <option value="sonnet">Sonnet</option>
-                <option value="opus">Opus</option>
-                <option value="haiku">Haiku</option>
-              </select>
               <button id="chatClearBtn" class="ghost" title="Vider l'historique de la discussion">🗑 Historique</button>
             </div>
           </div>
+          <div class="chat-sessions">
+            <select id="nodeSessionSel" class="session-select" title="Conversation active"></select>
+            <button id="nodeSessionNew" class="ghost xs" title="Nouvelle conversation">＋</button>
+            <button id="nodeSessionRename" class="ghost xs" title="Renommer la conversation">✎</button>
+            <button id="nodeSessionDel" class="ghost xs" title="Supprimer la conversation">🗑</button>
+          </div>
           <div class="chat-feed" id="chatFeed"></div>
-          <div class="typing-row" id="typingRow" hidden></div>
           <div class="chat-input">
             <div class="ta-wrap chat-ta-wrap">
               <textarea id="chatInput" rows="2" placeholder="Parle de ce nœud, demande des sous-jalons… @ pour citer un fichier, # pour citer un nœud · Entrée pour envoyer"></textarea>
               <ul id="chatMentionMenu" class="mention-menu up" hidden></ul>
             </div>
-            <button id="chatSend" class="primary">Envoyer</button>
+            <div class="chat-send-col">
+              <select id="modelSel" class="model-select" title="Modèle Claude">
+                <option value="sonnet">Sonnet</option>
+                <option value="opus">Opus</option>
+                <option value="haiku">Haiku</option>
+              </select>
+              <button id="chatStopBtn" class="ghost chat-stop" title="Interrompre la réponse en cours" hidden>⏹️ Stop</button>
+              <button id="chatSend" class="primary">Envoyer</button>
+            </div>
           </div>
         </section>
       </div>
@@ -382,6 +396,9 @@
         <section class="repo-graph-pane">
           <div class="repo-graph" id="repoGraph"><div class="empty">Chargement…</div></div>
         </section>
+
+        <!-- Poignée de redimensionnement de la colonne de droite -->
+        <div class="repo-resizer" id="repoWcResizer" title="Glisser pour redimensionner"></div>
 
         <!-- Working tree : fichiers non indexés / indexés + commit -->
         <aside class="repo-wc">

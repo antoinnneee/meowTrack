@@ -12,6 +12,7 @@ import {
   getNode,
   getSubtree,
   getRepo,
+  deleteNode,
   listForest,
   listForestLinks,
   addNodeMessage,
@@ -40,6 +41,7 @@ import {
   broadcastMessage,
   broadcastForestMessage,
   broadcastAffected,
+  refreshAncestors,
 } from "../sse.js";
 import { buildNodePrompt, buildForestPrompt, resolveModel } from "./prompts.js";
 import { runClaudeStreaming, makeStreamBatcher } from "./claude.js";
@@ -104,6 +106,23 @@ export function nodeAiBusy(nodeId) {
 }
 export function forestAiBusy(repoId) {
   return aiLocks.has(forestLockKey(repoId));
+}
+
+// Interrompt le tour IA en cours : marque le verrou « stopped » (pour finaliser le
+// message proprement, sans erreur) puis tue le process CLI. Le SIGKILL fait remonter
+// child.on('close') → catch du runner, qui voit le flag et clôt en état « interrompu ».
+function stopLock(key) {
+  const l = aiLocks.get(key);
+  if (!l || !l.child) return false;
+  l.stopped = true;
+  try { l.child.kill("SIGKILL"); } catch { /* déjà mort */ }
+  return true;
+}
+export function stopNodeTurn(nodeId) {
+  return stopLock(nodeId);
+}
+export function stopForestTurn(repoId) {
+  return stopLock(forestLockKey(repoId));
 }
 
 // Extrait le motif brut d'une erreur du pipeline IA (result d'erreur du CLI ou
@@ -281,13 +300,23 @@ async function runNodeTurn(repoId, nodeId, scopeSnapshot, descendants, history, 
     if (applied.issuesChanged) broadcastIssuesChanged(repoId); // l'IA a créé/modifié des entrées de suivi
   } catch (e) {
     batcher.end();
-    logAiError(`runNodeTurn nœud ${nodeId}`, e);
-    const emsg = aiErrorMessage(e);
-    try {
-      const msg = updateNodeMessage(pendingId, { body: emsg, reasoning, state: "error" }, repoId);
-      broadcastMessage(repoId, nodeId, msg);
-    } catch {
-      /* ignore */
+    // Interruption volontaire (bouton Stop) : on finalise sans erreur, en gardant
+    // le texte déjà streamé. Aucune action appliquée (le bloc peut être incomplet).
+    if (aiLocks.get(nodeId)?.stopped) {
+      const partial = answer.split(ACTIONS_SENTINEL)[0].trim();
+      try {
+        const msg = updateNodeMessage(pendingId, { body: partial ? `${partial}\n\n⏹️ _(interrompu)_` : "⏹️ Réponse interrompue.", reasoning, state: "complete", actions: [] }, repoId);
+        broadcastMessage(repoId, nodeId, msg);
+      } catch { /* ignore */ }
+    } else {
+      logAiError(`runNodeTurn nœud ${nodeId}`, e);
+      const emsg = aiErrorMessage(e);
+      try {
+        const msg = updateNodeMessage(pendingId, { body: emsg, reasoning, state: "error" }, repoId);
+        broadcastMessage(repoId, nodeId, msg);
+      } catch {
+        /* ignore */
+      }
     }
   } finally {
     aiLocks.delete(nodeId);
@@ -304,16 +333,17 @@ export async function handleNodeChat(req, res, node) {
   if (!text) return send(res, 400, { error: "Message vide" });
   const author = String(body.author || "anon").slice(0, 60) || "anon";
   const model = resolveModel(body.model);
+  const sessionId = Number(body.session) || 0; // 0 = conversation par défaut
   const clientNonce = body.clientNonce ? String(body.clientNonce).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 80) || null : null;
 
   if (aiLocks.has(node.id)) return send(res, 409, { error: "ai_busy" });
   if (aiInFlight >= MAX_CONCURRENT_AI) return send(res, 429, { error: "ai_overloaded" });
 
   const repoId = node.repoId;
-  const userMessage = addNodeMessage(node.id, { role: "user", author, body: text, state: "complete", clientNonce }, repoId);
+  const userMessage = addNodeMessage(node.id, { role: "user", author, body: text, state: "complete", clientNonce, sessionId }, repoId);
   broadcastMessage(repoId, node.id, userMessage);
 
-  const pendingMessage = addNodeMessage(node.id, { role: "assistant", author: "claude", model, body: "", state: "pending" }, repoId);
+  const pendingMessage = addNodeMessage(node.id, { role: "assistant", author: "claude", model, body: "", state: "pending", sessionId }, repoId);
   broadcastMessage(repoId, node.id, pendingMessage);
 
   // Snapshot (nœud + sous-arbre) + historique FIGÉS avant lock/202.
@@ -331,7 +361,7 @@ export async function handleNodeChat(req, res, node) {
   try {
     issues = listIssues(repoId, { includeClosed: true, limit: 200 });
   } catch { /* pas d'issues → prompt sans bloc */ }
-  const history = listNodeMessages(node.id, { limit: 1000, repoId }).filter((m) => m.state === "complete" && m.id !== userMessage.id);
+  const history = listNodeMessages(node.id, { limit: 1000, repoId, sessionId }).filter((m) => m.state === "complete" && m.id !== userMessage.id);
 
   aiLocks.set(node.id, { child: null }); // atomique (pas d'await entre check et set)
   aiInFlight++;
@@ -375,6 +405,54 @@ export function handleNodeChatConfirm(req, res, node, body) {
   if (result.linksChanged) broadcastLinksChanged(repoId, node.id);
   if (result.issuesChanged) broadcastIssuesChanged(repoId);
   return send(res, 200, { ok: true, applied: result.applied });
+}
+
+// ── Annulation du « placement » d'un message IA ──────────────────────────────
+// Supprime les nœuds CRÉÉS par un message (ops add_node appliquées et auto-validées).
+// Seules les créations sont réversibles proprement (suppression = cascade) ; les
+// mises à jour/déplacements/réordonnancements ne sont pas annulés. Idempotent : un
+// nœud déjà supprimé (cascade d'un parent créé par le même message) est ignoré.
+
+// Extrait l'entrée d'actions appliquées non encore annulée + les ids créés (add_node).
+function appliedCreatedIds(msg) {
+  const actions = Array.isArray(msg && msg.actions) ? msg.actions : [];
+  const idx = actions.findIndex((a) => a && a.applied && !a.undone);
+  const entry = idx >= 0 ? actions[idx] : null;
+  const ids = entry ? (entry.ops || []).filter((o) => o && o.op === "add_node" && o.id != null).map((o) => o.id) : [];
+  return { idx, ids };
+}
+// Supprime les ids créés et diffuse les events ; renvoie la liste réellement supprimée.
+function deleteCreatedNodes(repoId, ids) {
+  const deleted = [];
+  const parents = new Set();
+  for (const id of ids) {
+    if (!getNode(id, { repoId })) continue; // déjà parti (cascade)
+    const r = deleteNode(id, repoId);
+    deleted.push(id);
+    const payload = { id, parentId: r.parentId, rootId: r.rootId };
+    broadcast(nodeKey(repoId, id), "node:deleted", payload);
+    broadcast(forestKey(repoId), "node:deleted", payload);
+    if (r.parentId != null) { broadcast(nodeKey(repoId, r.parentId), "node:deleted", payload); parents.add(r.parentId); }
+  }
+  for (const p of parents) refreshAncestors(repoId, p, p);
+  return deleted;
+}
+
+// POST /api/nodes/:ref/chat/:msgId/undo — annule le placement d'un message du nœud.
+export function handleNodeChatUndo(req, res, node, msgId) {
+  const repoId = node.repoId;
+  if (nodeAiBusy(node.id)) return send(res, 409, { error: "ai_busy" });
+  const msg = getNodeMessage(Number(msgId), repoId);
+  if (!msg || msg.nodeId !== node.id) return send(res, 404, { error: "not_found" });
+  const { idx, ids } = appliedCreatedIds(msg);
+  if (!ids.length) return send(res, 400, { error: "rien_a_annuler" });
+  const deleted = deleteCreatedNodes(repoId, ids);
+  const updated = updateNodeMessage(msg.id, {
+    body: `${String(msg.body || "").trim()}\n\n↩️ _Placement annulé (${deleted.length} nœud(s) supprimé(s))._`,
+    actions: msg.actions.map((a, i) => (i === idx ? { ...a, undone: true } : a)),
+  }, repoId);
+  broadcastMessage(repoId, node.id, updated);
+  return send(res, 200, { ok: true, deleted });
 }
 
 // ── Chat « top level » (forêt d'un repo) ─────────────────────────────────────
@@ -510,13 +588,21 @@ async function runForestTurn(repoId, forestSnapshot, history, userText, author, 
     if (applied.issuesChanged) broadcastIssuesChanged(repoId);
   } catch (e) {
     batcher.end();
-    logAiError(`runForestTurn repo ${repoId}`, e);
-    const emsg = aiErrorMessage(e);
-    try {
-      const msg = updateForestMessage(pendingId, { body: emsg, reasoning, state: "error" }, repoId);
-      broadcastForestMessage(repoId, msg);
-    } catch {
-      /* ignore */
+    if (aiLocks.get(forestLockKey(repoId))?.stopped) {
+      const partial = answer.split(ACTIONS_SENTINEL)[0].trim();
+      try {
+        const msg = updateForestMessage(pendingId, { body: partial ? `${partial}\n\n⏹️ _(interrompu)_` : "⏹️ Réponse interrompue.", reasoning, state: "complete", actions: [] }, repoId);
+        broadcastForestMessage(repoId, msg);
+      } catch { /* ignore */ }
+    } else {
+      logAiError(`runForestTurn repo ${repoId}`, e);
+      const emsg = aiErrorMessage(e);
+      try {
+        const msg = updateForestMessage(pendingId, { body: emsg, reasoning, state: "error" }, repoId);
+        broadcastForestMessage(repoId, msg);
+      } catch {
+        /* ignore */
+      }
     }
   } finally {
     aiLocks.delete(forestLockKey(repoId));
@@ -533,16 +619,17 @@ export function handleForestChat(res, repoId, body) {
   if (!text) return send(res, 400, { error: "Message vide" });
   const author = String(body.author || "anon").slice(0, 60) || "anon";
   const model = resolveModel(body.model);
+  const sessionId = Number(body.session) || 0; // 0 = conversation par défaut
   const clientNonce = body.clientNonce ? String(body.clientNonce).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 80) || null : null;
 
   const lockKey = forestLockKey(repoId);
   if (aiLocks.has(lockKey)) return send(res, 409, { error: "ai_busy" });
   if (aiInFlight >= MAX_CONCURRENT_AI) return send(res, 429, { error: "ai_overloaded" });
 
-  const userMessage = addForestMessage(repoId, { role: "user", author, body: text, state: "complete", clientNonce });
+  const userMessage = addForestMessage(repoId, { role: "user", author, body: text, state: "complete", clientNonce, sessionId });
   broadcastForestMessage(repoId, userMessage);
 
-  const pendingMessage = addForestMessage(repoId, { role: "assistant", author: "claude", model, body: "", state: "pending" });
+  const pendingMessage = addForestMessage(repoId, { role: "assistant", author: "claude", model, body: "", state: "pending", sessionId });
   broadcastForestMessage(repoId, pendingMessage);
 
   // Snapshot (toute la forêt + liens) + historique FIGÉS avant lock/202.
@@ -551,7 +638,7 @@ export function handleForestChat(res, repoId, body) {
   try { forestLinks = listForestLinks(repoId); } catch { /* pas de liens */ }
   let issues = [];
   try { issues = listIssues(repoId, { includeClosed: true, limit: 200 }); } catch { /* pas d'issues */ }
-  const history = listForestMessages(repoId, { limit: 1000 }).filter((m) => m.state === "complete" && m.id !== userMessage.id);
+  const history = listForestMessages(repoId, { limit: 1000, sessionId }).filter((m) => m.state === "complete" && m.id !== userMessage.id);
 
   aiLocks.set(lockKey, { child: null });
   aiInFlight++;
@@ -587,6 +674,23 @@ export function handleForestChatConfirm(req, res, repoId, body) {
   if (result.linksChanged) broadcast(forestKey(repoId), "links:changed", { repoId });
   if (result.issuesChanged) broadcastIssuesChanged(repoId);
   return send(res, 200, { ok: true, applied: result.applied });
+}
+
+// POST /api/forest/chat/:msgId/undo — annule le placement d'un message de la forêt.
+export function handleForestChatUndo(req, res, repoId, msgId) {
+  if (forestAiBusy(repoId)) return send(res, 409, { error: "ai_busy" });
+  const msg = getForestMessage(Number(msgId), repoId);
+  if (!msg || msg.repoId !== repoId) return send(res, 404, { error: "not_found" });
+  const { idx, ids } = appliedCreatedIds(msg);
+  if (!ids.length) return send(res, 400, { error: "rien_a_annuler" });
+  const deleted = deleteCreatedNodes(repoId, ids);
+  if (deleted.length) broadcast(forestKey(repoId), "nodes:reordered", { forest: true });
+  const updated = updateForestMessage(msg.id, {
+    body: `${String(msg.body || "").trim()}\n\n↩️ _Placement annulé (${deleted.length} nœud(s) supprimé(s))._`,
+    actions: msg.actions.map((a, i) => (i === idx ? { ...a, undone: true } : a)),
+  }, repoId);
+  broadcastForestMessage(repoId, updated);
+  return send(res, 200, { ok: true, deleted });
 }
 
 // ── Auto-revue par le chat IA « top level » (§6.6) ───────────────────────────

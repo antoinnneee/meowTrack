@@ -16,6 +16,7 @@ node test/node_links.test.mjs      # regression test for prerequisite-link guard
 node test/issue_actions.test.mjs   # regression test for issue manual order + AI issue actions
 node test/node_waiting.test.mjs    # regression test for the `waiting` status + pending_info lifecycle
 node test/node_activation.test.mjs # regression test for the activation node (kind='activation') gating
+node test/chat_sessions.test.mjs   # regression test for multi-session chat (named conversations per node/forest)
 ./deploy.sh                       # SCP + npm install + systemctl restart (reads gitignored .deployEnv)
 ./install-service.sh              # one-shot: create+enable the systemd unit (run on the server)
 ```

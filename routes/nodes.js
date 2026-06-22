@@ -19,6 +19,10 @@ import {
   listNodeMessages,
   clearNodeMessages,
   deleteNodeMessage,
+  listChatSessions,
+  createChatSession,
+  renameChatSession,
+  deleteChatSession,
   listForestLinks,
   addNodeLink,
   removeNodeLink,
@@ -41,10 +45,20 @@ import {
   handleForestChatConfirm,
   handleNodeChat,
   handleNodeChatConfirm,
+  handleNodeChatUndo,
+  handleForestChatUndo,
   triggerAutoReview,
   nodeAiBusy,
   forestAiBusy,
+  stopNodeTurn,
+  stopForestTurn,
 } from "../ai/turns.js";
+
+// Préfixe la session par défaut implicite (id 0 = messages à session_id NULL) à la
+// liste des sessions explicites → l'UI a toujours au moins « Conversation ».
+function withDefaultSession(sessions) {
+  return [{ id: 0, name: "Conversation", isDefault: true }, ...(sessions || [])];
+}
 
 export async function handle(ctx) {
   const { req, res, method, path, q } = ctx;
@@ -56,18 +70,51 @@ export async function handle(ctx) {
   }
 
   // ── Chat « top level » (forêt d'un repo) — réutilise le SSE forêt ──────────
-  // GET /api/forest/messages?repo= — historique du chat de forêt.
+  // GET /api/forest/messages?repo=&session= — historique du chat de forêt.
   if (method === "GET" && path === "/api/forest/messages") {
-    send(res, 200, listForestMessages(repoOf(q), { afterId: Number(q.get("afterId")) || 0, limit: Number(q.get("limit")) || 500 }));
+    const sessionId = Number(q.get("session")) || 0;
+    send(res, 200, listForestMessages(repoOf(q), { afterId: Number(q.get("afterId")) || 0, limit: Number(q.get("limit")) || 500, sessionId }));
     return true;
   }
-  // DELETE /api/forest/messages?repo= — vide l'historique (refusé pendant un tour IA).
+  // DELETE /api/forest/messages?repo=&session= — vide l'historique (refusé pendant un tour IA).
   if (method === "DELETE" && path === "/api/forest/messages") {
     const id = repoOf(q);
     if (forestAiBusy(id)) return send(res, 409, { error: "ai_busy" }), true;
-    const removed = clearForestMessages(id);
-    broadcast(forestKey(id), "chat:cleared", { repoId: id, scope: "forest" });
+    const sessionId = Number(q.get("session")) || 0;
+    const removed = clearForestMessages(id, sessionId);
+    broadcast(forestKey(id), "chat:cleared", { repoId: id, scope: "forest", sessionId });
     send(res, 200, { ok: true, removed });
+    return true;
+  }
+  // Sessions de conversation de la forêt (plusieurs historiques nommés par repo).
+  if (method === "GET" && path === "/api/forest/chat/sessions") {
+    const id = repoOf(q);
+    send(res, 200, withDefaultSession(listChatSessions("forest", id, id)));
+    return true;
+  }
+  if (method === "POST" && path === "/api/forest/chat/sessions") {
+    const id = repoOf(q);
+    const { name } = await readBody(req);
+    const s = createChatSession("forest", id, name, id);
+    broadcast(forestKey(id), "chat:sessions", { repoId: id, scope: "forest" });
+    send(res, 200, s);
+    return true;
+  }
+  const fSessMatch = path.match(/^\/api\/forest\/chat\/sessions\/(\d+)$/);
+  if (fSessMatch && method === "PATCH") {
+    const id = repoOf(q);
+    const { name } = await readBody(req);
+    const s = renameChatSession(Number(fSessMatch[1]), name, id);
+    broadcast(forestKey(id), "chat:sessions", { repoId: id, scope: "forest" });
+    send(res, s ? 200 : 404, s || { error: "introuvable" });
+    return true;
+  }
+  if (fSessMatch && method === "DELETE") {
+    const id = repoOf(q);
+    if (forestAiBusy(id)) return send(res, 409, { error: "ai_busy" }), true;
+    const removed = deleteChatSession(Number(fSessMatch[1]), "forest", id, id);
+    broadcast(forestKey(id), "chat:sessions", { repoId: id, scope: "forest" });
+    send(res, removed ? 200 : 404, removed ? { ok: true } : { error: "introuvable" });
     return true;
   }
   // DELETE /api/forest/messages/:id?repo= — retire un message (refusé pendant un tour IA).
@@ -90,6 +137,18 @@ export async function handle(ctx) {
   if (method === "POST" && path === "/api/forest/chat/confirm") {
     const body = await readBody(req);
     handleForestChatConfirm(req, res, repoOf(q, body), body);
+    return true;
+  }
+  // POST /api/forest/chat/stop?repo= — interrompt le tour IA forêt en cours.
+  if (method === "POST" && path === "/api/forest/chat/stop") {
+    const stopped = stopForestTurn(repoOf(q));
+    send(res, 200, { ok: true, stopped });
+    return true;
+  }
+  // POST /api/forest/chat/:msgId/undo?repo= — annule le placement d'un message forêt.
+  const fUndo = path.match(/^\/api\/forest\/chat\/(\d+)\/undo$/);
+  if (fUndo && method === "POST") {
+    handleForestChatUndo(req, res, repoOf(q), Number(fUndo[1]));
     return true;
   }
   // GET /api/nodes?repo= — racines (grille) ou ?view=forest (graphe = tout l'arbre).
@@ -197,7 +256,7 @@ export async function handle(ctx) {
   }
 
   // /api/nodes/:ref[…] (résolution du code scopée par ?repo=)
-  const nodeMatch = path.match(/^\/api\/nodes\/([^/]+)(\/subtree|\/messages(?:\/\d+)?|\/move|\/reorder|\/chat(?:\/confirm)?|\/stream)?$/);
+  const nodeMatch = path.match(/^\/api\/nodes\/([^/]+)(\/subtree|\/messages(?:\/\d+)?|\/move|\/reorder|\/chat\/sessions(?:\/\d+)?|\/chat\/\d+\/undo|\/chat(?:\/confirm|\/stop)?|\/stream)?$/);
   if (nodeMatch) {
     const ref = decodeURIComponent(nodeMatch[1]);
     const sub = nodeMatch[2] || "";
@@ -267,14 +326,43 @@ export async function handle(ctx) {
       return true;
     }
     if (sub === "/messages" && method === "GET") {
-      send(res, 200, listNodeMessages(node.id, { afterId: Number(q.get("afterId")) || 0, limit: Number(q.get("limit")) || 500, repoId: id }));
+      const sessionId = Number(q.get("session")) || 0;
+      send(res, 200, listNodeMessages(node.id, { afterId: Number(q.get("afterId")) || 0, limit: Number(q.get("limit")) || 500, repoId: id, sessionId }));
       return true;
     }
     if (sub === "/messages" && method === "DELETE") {
       if (nodeAiBusy(node.id)) return send(res, 409, { error: "ai_busy" }), true; // pas pendant un tour IA
-      const removed = clearNodeMessages(node.id, id);
-      broadcast(nodeKey(id, node.id), "chat:cleared", { nodeId: node.id });
+      const sessionId = Number(q.get("session")) || 0;
+      const removed = clearNodeMessages(node.id, id, sessionId);
+      broadcast(nodeKey(id, node.id), "chat:cleared", { nodeId: node.id, sessionId });
       send(res, 200, { ok: true, removed });
+      return true;
+    }
+    // Sessions de conversation du nœud (plusieurs historiques nommés).
+    if (sub === "/chat/sessions" && method === "GET") {
+      send(res, 200, withDefaultSession(listChatSessions("node", node.id, id)));
+      return true;
+    }
+    if (sub === "/chat/sessions" && method === "POST") {
+      const { name } = await readBody(req);
+      const s = createChatSession("node", node.id, name, id);
+      broadcast(nodeKey(id, node.id), "chat:sessions", { nodeId: node.id });
+      send(res, 200, s);
+      return true;
+    }
+    const nSessMatch = sub.match(/^\/chat\/sessions\/(\d+)$/);
+    if (nSessMatch && method === "PATCH") {
+      const { name } = await readBody(req);
+      const s = renameChatSession(Number(nSessMatch[1]), name, id);
+      broadcast(nodeKey(id, node.id), "chat:sessions", { nodeId: node.id });
+      send(res, s ? 200 : 404, s || { error: "introuvable" });
+      return true;
+    }
+    if (nSessMatch && method === "DELETE") {
+      if (nodeAiBusy(node.id)) return send(res, 409, { error: "ai_busy" }), true;
+      const removed = deleteChatSession(Number(nSessMatch[1]), "node", node.id, id);
+      broadcast(nodeKey(id, node.id), "chat:sessions", { nodeId: node.id });
+      send(res, removed ? 200 : 404, removed ? { ok: true } : { error: "introuvable" });
       return true;
     }
     // DELETE /api/nodes/:ref/messages/:id — retire un message (refusé pendant un tour IA).
@@ -292,6 +380,16 @@ export async function handle(ctx) {
     }
     if (sub === "/chat/confirm" && method === "POST") {
       handleNodeChatConfirm(req, res, node, await readBody(req));
+      return true;
+    }
+    if (sub === "/chat/stop" && method === "POST") {
+      const stopped = stopNodeTurn(node.id);
+      send(res, 200, { ok: true, stopped });
+      return true;
+    }
+    const nUndo = sub.match(/^\/chat\/(\d+)\/undo$/);
+    if (nUndo && method === "POST") {
+      handleNodeChatUndo(req, res, node, Number(nUndo[1]));
       return true;
     }
   }

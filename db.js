@@ -134,6 +134,11 @@ export {
   getForestMessage,
   addForestMessage,
   updateForestMessage,
+  listChatSessions,
+  getChatSession,
+  createChatSession,
+  renameChatSession,
+  deleteChatSession,
 } from "./db/messages.js";
 
 // ── Initialisation au chargement (bootstrap + migrations idempotentes) ────────

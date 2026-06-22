@@ -82,7 +82,11 @@ const NODE_CHAT_CTX = {
   kind: "node",
   feedSel: "#chatFeed",
   inputSel: "#chatInput",
-  typingSel: "#typingRow",
+  stopSel: "#chatStopBtn",
+  sessionSel: "#nodeSessionSel",
+  renameSel: "#nodeSessionRename",
+  delSel: "#nodeSessionDel",
+  sessionId: 0, // 0 = conversation par défaut (session_id NULL)
   emptyHtml: '<div class="empty">Discute de ce nœud : décris-le, demande des sous-jalons…</div>',
   url: (sub) => `/api/nodes/${encodeURIComponent(vibes.current)}${sub || ""}`,
   ready: () => !!vibes.current,
@@ -91,7 +95,11 @@ const FOREST_CHAT_CTX = {
   kind: "forest",
   feedSel: "#forestChatFeed",
   inputSel: "#forestChatInput",
-  typingSel: "#forestTypingRow",
+  stopSel: "#forestChatStopBtn",
+  sessionSel: "#forestSessionSel",
+  renameSel: "#forestSessionRename",
+  delSel: "#forestSessionDel",
+  sessionId: 0,
   emptyHtml: '<div class="empty">Discute de tes objectifs au plus haut niveau : décris une ambition, demande à créer des objectifs racines…</div>',
   url: (sub) => `/api/forest${sub || ""}`,
   ready: () => true,
@@ -307,6 +315,7 @@ export function renderMarkdown(src) {
 function indexForest(list) {
   vibes.forest = list || [];
   vibes.byId = new Map(vibes.forest.map((n) => [n.id, n]));
+  vibes._blockedCache = null; // invalidé : la hiérarchie a changé
 }
 function indexLinks(list) {
   vibes.links = Array.isArray(list) ? list : [];
@@ -317,9 +326,10 @@ function indexLinks(list) {
     m.get(l.fromId).add(l.toId);
   }
   vibes.reqByFrom = m;
+  vibes._blockedCache = null; // invalidé : les prérequis ont changé
 }
-// Un nœud est « bloqué » s'il a au moins un prérequis (requires) non atteint.
-function isNodeBlocked(node) {
+// Blocage « direct » : le nœud a lui-même au moins un prérequis (requires) non atteint.
+function hasDirectBlock(node) {
   if (!node) return false;
   const reqs = vibes.reqByFrom.get(node.id);
   if (reqs && reqs.size) {
@@ -332,6 +342,27 @@ function isNodeBlocked(node) {
   // Vue détail : la forêt n'est pas indexée → on s'appuie sur node.requires (withLinks).
   if (Array.isArray(node.requires)) return node.requires.some((r) => r.status !== "done");
   return false;
+}
+// Un nœud est « bloqué » s'il a un prérequis non atteint OU si un de ses ancêtres l'est :
+// le blocage se propage à tout le sous-arbre. Mémoïsé par rebuild de forêt/liens (O(profondeur)).
+function isNodeBlocked(node) {
+  if (!node) return false;
+  // Vue détail (forêt non indexée) : pas de propagation possible → blocage direct seul.
+  if (!vibes.byId || !vibes.byId.has(node.id)) return hasDirectBlock(node);
+  const cache = vibes._blockedCache || (vibes._blockedCache = new Map());
+  if (cache.has(node.id)) return cache.get(node.id);
+  // Remonte la chaîne d'ancêtres ; un blocage direct quelque part bloque toute la descendance.
+  const chain = [];
+  let blocked = false;
+  let cur = node;
+  while (cur) {
+    if (cache.has(cur.id)) { blocked = cache.get(cur.id); break; }
+    chain.push(cur.id);
+    if (hasDirectBlock(cur)) { blocked = true; break; }
+    cur = cur.parentId != null ? vibes.byId.get(cur.parentId) : null;
+  }
+  for (const id of chain) cache.set(id, blocked); // toute la chaîne visitée partage le verdict
+  return blocked;
 }
 function childrenOf(id) {
   return vibes.forest.filter((n) => n.parentId === id).sort((a, b) => a.position - b.position || a.id - b.id);
@@ -382,6 +413,9 @@ function measureTopbar() {
   if (tb) document.documentElement.style.setProperty("--topbar-h", tb.offsetHeight + "px");
 }
 function setForestPinned(on) {
+  // Épinglé et plein écran sont deux dispositions exclusives : épingler quitte le
+  // plein écran (sinon les deux classes coexistent et la mise en page est incohérente).
+  if (on && vibes.fullscreen) setForestFullscreen(false);
   vibes.pinned = on;
   localStorage.setItem("meowtrack_forest_pin", on ? "1" : "0");
   document.body.classList.toggle("forest-pinned", on);
@@ -399,9 +433,27 @@ function setForestPinned(on) {
   if (on) measureTopbar();
 }
 
+// Bouton « Discuter des objectifs » : bascule l'ouverture du chat forêt. À la
+// FERMETURE, sort toujours du plein écran et de l'épinglage (qui forcent l'affichage
+// et rendraient la classe `collapsed` sans effet) → le chat se réduit vraiment.
+function toggleForestChat() {
+  const chat = $("#forestChat");
+  if (!chat) return;
+  const open = !chat.classList.contains("collapsed") || vibes.fullscreen || vibes.pinned;
+  if (open) {
+    if (vibes.fullscreen) setForestFullscreen(false);
+    if (vibes.pinned) setForestPinned(false);
+    chat.classList.add("collapsed");
+  } else {
+    chat.classList.remove("collapsed");
+  }
+}
+
 // Met la discussion « top level » en plein écran (ou l'en sort). Prioritaire sur
 // l'état réduit (toujours déployé en plein écran). Transitoire (non persisté).
 function setForestFullscreen(on) {
+  // Exclusif avec l'épinglage : passer en plein écran détache le panneau épinglé.
+  if (on && vibes.pinned) setForestPinned(false);
   vibes.fullscreen = on;
   const chat = $("#forestChat");
   if (chat) {
@@ -728,6 +780,22 @@ function nodeGroup(n, p) {
   const lbl = svgEl("text", { class: "g-label", "text-anchor": "middle", y: String(r + 18) });
   lbl.textContent = n.title.length > 18 ? n.title.slice(0, 17) + "…" : n.title;
   inner.appendChild(lbl);
+  // Badge d'état (coin haut-droit) : lisible d'un coup d'œil. Le blocage prime sur le statut.
+  const badgeIcon = blocked ? "🔒"
+    : n.status === "paused" ? "⏸"
+    : n.status === "waiting" ? "⏳"
+    : n.status === "done" ? "✓"
+    : n.status === "abandoned" ? "✕"
+    : null;
+  if (badgeIcon) {
+    const badge = svgEl("text", {
+      class: "g-state-badge", x: String(r - 4), y: String(-(r - 4)),
+      "text-anchor": "middle", "dominant-baseline": "middle",
+      "font-size": String(Math.max(10, Math.round(r * 0.55))),
+    });
+    badge.textContent = badgeIcon;
+    inner.appendChild(badge);
+  }
   g.appendChild(inner);
   return g;
 }
@@ -1132,6 +1200,16 @@ async function persistPositions(ids) {
   try { await api.send("POST", "/api/nodes/positions", { positions }); }
   catch (e) { toast("Positions non enregistrées : " + e.message); }
 }
+// Efface la position manuelle d'un nœud → il retombe dans le tidy-layout auto.
+async function resetNodePosition(id) {
+  try {
+    await api.send("POST", "/api/nodes/positions", { positions: [{ id, x: null, y: null }] });
+    const n = vibes.byId.get(id);
+    if (n) { n.posX = null; n.posY = null; }
+    toast("Position réinitialisée.");
+    loadForest();
+  } catch (e) { toast("Échec : " + e.message); }
+}
 
 // ── Menu contextuel générique (clic droit) ───────────────────────────────────
 export function hideCtxMenu() {
@@ -1174,7 +1252,7 @@ function startLinkMode(sourceId, kind = "child") {
     ? "Clique le nœud à BLOQUER (il dépendra de ce node d'activation). Échap pour annuler."
     : kind === "requires"
     ? "Clique le nœud PRÉREQUIS (ce nœud en dépendra). Échap pour annuler."
-    : "Clique le nœud à rattacher comme enfant. Échap pour annuler.");
+    : "Clique le nœud PARENT (auquel rattacher ce nœud comme enfant). Échap pour annuler.");
 }
 function cancelLinkMode() {
   vibes.graph.linking = null;
@@ -1208,9 +1286,9 @@ async function finishLink(targetId) {
     return;
   }
   try {
-    // « Tirer un lien depuis A vers B » = B devient enfant de A.
-    await api.send("POST", `/api/nodes/${encodeURIComponent(targetId)}/move`, { newParentId: sourceId });
-    vibes.graph.spawned.add(targetId);
+    // « Rattacher comme enfant » : A (source, clic droit) devient enfant de B (target cliqué).
+    await api.send("POST", `/api/nodes/${encodeURIComponent(sourceId)}/move`, { newParentId: targetId });
+    vibes.graph.spawned.add(sourceId);
     toast("Lien créé.");
     loadForest();
   } catch (e) {
@@ -1518,6 +1596,9 @@ function wireGraph() {
         items.push({ label: "🔗 Rattacher comme enfant…", onClick: () => startLinkMode(id, "child") });
         items.push({ label: "⚡ Convertir en node d'activation", onClick: () => convertToActivation(id) });
       }
+      if (node && node.posX != null && node.posY != null) {
+        items.push({ label: "📌 Réinitialiser la position", onClick: () => resetNodePosition(id) });
+      }
       items.push({ label: "✎ Ouvrir", onClick: () => openNode(ref) });
       items.push({ label: "🗑 Supprimer", danger: true, onClick: () => { if (confirm("Supprimer ce nœud et tout son sous-arbre ?")) deleteNodeById(id); } });
       showCtxMenu(e.clientX, e.clientY, items);
@@ -1593,6 +1674,7 @@ async function openNode(refOrId) {
     vibes.currentNode = node;
     vibes.currentVersion = node.version;
     vibes.chat = NODE_CHAT_CTX; // chat actif = ce nœud
+    NODE_CHAT_CTX.sessionId = 0; // nouveau nœud → conversation par défaut (node.messages)
     setForestChatVisible(false);
     $("#vibesBar").hidden = true;
     $("#vibesView").hidden = true;
@@ -1609,6 +1691,7 @@ async function openNode(refOrId) {
     renderNodeHeader(node);
     renderTree(node);
     renderChat(node.messages || []);
+    loadSessions(); // peuple le sélecteur de conversations du nœud
     subscribeNode(ref);
   } catch (e) {
     toast("Erreur : " + e.message);
@@ -2227,7 +2310,11 @@ function actionChipsHtml(m) {
     })
     .join("");
   const confirm = entry.proposed ? `<button class="confirm-actions" type="button">Confirmer</button>` : "";
-  return `<div class="action-chips">${chips}${confirm}</div>`;
+  // Annulation du placement : possible tant que des nœuds créés (add_node) subsistent.
+  const canUndo = entry.applied && !entry.undone && ops.some((o) => o.op === "add_node" && o.id != null);
+  const undo = canUndo ? `<button class="undo-actions" type="button" title="Supprimer les nœuds créés par ce message">↩️ Annuler le placement</button>` : "";
+  const undone = entry.undone ? `<span class="actions-undone">↩️ placement annulé</span>` : "";
+  return `<div class="action-chips">${chips}${confirm}${undo}${undone}</div>`;
 }
 function messageEl(m) {
   const div = document.createElement("div");
@@ -2317,6 +2404,8 @@ function messageEl(m) {
       const node = c.firstElementChild;
       const btn = node.querySelector(".confirm-actions");
       if (btn && m.id) btn.addEventListener("click", () => confirmActions(m.id));
+      const ub = node.querySelector(".undo-actions");
+      if (ub && m.id) ub.addEventListener("click", () => undoPlacement(m.id));
       // Chips d'actions appliquées : clic / Entrée → ouvre le nœud concerné.
       node.querySelectorAll(".action-chip.clickable[data-open-node]").forEach((chip) => {
         const open = () => openNode(chip.dataset.openNode);
@@ -2333,6 +2422,9 @@ function messageEl(m) {
 function appendMessage(m) {
   const feed = chatFeedEl();
   if (!feed) return;
+  // Filtre par session active : les events SSE arrivent pour TOUTES les sessions du
+  // nœud/repo (une seule room) → on n'affiche que celles de la conversation ouverte.
+  if (m && (m.sessionId || 0) !== (vibes.chat.sessionId || 0)) return;
   const emptyEl = feed.querySelector(".empty");
   if (emptyEl) emptyEl.remove();
   if (m.id) {
@@ -2367,7 +2459,16 @@ function paintStreamBody(s) {
     if (!s.bodyEl) return;
     if (s.text) {
       s.bodyEl.classList.add("markdown-body");
-      s.bodyEl.innerHTML = renderMarkdown(s.text);
+      // Le rendu markdown re-parse tout le texte à chaque frame sur un état
+      // intermédiaire (markdown incomplet). Si renderMarkdown lève, on retombe sur
+      // le texte brut : le streaming continue d'avancer au lieu de figer l'affichage
+      // au dernier bon rendu (bug NODE-292). textContent neutralise aussi tout HTML.
+      try {
+        s.bodyEl.innerHTML = renderMarkdown(s.text);
+      } catch {
+        s.bodyEl.classList.remove("markdown-body");
+        s.bodyEl.textContent = s.text;
+      }
     } else {
       s.bodyEl.textContent = "";
     }
@@ -2433,11 +2534,11 @@ async function sendChat() {
   if (!text || !ctx.ready()) return;
   const nonce = crypto.randomUUID ? crypto.randomUUID() : "n" + Date.now() + Math.floor(Math.random() * 1e6);
   vibes.stickToBottom = true; // envoyer un message réactive le suivi du bas
-  appendMessage({ id: 0, role: "user", author: vibes.user, body: text, state: "complete", clientNonce: nonce });
+  appendMessage({ id: 0, role: "user", author: vibes.user, body: text, state: "complete", clientNonce: nonce, sessionId: ctx.sessionId });
   ta.value = "";
   autoGrowChat(ta);
   try {
-    await api.send("POST", ctx.url("/chat"), { author: vibes.user, model: vibes.model, body: text, clientNonce: nonce });
+    await api.send("POST", ctx.url("/chat"), { author: vibes.user, model: vibes.model, body: text, clientNonce: nonce, session: ctx.sessionId });
   } catch (e) {
     if (/ai_busy/.test(e.message)) toast(ctx.kind === "forest" ? "Claude répond déjà au niveau objectifs — attends la fin du tour." : "Claude répond déjà sur ce nœud — attends la fin du tour.");
     else if (/ai_overloaded/.test(e.message)) toast("Trop de discussions IA en cours, réessaie dans un instant.");
@@ -2453,6 +2554,26 @@ async function confirmActions(messageId) {
   } catch (e) {
     toast(e.message);
   }
+}
+// Annule le placement d'un message IA : supprime les nœuds qu'il a créés.
+async function undoPlacement(messageId) {
+  if (!messageId) return;
+  if (!confirm("Annuler le placement ? Les nœuds créés par ce message seront supprimés (irréversible).")) return;
+  try {
+    await api.send("POST", vibes.chat.url(`/chat/${encodeURIComponent(messageId)}/undo`));
+    toast("Placement annulé.");
+  } catch (e) {
+    if (/ai_busy/.test(e.message)) toast("Claude répond en ce moment — réessaie après le tour.");
+    else if (/rien_a_annuler/.test(e.message)) toast("Rien à annuler pour ce message.");
+    else toast("Échec : " + e.message);
+  }
+}
+// Vidage suite à l'event SSE `chat:cleared` — uniquement si la session ciblée est
+// celle ouverte (l'event est diffusé sur la room du nœud/repo, toutes sessions confondues).
+function onChatCleared(e) {
+  let sid = 0;
+  try { sid = JSON.parse(e.data).sessionId || 0; } catch { /* payload absent → défaut */ }
+  if (sid === (vibes.chat.sessionId || 0)) renderChat([]);
 }
 // Retrait DOM d'un message suite à l'event SSE `message:deleted` (autre client).
 function removeMessageEl(e) {
@@ -2477,7 +2598,7 @@ async function clearChatHistory() {
   const what = ctx.kind === "forest" ? "de la discussion des objectifs" : "de la discussion de ce nœud";
   if (!confirm(`Vider tout l'historique ${what} ? (irréversible)`)) return;
   try {
-    await api.send("DELETE", ctx.url("/messages"));
+    await api.send("DELETE", ctx.url("/messages") + sessionQS(ctx));
     renderChat([]); // vidage local immédiat (l'événement chat:cleared confirmera aux autres)
     toast("Historique vidé.");
   } catch (e) {
@@ -2485,12 +2606,96 @@ async function clearChatHistory() {
     else toast("Échec : " + e.message);
   }
 }
-// Charge l'historique du chat « top level » (forêt) et le rend.
+// Charge l'historique du chat « top level » (forêt) et le rend (session active).
 async function loadForestChat() {
+  await loadSessions();
+  await loadSessionMessages();
+}
+
+// ── Sessions de conversation (plusieurs historiques nommés) ───────────────────
+// Fragment de requête `?session=` (omis pour la conversation par défaut, id 0).
+function sessionQS(ctx) {
+  return ctx.sessionId ? `?session=${encodeURIComponent(ctx.sessionId)}` : "";
+}
+// Active/désactive les boutons renommer/supprimer (interdits sur la session par défaut).
+function updateSessionButtons() {
+  const ctx = vibes.chat;
+  const isDefault = !ctx.sessionId;
+  const rn = $(ctx.renameSel);
+  const dl = $(ctx.delSel);
+  if (rn) rn.disabled = isDefault;
+  if (dl) dl.disabled = isDefault;
+}
+// Charge la liste des sessions du chat actif et peuple son sélecteur.
+async function loadSessions() {
+  const ctx = vibes.chat;
+  const sel = $(ctx.sessionSel);
+  if (!sel || !ctx.ready()) return;
+  let sessions;
+  try { sessions = await api.get(ctx.url("/chat/sessions")); }
+  catch { sessions = [{ id: 0, name: "Conversation", isDefault: true }]; }
+  ctx._sessions = sessions;
+  // Si la session courante a disparu (supprimée ailleurs), retombe sur la défaut.
+  if (!sessions.some((s) => s.id === ctx.sessionId)) ctx.sessionId = 0;
+  sel.innerHTML = "";
+  for (const s of sessions) {
+    const o = document.createElement("option");
+    o.value = String(s.id);
+    o.textContent = s.name;
+    sel.appendChild(o);
+  }
+  sel.value = String(ctx.sessionId);
+  updateSessionButtons();
+}
+// Charge les messages de la session active du chat actif.
+async function loadSessionMessages() {
+  const ctx = vibes.chat;
+  if (!ctx.ready()) return;
+  try { renderChat(await api.get(ctx.url("/messages") + sessionQS(ctx))); }
+  catch { renderChat([]); }
+}
+// Bascule sur une autre session (recharge ses messages).
+async function switchSession(id) {
+  const ctx = vibes.chat;
+  ctx.sessionId = Number(id) || 0;
+  const sel = $(ctx.sessionSel);
+  if (sel) sel.value = String(ctx.sessionId);
+  updateSessionButtons();
+  await loadSessionMessages();
+}
+async function newSession() {
+  const ctx = vibes.chat;
+  if (!ctx.ready()) return;
+  const name = (window.prompt("Nom de la nouvelle conversation :", "") || "").trim();
+  if (!name) return;
   try {
-    renderChat(await api.get("/api/forest/messages"));
-  } catch {
-    renderChat([]);
+    const s = await api.send("POST", ctx.url("/chat/sessions"), { name });
+    await loadSessions();
+    await switchSession(s.id);
+  } catch (e) { toast("Échec : " + e.message); }
+}
+async function renameSession() {
+  const ctx = vibes.chat;
+  if (!ctx.sessionId) return;
+  const cur = (ctx._sessions || []).find((s) => s.id === ctx.sessionId);
+  const name = (window.prompt("Renommer la conversation :", cur ? cur.name : "") || "").trim();
+  if (!name) return;
+  try { await api.send("PATCH", ctx.url("/chat/sessions/" + ctx.sessionId), { name }); await loadSessions(); }
+  catch (e) { toast("Échec : " + e.message); }
+}
+async function deleteSession() {
+  const ctx = vibes.chat;
+  if (!ctx.sessionId) return;
+  if (!confirm("Supprimer cette conversation et tous ses messages ? (irréversible)")) return;
+  try {
+    await api.send("DELETE", ctx.url("/chat/sessions/" + ctx.sessionId));
+    ctx.sessionId = 0;
+    await loadSessions();
+    await loadSessionMessages();
+    toast("Conversation supprimée.");
+  } catch (e) {
+    if (/ai_busy/.test(e.message)) toast("Claude répond en ce moment — réessaie après le tour.");
+    else toast("Échec : " + e.message);
   }
 }
 
@@ -2509,12 +2714,23 @@ function closeStream() {
   }
   setLive(false);
 }
-// Affiche/masque la ligne « Claude travaille… » du chat ACTIF (nœud ou forêt).
+// Reflète l'état de génération IA du chat ACTIF (nœud ou forêt) sur le bouton Stop.
 function applyAiTurnEvent(d) {
-  const row = $(vibes.chat.typingSel);
-  if (!row) return;
-  row.hidden = d.state !== "start";
-  if (d.state === "start") row.textContent = `✨ ${d.actor ? d.actor + " — " : ""}Claude travaille…`;
+  // L'indicateur de frappe « ✨ Claude travaille… » a été retiré : l'état de
+  // génération est désormais reflété uniquement par le bouton Stop (visible pendant
+  // un tour, masqué sinon) et par l'animation « Claude rédige » dans la bulle.
+  const stop = $(vibes.chat.stopSel);
+  if (stop) stop.hidden = d.state !== "start";
+}
+// Interrompt la réponse IA en cours pour le chat actif (nœud ou forêt).
+async function stopChat() {
+  const ctx = vibes.chat;
+  if (!ctx.ready()) return;
+  const stop = $(ctx.stopSel);
+  if (stop) stop.disabled = true;
+  try { await api.send("POST", ctx.url("/chat/stop"), {}); }
+  catch (e) { toast("Échec : " + e.message); }
+  finally { if (stop) stop.disabled = false; }
 }
 function subscribeForest() {
   closeStream();
@@ -2544,7 +2760,8 @@ function subscribeForest() {
     }
   });
   es.addEventListener("node:ghost", (e) => applyGhostForest(JSON.parse(e.data)));
-  es.addEventListener("chat:cleared", () => renderChat([]));
+  es.addEventListener("chat:cleared", (e) => onChatCleared(e));
+  es.addEventListener("chat:sessions", () => loadSessions()); // liste des conversations modifiée ailleurs
   es.addEventListener("message:deleted", (e) => removeMessageEl(e)); // un autre client a retiré un message
   const applyNode = (raw, kind) => {
     if (!raw) return;
@@ -2593,14 +2810,15 @@ function subscribeNode(ref) {
   es.addEventListener("ai:stream", (e) => onStreamDelta(JSON.parse(e.data)));
   es.addEventListener("ai:turn", (e) => {
     const d = JSON.parse(e.data);
-    applyAiTurnEvent(d); // ligne « Claude travaille… » du chat actif
+    applyAiTurnEvent(d); // état de génération (bouton Stop) du chat actif
     if (d.state === "start" || d.state === "end") clearGhostsDetail(); // fin/début → les vrais nœuds (refetch) remplacent les fantômes
   });
   es.addEventListener("node:ghost", (e) => applyGhostDetail(JSON.parse(e.data)));
   es.addEventListener("node:updated", (e) => applyNodeUpdate(JSON.parse(e.data)));
   es.addEventListener("subtree:dirty", () => scheduleSubtreeRefetch());
   es.addEventListener("links:changed", () => refreshCurrentNode()); // prérequis du nœud modifié
-  es.addEventListener("chat:cleared", () => renderChat([])); // un autre client a vidé l'historique
+  es.addEventListener("chat:cleared", (e) => onChatCleared(e)); // un autre client a vidé l'historique
+  es.addEventListener("chat:sessions", () => loadSessions()); // liste des conversations modifiée ailleurs
   es.addEventListener("message:deleted", (e) => removeMessageEl(e)); // un autre client a retiré un message
   es.addEventListener("node:deleted", (e) => {
     const d = JSON.parse(e.data);
@@ -2719,6 +2937,12 @@ export function initVibes() {
   $("#ndAddReqBtn").addEventListener("click", (e) => openReqPicker(e.clientX, e.clientY));
   $("#chatSend").addEventListener("click", sendChat);
   $("#chatClearBtn").addEventListener("click", clearChatHistory);
+  // Sessions de conversation du nœud.
+  $("#nodeSessionSel").addEventListener("change", (e) => switchSession(e.target.value));
+  $("#nodeSessionNew").addEventListener("click", newSession);
+  $("#nodeSessionRename").addEventListener("click", renameSession);
+  $("#nodeSessionDel").addEventListener("click", deleteSession);
+  $("#chatStopBtn").addEventListener("click", stopChat);
   // Suivi du scroll : on coupe l'auto-défilement dès que l'utilisateur remonte,
   // on le rétablit quand il revient en bas (pendant la génération comme après).
   $("#chatFeed").addEventListener("scroll", () => { vibes.stickToBottom = isFeedAtBottom($("#chatFeed")); });
@@ -2735,7 +2959,13 @@ export function initVibes() {
   // Chat « top level » (vue objectifs) — même rendu/flux, contexte forêt.
   $("#forestChatSend").addEventListener("click", sendChat);
   $("#forestChatClearBtn").addEventListener("click", clearChatHistory);
-  $("#forestChatToggle").addEventListener("click", () => $("#forestChat").classList.toggle("collapsed"));
+  // Sessions de conversation de la forêt.
+  $("#forestSessionSel").addEventListener("change", (e) => switchSession(e.target.value));
+  $("#forestSessionNew").addEventListener("click", newSession);
+  $("#forestSessionRename").addEventListener("click", renameSession);
+  $("#forestSessionDel").addEventListener("click", deleteSession);
+  $("#forestChatStopBtn").addEventListener("click", stopChat);
+  $("#forestChatToggle").addEventListener("click", toggleForestChat);
   $("#forestChatPinBtn").addEventListener("click", () => setForestPinned(!vibes.pinned));
   $("#forestChatExpandBtn").addEventListener("click", () => setForestFullscreen(!vibes.fullscreen));
   // En-tête redimensionné (barre qui passe à la ligne) : recale le panneau épinglé.

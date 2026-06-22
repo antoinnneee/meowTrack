@@ -1628,6 +1628,56 @@ export function initRepo() {
     if (!$("#diffBackdrop").hidden) closeDiffModal();
     else if (!$("#cfgBackdrop").hidden) closeConfigModal();
   });
+
+  setupRepoWcResizer();
+}
+
+// Colonne de droite (working tree) redimensionnable par drag sur la poignée.
+// La largeur pilote --repo-wc-w sur .repo-body et est persistée en localStorage.
+const REPO_WC_KEY = "meowtrack.repoWcWidth";
+const REPO_WC_MIN = 220;
+function clampRepoWcWidth(w) {
+  const max = Math.max(REPO_WC_MIN, window.innerWidth - 560); // garde de la place pour sidebar + graphe
+  return Math.min(max, Math.max(REPO_WC_MIN, Math.round(w)));
+}
+function setupRepoWcResizer() {
+  const handle = $("#repoWcResizer");
+  const body = document.querySelector(".repo-body");
+  if (!handle || !body) return;
+
+  // Restaure la largeur sauvegardée.
+  const saved = parseInt(localStorage.getItem(REPO_WC_KEY) || "", 10);
+  if (Number.isFinite(saved)) body.style.setProperty("--repo-wc-w", clampRepoWcWidth(saved) + "px");
+
+  let startX = 0;
+  let startW = 0;
+  const onMove = (e) => {
+    // Glisser vers la gauche élargit la colonne de droite.
+    const w = clampRepoWcWidth(startW - (e.clientX - startX));
+    body.style.setProperty("--repo-wc-w", w + "px");
+  };
+  const onUp = () => {
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+    handle.classList.remove("dragging");
+    document.body.classList.remove("repo-resizing");
+    const cur = body.style.getPropertyValue("--repo-wc-w").trim();
+    if (cur) localStorage.setItem(REPO_WC_KEY, parseInt(cur, 10));
+  };
+  handle.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    startX = e.clientX;
+    startW = $(".repo-wc").getBoundingClientRect().width;
+    handle.classList.add("dragging");
+    document.body.classList.add("repo-resizing");
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
+  // Double-clic : remet la largeur par défaut.
+  handle.addEventListener("dblclick", () => {
+    body.style.removeProperty("--repo-wc-w");
+    localStorage.removeItem(REPO_WC_KEY);
+  });
 }
 
 // Remote ajouté/modifié/supprimé → on recharge la config + on rafraîchit la vue.
