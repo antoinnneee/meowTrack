@@ -247,6 +247,7 @@ export async function handle(ctx) {
     if (node) {
       broadcast(forestKey(node.repoId), "node:updated", node);
       broadcast(nodeKey(node.repoId, node.id), "node:updated", node);
+      broadcast(forestKey(node.repoId), "runs:changed", { repoId: node.repoId }); // un run vient de démarrer
     }
     send(res, 200, { node: node || null, config: { leaseMs: cfg.leaseMs, branchPrefix: cfg.branchPrefix, testCommand: cfg.testCommand } });
     return true;
@@ -449,6 +450,7 @@ export async function handle(ctx) {
         const n = startNode(node.id, owner, { leaseMs: cfg.leaseMs, branch: body.branch }, id);
         broadcast(forestKey(repoId), "node:updated", n);
         broadcast(nodeKey(repoId, node.id), "node:updated", n);
+        broadcast(forestKey(repoId), "runs:changed", { repoId }); // run démarré
         send(res, 200, n);
       } catch (e) {
         if (e.code === "not_startable") return send(res, 409, { error: "not_startable" }), true;
@@ -472,6 +474,7 @@ export async function handle(ctx) {
       if (!owner) return send(res, 400, { error: "owner_requis" }), true;
       const r = failNode(node.id, owner, { error: body.error, branch: body.branch }, id);
       broadcast(forestKey(repoId), "node:updated", getNode(node.id, { repoId: id }));
+      broadcast(forestKey(repoId), "runs:changed", { repoId }); // run clos (échec)
       send(res, 200, r);
       return true;
     }
@@ -501,6 +504,7 @@ export async function handle(ctx) {
         throw e;
       }
       broadcastAffected(repoId, r.affectedNodeIds);
+      broadcast(forestKey(repoId), "runs:changed", { repoId }); // run clôturé (done/review)
       if (ingest.issuesChanged) broadcast(forestKey(repoId), "issues:changed", { repoId });
       const openReviews = ingest.reviews.filter((rv) => rv.state === "open");
       if (openReviews.length) broadcast(forestKey(repoId), "review:open", { repoId, nodeId: node.id, count: openReviews.length });

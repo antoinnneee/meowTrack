@@ -393,6 +393,7 @@ function initDragReorder() {
 // s'abonne ici pour recharger la liste (et rafraîchir le détail ouvert) en direct.
 let issuesEs = null;
 let issuesReloadTimer = null;
+let runsReloadTimer = null;
 function issueStreamUrl() {
   const p = injectRepo("/api/nodes/stream");
   return p + (getToken() ? (p.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(getToken()) : "");
@@ -418,6 +419,11 @@ function subscribeIssues() {
       loadList();
       refreshSelected();
     }, 150);
+  });
+  // Flux d'activité des agents : un run démarre/se clôt → recharger la timeline en direct.
+  es.addEventListener("runs:changed", () => {
+    clearTimeout(runsReloadTimer);
+    runsReloadTimer = setTimeout(loadRuns, 150);
   });
 }
 
