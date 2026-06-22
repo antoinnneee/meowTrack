@@ -486,9 +486,13 @@ export async function handle(ctx) {
         const blockingIds = ingest.reviews.filter((rv) => rv.blocking && rv.state === "open").map((rv) => rv.id);
         triggerAutoReview(repoId, node.id, blockingIds, { model: cfg.autoReviewModel, policyPrompt: cfg.autoReviewPrompt }).catch(() => {});
       }
-      // auto_compact ON → marqueur de césure de contexte pour l'agent (cf. NODE-305).
+      // auto_compact ON → marqueur machine (hint) + conseil lisible (advice) pour
+      // l'agent MCP (cf. NODE-305/306). meowtrack conseille, l'agent décide.
       const out = { ok: true, state: r.state, affected: r.affectedNodeIds, reviews: ingest.reviews };
-      if (cfg.autoCompact) out.hint = "compact_suggested";
+      if (cfg.autoCompact) {
+        out.hint = "compact_suggested";
+        out.advice = "Contexte potentiellement chargé : envisage un /compact avant de réclamer le nœud suivant.";
+      }
       send(res, 200, out);
       return true;
     }
