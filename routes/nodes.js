@@ -95,7 +95,10 @@ export async function handle(ctx) {
   // GET /api/nodes?repo= — racines (grille) ou ?view=forest (graphe = tout l'arbre).
   if (method === "GET" && path === "/api/nodes") {
     const id = repoOf(q);
-    if (q.get("view") === "forest") return send(res, 200, listForest(id)), true;
+    if (q.get("view") === "forest") {
+      const includeNotes = q.get("includeNotes") !== "false";
+      return send(res, 200, listForest(id, { includeNotes })), true;
+    }
     send(
       res,
       200,

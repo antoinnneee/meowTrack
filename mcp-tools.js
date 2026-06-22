@@ -45,7 +45,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   }
 
   function ok(data) {
-    return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+    return { content: [{ type: "text", text: JSON.stringify(data) }] };
   }
   function fail(err) {
     return { content: [{ type: "text", text: `Erreur: ${err.message || err}` }], isError: true };
@@ -437,11 +437,12 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
         status: z.enum(NODE_STATUSES).optional().describe("Filtre statut (racines uniquement)."),
         text: z.string().optional().describe("Recherche plein-texte (racines uniquement)."),
         limit: z.number().int().optional(),
+        includeNotes: z.boolean().optional().describe("Inclure les notes markdown de chaque nœud (défaut false pour view=forest — réduit fortement la taille de la réponse)."),
       },
     },
-    guard(async ({ repo, view, ...rest }) =>
+    guard(async ({ repo, view, includeNotes, ...rest }) =>
       (view ?? "forest") === "forest"
-        ? apiGet("/api/nodes" + qs({ repo: repoOf(repo), view: "forest" }))
+        ? apiGet("/api/nodes" + qs({ repo: repoOf(repo), view: "forest", includeNotes: includeNotes ?? false }))
         : apiGet("/api/nodes" + qs({ repo: repoOf(repo), ...rest }))
     )
   );
