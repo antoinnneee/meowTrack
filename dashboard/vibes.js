@@ -1189,6 +1189,18 @@ function liveUpdateGraphPositions() {
   if (vibes.graph.edgeDel) positionEdgeDel();
   if (vibes.graph.reqDel) positionReqDel();
 }
+// Cherche une position libre proche de (ax,ay) : décale d'un slot horizontal tant
+// qu'un nœud existant est à moins de `margin` px (évite les chevauchements à la
+// création via le menu fond). Borné pour ne jamais boucler indéfiniment.
+function findFreePos(ax, ay, { excludeId = null, margin = 120 } = {}) {
+  let x = ax;
+  const y = ay;
+  const occupied = [];
+  for (const [id, p] of vibes.graph.posMap) if (id !== excludeId && p) occupied.push(p);
+  let guard = 0;
+  while (occupied.some((p) => Math.hypot(p.x - x, p.y - y) < margin) && guard++ < 200) x += G_NODE_GAP;
+  return { x, y };
+}
 // Persiste les positions manuelles d'un ensemble d'ids (depuis posMap) + maj locale.
 async function persistPositions(ids) {
   const positions = [];
@@ -2899,8 +2911,10 @@ async function saveNode() {
       const at = vibes.graph.pendingCreatePos;
       vibes.graph.pendingCreatePos = null;
       if (at) {
-        n.posX = at.x; n.posY = at.y;
-        vibes.graph.posMap.set(n.id, { x: at.x, y: at.y });
+        // Évite de superposer le nouveau nœud à un nœud déjà présent à cet endroit.
+        const free = findFreePos(at.x, at.y, { excludeId: n.id });
+        n.posX = free.x; n.posY = free.y;
+        vibes.graph.posMap.set(n.id, free);
         // Attendre la persistance AVANT loadForest, sinon le rechargement récupère le
         // nœud avec posX/posY encore NULL (course) → il atterrit en auto-layout, pas au clic.
         await persistPositions([n.id]);
