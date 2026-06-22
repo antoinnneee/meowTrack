@@ -72,7 +72,7 @@ export async function suggestCommitMessage(repoId) {
 // Lit le NDJSON ligne-à-ligne ; sépare thinking_delta (réflexion), text_delta
 // (réponse) et tool_use (activité = « ce qu'il fait ») via callbacks ; source de
 // vérité finale = event {type:"result"}.result.
-const AI_STREAM_TIMEOUT = 180000;
+const AI_STREAM_TIMEOUT = 300000;
 const AI_MAX_OUTPUT = 12 * 1024 * 1024;
 const AI_MAX_LINE = 256 * 1024;
 
