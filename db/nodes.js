@@ -872,18 +872,11 @@ function orderedLeafIds(repoId) {
 // RETURNING) ; si deux workers visent la même feuille, un seul UPDATE matche, l'autre
 // passe à la suivante. Le tri (DFS par position) est calculé en amont, la garde de
 // réclamabilité (feuille active, débloquée, bail libre/expiré) reste dans le CAS.
-export function claimNextNode(repoId, owner, { leaseMs = 600000, maxAttempts = 3, branch = null } = {}) {
-  if (!owner) throw new Error("owner requis pour réclamer une tâche");
-  return withRepo(repoId, () => {
-    const rid = resolveRepoId(repoId);
-    const now = nowIso();
-    const leaseUntil = new Date(Date.parse(now) + Math.max(1000, leaseMs)).toISOString();
-    const cas = db.prepare(
-      `UPDATE nodes
-          SET run_state='running', lease_owner=@owner, lease_until=@leaseUntil,
-              run_attempts = run_attempts + 1, version = version + 1, updated_at=@ts
-        WHERE id = @id
-          AND repo_id = @repo
+// Prédicat de RÉCLAMABILITÉ d'une feuille (partagé par le CAS de claimNextNode et le
+// SELECT lecture seule de peekNextNode → garantit qu'ils ne divergent jamais).
+// Suppose des paramètres nommés @repo, @maxAttempts, @now et la table `nodes`.
+const RECLAIMABLE_WHERE = `
+          repo_id = @repo
           AND status  = 'active'
           AND kind IS NOT 'activation'                                                     -- node d'activation = porte manuelle, jamais exécutée
           AND NOT EXISTS (SELECT 1 FROM nodes c WHERE c.parent_id = nodes.id)              -- feuille
@@ -900,7 +893,20 @@ export function claimNextNode(repoId, owner, { leaseMs = 600000, maxAttempts = 3
           AND NOT EXISTS (                                                                 -- tous prérequis 'done'
             SELECT 1 FROM node_links l JOIN nodes p ON p.id = l.to_id
              WHERE l.from_id = nodes.id AND l.kind = 'requires' AND p.status <> 'done'
-          )
+          )`;
+
+export function claimNextNode(repoId, owner, { leaseMs = 600000, maxAttempts = 3, branch = null } = {}) {
+  if (!owner) throw new Error("owner requis pour réclamer une tâche");
+  return withRepo(repoId, () => {
+    const rid = resolveRepoId(repoId);
+    const now = nowIso();
+    const leaseUntil = new Date(Date.parse(now) + Math.max(1000, leaseMs)).toISOString();
+    const cas = db.prepare(
+      `UPDATE nodes
+          SET run_state='running', lease_owner=@owner, lease_until=@leaseUntil,
+              run_attempts = run_attempts + 1, version = version + 1, updated_at=@ts
+        WHERE id = @id
+          AND ${RECLAIMABLE_WHERE}
         RETURNING *`
     );
     let claimed = null;
@@ -915,6 +921,24 @@ export function claimNextNode(repoId, owner, { leaseMs = 600000, maxAttempts = 3
       }
     })();
     return claimed ? rowToNode(claimed) : null;
+  });
+}
+
+// PEEK en LECTURE SEULE : renvoie la prochaine feuille que claimNextNode réclamerait,
+// SANS muter (pas d'UPDATE, pas de bail, pas de run). Même ordre (orderedLeafIds) et
+// même prédicat (RECLAIMABLE_WHERE) que le claim → prévision fidèle. Indicatif seulement :
+// l'état peut changer avant le claim réel (concurrence) ; seule la sélection atomique du
+// CAS fait foi. null si rien n'est prêt.
+export function peekNextNode(repoId, { maxAttempts = 3 } = {}) {
+  return withRepo(repoId, () => {
+    const rid = resolveRepoId(repoId);
+    const now = nowIso();
+    const sel = db.prepare(`SELECT * FROM nodes WHERE id = @id AND ${RECLAIMABLE_WHERE} LIMIT 1`);
+    for (const id of orderedLeafIds(rid)) {
+      const row = sel.get({ id, repo: rid, now, maxAttempts: Math.max(1, maxAttempts) });
+      if (row) return rowToNode(row);
+    }
+    return null;
   });
 }
 

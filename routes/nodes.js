@@ -27,6 +27,7 @@ import {
   addNodeLink,
   removeNodeLink,
   claimNextNode,
+  peekNextNode,
   startNode,
   renewLease,
   completeNode,
@@ -247,6 +248,15 @@ export async function handle(ctx) {
       broadcast(nodeKey(node.repoId, node.id), "node:updated", node);
     }
     send(res, 200, { node: node || null, config: { leaseMs: cfg.leaseMs, branchPrefix: cfg.branchPrefix, testCommand: cfg.testCommand } });
+    return true;
+  }
+  // GET /api/nodes/next — PEEK lecture seule : la prochaine feuille dispatchable, SANS
+  // la réclamer ni poser de bail (aucun owner requis, aucun broadcast). Indicatif.
+  if (method === "GET" && path === "/api/nodes/next") {
+    const id = repoOf(q);
+    const cfg = getOrchestratorConfig(id);
+    const node = peekNextNode(id, { maxAttempts: cfg.maxAttempts });
+    send(res, 200, { node: node || null });
     return true;
   }
   // GET /api/nodes/reviews?state= — file globale des points de revue d'un repo.

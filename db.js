@@ -98,6 +98,7 @@ export {
   applyNodeActions,
   applyForestActions,
   claimNextNode,
+  peekNextNode,
   startNode,
   renewLease,
   completeNode,

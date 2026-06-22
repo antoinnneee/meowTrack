@@ -699,6 +699,21 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
     guard(async ({ repo, owner, branch }) => apiFetch("POST", "/api/nodes/next" + qs({ repo: repoOf(repo) }), { owner, branch }))
   );
 
+  // ── meowtrack_node_peek ──────────────────────────────────────────────────────
+  server.registerTool(
+    "meowtrack_node_peek",
+    {
+      title: "Prochaine tâche dispatchable (sans réclamer)",
+      description:
+        "Montre la prochaine FEUILLE que meowtrack_node_next dispatcherait — même ordre et mêmes critères — " +
+        "SANS la réclamer, sans poser de bail, sans rien muter. Lecture seule, donc INDICATIF : l'état peut " +
+        "changer avant le claim réel (worker concurrent, bail expiré, prérequis clos). Renvoie { node } (ou node=null).",
+      inputSchema: { repo: repoParam },
+      annotations: { readOnlyHint: true },
+    },
+    guard(async ({ repo }) => apiFetch("GET", "/api/nodes/next" + qs({ repo: repoOf(repo) })))
+  );
+
   // ── meowtrack_node_start ─────────────────────────────────────────────────────
   server.registerTool(
     "meowtrack_node_start",

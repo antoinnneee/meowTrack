@@ -13,7 +13,7 @@ const TMP = mkdtempSync(join(tmpdir(), "meowtrack-start-"));
 process.env.MEOWTRACK_DB = join(TMP, "meowtrack.db");
 process.env.MEOWTRACK_NO_LISTEN = "1";
 
-const { createRepo, createNode, getNode, updateNode, startNode, completeNode } = await import("../db.js");
+const { createRepo, createNode, getNode, updateNode, startNode, completeNode, peekNextNode, claimNextNode } = await import("../db.js");
 
 let pass = 0, fail = 0;
 const check = (name, ok) => { if (ok) { pass++; console.log("  ✓", name); } else { fail++; console.log("  ✗ ÉCHEC:", name); } };
@@ -73,6 +73,17 @@ try {
   completeNode(c2.id, "claude-code", {}, rid);
   const done2 = getNode(c2.id, { repoId: rid });
   check("aucune note si pas de summary", (done2.notes || []).length === 0);
+
+  // NODE-310 : peekNextNode (lecture seule) — montre la prochaine feuille SANS la réclamer.
+  const pr = createRepo({ slug: "t-peek", name: "Test peek", localPath: TMP });
+  const prid = pr.id;
+  const leaf = createNode(prid, null, { title: "Feuille prête" });
+  const peeked = peekNextNode(prid, {});
+  check("peek renvoie la feuille prête", peeked && peeked.id === leaf.id);
+  check("peek ne mute PAS (run_state reste null)", getNode(leaf.id, { repoId: prid }).runState == null);
+  // Après un claim réel, la feuille (running) n'est plus dispatchable → peek = null.
+  claimNextNode(prid, "w1");
+  check("peek = null après réclamation", peekNextNode(prid, {}) === null);
 
   console.log(`\n${pass} OK, ${fail} échec(s)`);
   process.exit(fail ? 1 : 0);
