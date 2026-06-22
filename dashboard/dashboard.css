@@ -287,6 +287,14 @@ body:not(.view-repo) .repo-only { display: none; }
 .nd-pending-body { font-size: 13px; color: var(--text); }
 .nd-pending .hint { display: block; margin-top: 6px; }
 .goal-card.status-waiting { border-left-color: var(--high); }
+
+/* Node d'activation (kind='activation') : encart porte dans la vue détail. */
+.nd-activation { border: 1px solid #ffd43b; border-left: 4px solid #ffd43b; border-radius: var(--radius); padding: 10px 12px; margin-bottom: 14px; background: color-mix(in srgb, #ffd43b 8%, var(--surface)); }
+.nd-activation.on { box-shadow: 0 0 0 1px rgba(255, 212, 59, .35), 0 0 14px rgba(255, 212, 59, .18); }
+.nd-activation-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+.nd-activation-title { font-weight: 700; color: #ffd43b; }
+.nd-activation-state { font-size: 13px; color: var(--text); }
+.nd-activation .hint { display: block; margin-top: 6px; }
 .ms-section-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .ms-section-head h3 { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-dim); }
 
@@ -457,6 +465,12 @@ body.forest-pinned.view-vibes #vibesView { margin-right: var(--forest-pin-w); }
 .g-node.status-waiting .g-disc { stroke: var(--high); stroke-width: 2.5; stroke-dasharray: 5 4; }
 .g-node.status-paused { opacity: .7; }
 .g-node.status-abandoned { opacity: .42; }
+/* Node d'activation : losange « porte » derrière le disque (silhouette reconnaissable).
+   Inactif = contour ambre tireté atténué ; activé = plein, lumineux (séquence débloquée). */
+.g-act-frame { fill: rgba(255, 212, 59, .07); stroke: #ffd43b; stroke-width: 3; stroke-linejoin: round; }
+.g-node.kind-activation.deactivated .g-act-frame { opacity: .5; stroke-dasharray: 7 5; }
+.g-node.kind-activation.activated .g-act-frame { opacity: 1; fill: rgba(255, 212, 59, .18); filter: drop-shadow(0 0 7px rgba(255, 212, 59, .65)); }
+.g-node.kind-activation.deactivated { opacity: 1; } /* l'inactif n'est PAS grisé (porte en attente, pas abandonnée) */
 .g-emoji { pointer-events: none; }
 .g-label { fill: var(--text); font: 12px "Segoe UI", system-ui, sans-serif; pointer-events: none; }
 .g-empty { fill: var(--text-dim); font: 14px "Segoe UI", system-ui, sans-serif; }

@@ -162,6 +162,7 @@ export const TRACKING_SCHEMA = `
     description TEXT NOT NULL DEFAULT '',
     notes       TEXT NOT NULL DEFAULT '',             -- notes libres markdown (rendu côté dashboard)
     status      TEXT NOT NULL DEFAULT 'active',       -- active|paused|waiting|done|abandoned
+    kind        TEXT NOT NULL DEFAULT 'normal',       -- normal|activation (node d'activation = porte de prérequis manuelle)
     color       TEXT NOT NULL DEFAULT 'accent',       -- accent|feature|task|bug|high (allowlist)
     emoji       TEXT NOT NULL DEFAULT '🎯',
     pending_info TEXT,                                -- info attendue de l'utilisateur quand status='waiting' (markdown, jamais de secret)
@@ -301,6 +302,7 @@ function ensureTrackerSchema(conn) {
   ensureColumn(conn, "nodes", "pos_x", "pos_x REAL");
   ensureColumn(conn, "nodes", "pos_y", "pos_y REAL");
   ensureColumn(conn, "nodes", "pending_info", "pending_info TEXT"); // info attendue (status='waiting')
+  ensureColumn(conn, "nodes", "kind", "kind TEXT NOT NULL DEFAULT 'normal'"); // node d'activation
   ensureColumn(conn, "issues", "position", "position INTEGER NOT NULL DEFAULT 0");
   // Orchestrateur : bail (lease) d'exécution sur les nœuds. Séparé de `status`
   // (intention de planning) ; coordonne les workers concurrents (cf. db/nodes.js).

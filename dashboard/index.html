@@ -147,6 +147,16 @@
           </div>
           <div class="gd-desc" id="ndDesc"></div>
 
+          <!-- Node d'activation (kind='activation') : porte manuelle activer/désactiver. -->
+          <div class="nd-activation" id="ndActivation" hidden>
+            <div class="nd-activation-head">
+              <span class="nd-activation-title">⚡ Node d'activation</span>
+              <button id="ndActToggle" class="primary" title="Activer / désactiver cette porte">Activer</button>
+            </div>
+            <div class="nd-activation-state" id="ndActState"></div>
+            <div class="hint">Inactif, il bloque tous les nœuds qui le requièrent ; « Activer » débloque toute la séquence liée.</div>
+          </div>
+
           <!-- En attente d'info utilisateur (status='waiting') : ce qui manque + bouton « prêt ». -->
           <div class="nd-pending" id="ndPending" hidden>
             <div class="nd-pending-head">
@@ -245,6 +255,12 @@
               <option value="waiting">⏳ En attente d'info</option>
               <option value="done">🏆 Atteint</option>
               <option value="abandoned">🪦 Abandonné</option>
+            </select>
+          </label>
+          <label>Type
+            <select id="nKind">
+              <option value="normal">🎯 Objectif</option>
+              <option value="activation">⚡ Node d'activation</option>
             </select>
           </label>
           <label style="flex:0 0 160px">Échéance

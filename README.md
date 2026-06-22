@@ -103,7 +103,7 @@ Tools exposés :
 | `meowtrack_repo_remove` | Retirer un dépôt et ses entrées/nœuds (cascade). |
 | `meowtrack_branches` | Lister les branches d'un repo (hors branches masquées). |
 | `meowtrack_node_list` / `_get` | Lister l'arbre des nœuds (Vibes) / détail d'un nœud (+ `requires`/`requiredBy`). |
-| `meowtrack_node_create` / `_update` / `_delete` | Créer / modifier / supprimer un nœud (jalon). |
+| `meowtrack_node_create` / `_update` / `_delete` | Créer / modifier / supprimer un nœud (jalon). `kind:'activation'` crée un **node d'activation** (porte de prérequis manuelle). |
 | `meowtrack_node_set_status` / `_set_notes` | Raccourcis statut (`active`/`paused`/`waiting`/`done`/`abandoned`) / notes d'un nœud. |
 | `meowtrack_node_request_input` | Mettre un nœud **en attente d'info utilisateur** (`status='waiting'` + description du manque) : clé API, config, décision attendue avant implémentation. Sans secret dans le texte. |
 | `meowtrack_node_move` / `_reorder` | Re-parenter un nœud (anti-cycle) / réordonner ses enfants. |
@@ -324,6 +324,26 @@ lien). Le prompt liste ces actions et les **prérequis existants**, et conseille
 brique partagée mais de la relier. Côté MCP : `meowtrack_node_link_add`, `meowtrack_node_link_remove`,
 `meowtrack_node_links` (et `meowtrack_node_get` renvoie aussi `requires` / `requiredBy`).
 
+### Node d'activation (porte de prérequis manuelle)
+
+Un **node d'activation** (`kind = 'activation'`, ⚡) est un nœud spécial qui sert d'**interrupteur manuel** :
+tant qu'il n'est **pas activé**, il **bloque tous les nœuds qui le requièrent** ; on l'**active à la main**
+pour **débloquer toute une séquence** d'un coup. Il **réutilise le moteur de prérequis** ci-dessus (aucune
+nouvelle logique de blocage) : « activé » = `status='done'` (le prérequis est satisfait → les dépendants se
+débloquent), « inactif » = tout autre statut (par défaut `active`). Il **garde la logique d'un nœud normal**
+(chat, notes, sous-arbre, position) mais est **exclu de l'orchestrateur** (`claimNextNode` ajoute
+`kind IS NOT 'activation'` → une porte n'est jamais réclamée comme tâche exécutable, même feuille et active).
+
+- **Placement manuel** : clic droit sur le fond du graphe → **« ⚡ Node d'activation ici »** (épinglé à
+  l'endroit cliqué), ou la modale de création/édition (sélecteur **Type**), ou clic droit sur un nœud
+  existant → **« ⚡ Convertir en node d'activation »**.
+- **Activer / désactiver** : clic droit sur la porte → **« ⚡ Activer / Désactiver »**, ou le bouton dans la
+  vue détail. Pour relier les nœuds à gérer : clic droit sur la porte → **« 🔌 Bloquer un nœud (le lier)… »**
+  puis cliquer la cible (le lien est posé dans le bon sens : la cible *requiert* la porte).
+- **Rendu** : silhouette en **losange ambré** distincte du cercle, **lumineuse** une fois activée.
+- **IA / MCP** : `add_node` / `meowtrack_node_create` avec `kind:'activation'`, et activation via
+  `set_node_fields` / `status='done'`.
+
 ### Visualisation : graphe ↔ grille
 
 Bascule (segment dans la barre) entre un **graphe organique** (SVG radial : nœuds colorés reliés par des
@@ -430,6 +450,6 @@ utilise un `path` matérialisé (`/1/4/9/`) → subtree/ancestors/scope en SQL p
 
 ## Notes
 
-- Quelques tests de régression ciblés (parsing IA fail-closed + garde-fous des liens) : `node test/parse_ai_turn.test.mjs`, `node test/ghost_payload.test.mjs`, `node test/node_links.test.mjs`.
+- Quelques tests de régression ciblés (parsing IA fail-closed + garde-fous des liens) : `node test/parse_ai_turn.test.mjs`, `node test/ghost_payload.test.mjs`, `node test/node_links.test.mjs`, `node test/node_waiting.test.mjs`, `node test/node_activation.test.mjs`.
 - Le port `7702` suit la convention d'automation (`7700`/`7701`) ; en déploiement, choisir un port libre du serveur.
 - L'API est protégée par `MEOWTRACK_TOKEN` quand il est défini ; le dashboard demande le token (stocké en `localStorage`) et réessaie sur `401`.

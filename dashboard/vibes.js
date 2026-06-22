@@ -699,22 +699,31 @@ function nodeGroup(n, p) {
   const despawn = vibes.graph.despawning.has(n.id);
   const fxCls = (spawn ? " spawn" : "") + (pulse ? " pulse" : "") + (celebrate ? " celebrate" : "") + (despawn ? " despawn" : "");
   const blocked = isNodeBlocked(n) ? " blocked" : "";
-  const g = svgEl("g", { transform: `translate(${p.x},${p.y})`, class: "g-node status-" + n.status + fxCls + blocked, "data-ref": n.ref, "data-id": String(n.id) });
+  // Node d'activation : porte manuelle. « activé » = status 'done' (débloque les dépendants).
+  const isAct = n.kind === "activation";
+  const actCls = isAct ? " kind-activation" + (n.status === "done" ? " activated" : " deactivated") : "";
+  const g = svgEl("g", { transform: `translate(${p.x},${p.y})`, class: "g-node status-" + n.status + fxCls + blocked + actCls, "data-ref": n.ref, "data-id": String(n.id), "data-kind": n.kind || "normal" });
   // Tooltip natif : le label étant tronqué, le survol révèle le titre complet.
   const ttl = svgEl("title", {});
-  ttl.textContent = n.title;
+  ttl.textContent = isAct ? `${n.title} — node d'activation (${n.status === "done" ? "activé" : "inactif"})` : n.title;
   g.appendChild(ttl);
   // Onde de choc (naissance) et rayons (jalon atteint) : sous le nœud (peints en premier).
   if (spawn) g.appendChild(svgEl("circle", { r: 10, class: "g-halo", stroke: cascadeColorOf(n) }));
   if (celebrate) g.appendChild(raysGroup());
   // Groupe interne mis à l'échelle pour l'anim d'apparition (le translate reste sur g).
   const inner = svgEl("g", { class: "g-inner" });
+  // Cadre « porte » du node d'activation : losange visible derrière le disque (silhouette
+  // distincte du cercle normal → reconnaissable d'un coup d'œil ; lit/atténué selon l'état).
+  if (isAct) {
+    const s = r + 11;
+    inner.appendChild(svgEl("polygon", { class: "g-act-frame", points: `0,${-s} ${s},0 0,${s} ${-s},0` }));
+  }
   const circ = 2 * Math.PI * (r + 5);
   inner.appendChild(svgEl("circle", { r: r + 5, class: "g-track" }));
   inner.appendChild(svgEl("circle", { r: r + 5, class: "g-ring", "stroke-dasharray": `${(circ * n.progress) / 100} ${circ}`, transform: "rotate(-90)" }));
   inner.appendChild(svgEl("circle", { r, class: "g-disc", fill: cascadeColorOf(n) }));
   const emo = svgEl("text", { class: "g-emoji", "text-anchor": "middle", dy: "0.35em", "font-size": String(Math.round(r)) });
-  emo.textContent = n.emoji || "🎯";
+  emo.textContent = n.emoji || (isAct ? "⚡" : "🎯");
   inner.appendChild(emo);
   const lbl = svgEl("text", { class: "g-label", "text-anchor": "middle", y: String(r + 18) });
   lbl.textContent = n.title.length > 18 ? n.title.slice(0, 17) + "…" : n.title;
@@ -1150,15 +1159,20 @@ export function showCtxMenu(clientX, clientY, items) {
   setTimeout(() => document.addEventListener("mousedown", _ctxOutside, true), 0);
 }
 
-// ── Mode « tirer un lien » (kind='child' = reparentage | 'requires' = prérequis) ──
+// ── Mode « tirer un lien » (kind='child' = reparentage | 'requires' = prérequis |
+//    'gate' = depuis un node d'activation, le nœud cliqué le requiert → bloqué tant
+//    que le node d'activation n'est pas activé) ──
 function startLinkMode(sourceId, kind = "child") {
   cancelLinkMode();
   vibes.graph.linking = sourceId;
   vibes.graph.linkKind = kind;
-  const line = svgEl("path", { class: "g-link-temp" + (kind === "requires" ? " req" : ""), d: "" });
+  const reqLike = kind === "requires" || kind === "gate";
+  const line = svgEl("path", { class: "g-link-temp" + (reqLike ? " req" : ""), d: "" });
   $("#graphSvg").insertBefore(line, $("#graphSvg").firstChild);
   vibes.graph._linkLine = line;
-  toast(kind === "requires"
+  toast(kind === "gate"
+    ? "Clique le nœud à BLOQUER (il dépendra de ce node d'activation). Échap pour annuler."
+    : kind === "requires"
     ? "Clique le nœud PRÉREQUIS (ce nœud en dépendra). Échap pour annuler."
     : "Clique le nœud à rattacher comme enfant. Échap pour annuler.");
 }
@@ -1178,11 +1192,15 @@ async function finishLink(targetId) {
   const kind = vibes.graph.linkKind;
   cancelLinkMode();
   if (!sourceId || targetId == null || targetId === sourceId) return;
-  if (kind === "requires") {
-    // « sourceId dépend de targetId » : source = from (dépendant), target = to (prérequis).
+  if (kind === "requires" || kind === "gate") {
+    // requires : source dépend de target (target = prérequis).
+    // gate : INVERSÉ — le node d'activation (source) bloque la cible, donc la cible
+    //        devient le dépendant (from) et le node d'activation le prérequis (to).
+    const fromId = kind === "gate" ? targetId : sourceId;
+    const toId = kind === "gate" ? sourceId : targetId;
     try {
-      await api.send("POST", "/api/nodes/links", { fromId: sourceId, toId: targetId });
-      toast("Prérequis ajouté.");
+      await api.send("POST", "/api/nodes/links", { fromId, toId });
+      toast(kind === "gate" ? "Nœud lié au node d'activation (bloqué tant qu'il n'est pas activé)." : "Prérequis ajouté.");
       loadForest();
     } catch (e) {
       toast(/cycle/i.test(e.message) ? "Impossible : créerait un cycle de prérequis." : "Échec : " + e.message);
@@ -1487,12 +1505,22 @@ function wireGraph() {
     if (gNode) {
       const id = Number(gNode.dataset.id);
       const ref = gNode.dataset.ref;
-      showCtxMenu(e.clientX, e.clientY, [
-        { label: "🔒 Marquer un prérequis…", onClick: () => startLinkMode(id, "requires") },
-        { label: "🔗 Rattacher comme enfant…", onClick: () => startLinkMode(id, "child") },
-        { label: "✎ Ouvrir", onClick: () => openNode(ref) },
-        { label: "🗑 Supprimer", danger: true, onClick: () => { if (confirm("Supprimer ce nœud et tout son sous-arbre ?")) deleteNodeById(id); } },
-      ]);
+      const node = vibes.byId.get(id);
+      const isAct = node && node.kind === "activation";
+      const items = [];
+      if (isAct) {
+        // Node d'activation : activer/désactiver (porte) + lier un nœud à bloquer.
+        const on = node.status === "done";
+        items.push({ label: on ? "⚡ Désactiver (rebloquer)" : "⚡ Activer (débloquer la séquence)", onClick: () => toggleActivation(id) });
+        items.push({ label: "🔌 Bloquer un nœud (le lier)…", onClick: () => startLinkMode(id, "gate") });
+      } else {
+        items.push({ label: "🔒 Marquer un prérequis…", onClick: () => startLinkMode(id, "requires") });
+        items.push({ label: "🔗 Rattacher comme enfant…", onClick: () => startLinkMode(id, "child") });
+        items.push({ label: "⚡ Convertir en node d'activation", onClick: () => convertToActivation(id) });
+      }
+      items.push({ label: "✎ Ouvrir", onClick: () => openNode(ref) });
+      items.push({ label: "🗑 Supprimer", danger: true, onClick: () => { if (confirm("Supprimer ce nœud et tout son sous-arbre ?")) deleteNodeById(id); } });
+      showCtxMenu(e.clientX, e.clientY, items);
       return;
     }
     const req = e.target.closest(".g-req-edge");
@@ -1509,10 +1537,11 @@ function wireGraph() {
       ]);
       return;
     }
-    // Fond : créer un nouveau nœud à cet endroit.
+    // Fond : créer un nouveau nœud à cet endroit (objectif normal ou node d'activation).
     const at = clientToSvg(e.clientX, e.clientY);
     showCtxMenu(e.clientX, e.clientY, [
-      { label: "➕ Nouvel objectif ici", onClick: () => { vibes.graph.pendingCreatePos = at; openNodeModal(null, null); } },
+      { label: "➕ Nouvel objectif ici", onClick: () => { vibes.graph.pendingCreatePos = at; vibes._createKind = null; openNodeModal(null, null); } },
+      { label: "⚡ Node d'activation ici", onClick: () => { vibes.graph.pendingCreatePos = at; vibes._createKind = "activation"; openNodeModal(null, null); } },
     ]);
   });
 
@@ -1615,6 +1644,20 @@ function renderNodeHeader(n) {
   desc.hidden = !n.description;
   const blk = $("#ndBlocked");
   if (blk) blk.hidden = !isNodeBlocked(n);
+  // Panneau « node d'activation » : porte manuelle. Visible si kind='activation'.
+  const act = $("#ndActivation");
+  if (act) {
+    const isAct = n.kind === "activation";
+    act.hidden = !isAct;
+    if (isAct) {
+      const on = n.status === "done";
+      act.classList.toggle("on", on);
+      const st = $("#ndActState");
+      if (st) st.textContent = on ? "⚡ Activé — les nœuds liés sont débloqués." : "⏸ Inactif — les nœuds liés sont bloqués.";
+      const btn = $("#ndActToggle");
+      if (btn) btn.textContent = on ? "Désactiver (rebloquer)" : "Activer (débloquer la séquence)";
+    }
+  }
   // Panneau « en attente d'info » : visible uniquement au statut waiting.
   const pend = $("#ndPending");
   if (pend) {
@@ -2081,6 +2124,34 @@ async function patchNode(id, fields) {
 // waiting → active : le nœud redevient implémentable (le data layer efface pending_info).
 async function markNodeReady(id) {
   await patchNode(id, { status: "active" });
+}
+// PATCH un nœud par son ref puis recharge la forêt (rendu graphe + états « bloqué » des
+// dépendants). Utilisé par les actions du node d'activation depuis le graphe.
+async function patchNodeAndReload(id, fields) {
+  try {
+    const ref = (vibes.byId.get(id) || {}).ref || id;
+    await api.send("PATCH", `/api/nodes/${encodeURIComponent(ref)}`, fields);
+    loadForest();
+  } catch (e) {
+    toast("Échec : " + e.message);
+  }
+}
+// Active / désactive un node d'activation : « activé » = status 'done' (débloque les nœuds
+// qui le requièrent) ; « inactif » = status 'active' (les rebloque). En détail on rafraîchit
+// le nœud ouvert ; depuis le graphe on recharge la forêt (états « bloqué » des dépendants).
+async function toggleActivation(id) {
+  const n = (vibes.currentNode && vibes.currentNode.id === id ? vibes.currentNode : null) || vibes.byId.get(id);
+  if (!n) return;
+  const next = n.status === "done" ? "active" : "done";
+  if (vibes.current) await patchNode(id, { status: next });
+  else await patchNodeAndReload(id, { status: next });
+  toast(next === "done" ? "⚡ Activé — séquence débloquée." : "⚡ Désactivé — séquence rebloquée.");
+}
+// Convertit un nœud normal en node d'activation (porte de prérequis manuelle).
+async function convertToActivation(id) {
+  if (vibes.current) await patchNode(id, { kind: "activation" });
+  else await patchNodeAndReload(id, { kind: "activation" });
+  toast("Converti en node d'activation ⚡.");
 }
 async function deleteNodeById(id) {
   try {
@@ -2554,12 +2625,18 @@ function selectColorChip(color) {
   $("#nColors").querySelectorAll(".color-chip").forEach((c) => c.classList.toggle("sel", c.dataset.color === vibes._color));
 }
 // node=édition ; parentId=création d'un enfant ; les deux null = nouvelle racine.
+// vibes._createKind (posé par le menu fond) pré-sélectionne le type à la création.
 function openNodeModal(node, parentId) {
   vibes._editing = node || null;
   vibes._parentId = node ? null : parentId != null ? parentId : null;
-  $("#nodeModalTitle").textContent = node ? `Éditer ${node.ref}` : parentId != null ? "Nouveau sous-jalon" : "Nouvel objectif";
-  $("#nEmoji").value = node?.emoji || "🎯";
+  const kind = node?.kind || vibes._createKind || "normal";
+  const isAct = kind === "activation";
+  $("#nodeModalTitle").textContent = node
+    ? `Éditer ${node.ref}`
+    : isAct ? "Nouveau node d'activation" : parentId != null ? "Nouveau sous-jalon" : "Nouvel objectif";
+  $("#nEmoji").value = node?.emoji || (isAct ? "⚡" : "🎯");
   $("#nStatus").value = node?.status || "active";
+  if ($("#nKind")) $("#nKind").value = kind;
   $("#nTarget").value = node?.targetDate || "";
   $("#nTitle").value = node?.title || "";
   $("#nDesc").value = node?.description || "";
@@ -2571,11 +2648,13 @@ async function saveNode() {
   const payload = {
     emoji: $("#nEmoji").value.trim() || "🎯",
     status: $("#nStatus").value,
+    kind: $("#nKind") ? $("#nKind").value : "normal", // normal | activation
     targetDate: $("#nTarget").value || null,
     title: $("#nTitle").value.trim(),
     description: $("#nDesc").value,
     color: vibes._color,
   };
+  vibes._createKind = null; // consommé
   if (!payload.title) { toast("Titre requis."); return; }
   try {
     if (vibes._editing) {
@@ -2628,6 +2707,8 @@ export function initVibes() {
   // « Prêt à implémenter » : sort le nœud de l'attente (waiting → active). Le data
   // layer efface alors l'info en attente. Secours manuel quand on ne passe pas par l'IA.
   $("#ndReadyBtn").addEventListener("click", () => { if (vibes.currentNode) markNodeReady(vibes.currentNode.id); });
+  // Node d'activation : activer/désactiver depuis la vue détail (porte de prérequis).
+  $("#ndActToggle").addEventListener("click", () => { if (vibes.currentNode) toggleActivation(vibes.currentNode.id); });
   // Crée une entrée de suivi pré-remplie et auto-liée à ce jalon (puis bascule sur Suivi).
   $("#ndAddIssue").addEventListener("click", () => { if (vibes.currentNode) createIssueFromNode(vibes.currentNode); });
   // Notes markdown : éditeur multi-notes (chaque éditeur gère son @ / aperçu).
