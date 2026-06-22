@@ -27,12 +27,27 @@ server-side qui spawne des exécuteurs pointés sur le MCP de meowtrack).
 
 ```
 tant que (t = meowtrack_node_next(repo)) :          # une tâche prête, déjà réclamée
-    … faire le travail (Read/Edit/Bash/git) dans un worktree isolé …
+    … faire le travail (Read/Edit/Bash/git) dans un WORKTREE ISOLÉ …
     écrire .meowtrack/runs/<ref>.json               # rapport + points de revue (§6)
     r = meowtrack_node_complete(t.ref, { … })        # le serveur ingère le rapport
+    merger la branche de travail dans `main` + push  # intégration continue (cf. ci-dessous)
     si r.hint == "compact_suggested" et contexte > seuil (≈30 %) :
         /compact                                     # césure AVANT de réclamer le nœud suivant
 ```
+
+### Isolation (worktree) + intégration continue (merge `main`) entre nœuds
+
+Deux consignes adressées à **l'agent** (meowtrack reste passif, il n'exécute aucun git) :
+
+- **Worktree isolé** : faire le travail de chaque nœud dans un git worktree dédié
+  (`repo.js`/`repos.js` exposent les primitives), pour ne pas polluer la copie de
+  travail principale ni mélanger deux nœuds.
+- **Merger dans `main` entre chaque nœud** : après `meowtrack_node_complete`, intégrer
+  la branche de travail dans `main` (commit + merge/FF + push) **avant** de réclamer le
+  nœud suivant. En mode batch séquentiel (un seul contexte qui enchaîne les nœuds), cela
+  garde `main` à jour pour les nœuds suivants (qui peuvent dépendre du travail précédent)
+  et borne la taille des diffs. **Garde-fou** : c'est une consigne — l'agent décide et
+  exécute le git ; meowtrack ne force ni ne vérifie rien.
 
 ### Consigne de compactage (mode batch « traite les nœuds en attente »)
 

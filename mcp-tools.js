@@ -688,8 +688,8 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
       description:
         "Tire ET réclame atomiquement la prochaine tâche exécutable d'un repo : une FEUILLE active, débloquée " +
         "(tous ses prérequis 'done'), au bail libre. Pose un bail au nom de `owner` (le nœud passe run_state='running'). " +
-        "Renvoie { node, config } ou node=null si rien n'est prêt. Boucle : next → travailler dans un worktree → " +
-        "écrire .meowtrack/runs/<ref>.json → complete.",
+        "Renvoie { node, config } ou node=null si rien n'est prêt. Boucle : next → travailler dans un WORKTREE ISOLÉ " +
+        "(une branche dédiée par nœud) → écrire .meowtrack/runs/<ref>.json → complete → merger dans `main` (+push) → nœud suivant.",
       inputSchema: {
         repo: repoParam,
         owner: z.string().describe("Identifiant du worker (ex. 'agent-1') — détenteur du bail."),
@@ -757,7 +757,8 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
         ".meowtrack/runs/<ref>.json du clone) : applique les `nodeUpdates` sûrs et persiste les `reviewPoints`. " +
         "Sans point bloquant → la tâche passe 'done' (débloque ses dépendants, progression remonte) ; avec un point " +
         "bloquant → 'review' (attend un arbitrage humain ou auto). Seul le détenteur du bail peut clore. " +
-        "Si le réglage auto_compact est activé, la réponse contient hint:'compact_suggested' (bon point de césure du contexte).",
+        "Si le réglage auto_compact est activé, la réponse contient hint:'compact_suggested' (bon point de césure du contexte). " +
+        "Conseillé après clôture : merger la branche de travail dans `main` (+push) avant de réclamer le nœud suivant (intégration continue).",
       inputSchema: {
         repo: repoParam,
         ref: nodeRefSchema,
