@@ -26,9 +26,40 @@ const NODE_COLORS = ["accent", "feature", "task", "bug", "high"];
 //   apiFetch(method, path, body?) → Promise<data>  : client REST (lève sur !ok).
 //   defaultRepo                                     : repo (slug/id) appliqué quand
 //                                                     un appel n'en précise pas.
-export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
-  const DEFAULT_REPO = (defaultRepo || "").trim();
+export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "", lockRepo = "" }) {
+  // Verrou mono-repo (transport MCP lancé PAR dépôt) : quand LOCK est défini, ce MCP
+  // ne peut lire/écrire QUE ce dépôt. Un `repo` divergent est rejeté ; omis, il
+  // retombe sur le repo verrouillé (jamais le défaut serveur). Le lock devient donc
+  // aussi le repo par défaut. Ne concerne que ce transport — le dashboard HTTP reste
+  // légitimement cross-repo.
+  const LOCK = (lockRepo || "").trim();
+  const DEFAULT_REPO = LOCK || (defaultRepo || "").trim();
   const apiGet = (path) => apiFetch("GET", path);
+
+  // Identifiants acceptés par le verrou (slug + id, minuscules), résolus une fois
+  // via /api/repos pour tolérer indifféremment le slug ou l'id du dépôt verrouillé.
+  let _lockIds = null;
+  async function lockAccepts(repo) {
+    if (_lockIds == null) {
+      const ids = new Set([LOCK.toLowerCase()]);
+      try {
+        const repos = await apiGet("/api/repos");
+        const me = (Array.isArray(repos) ? repos : []).find(
+          (r) => String(r.id) === LOCK || String(r.slug).toLowerCase() === LOCK.toLowerCase()
+        );
+        if (me) { ids.add(String(me.id)); ids.add(String(me.slug).toLowerCase()); }
+      } catch { /* serveur injoignable : on garde au moins le LOCK brut */ }
+      _lockIds = ids;
+    }
+    return _lockIds.has(String(repo).toLowerCase());
+  }
+  // Rejette tout `repo` explicite qui n'est pas le dépôt verrouillé (fail-safe).
+  async function enforceLock(args) {
+    const r = args && args.repo;
+    if (r == null || r === "") return; // omis → repoOf renverra le repo verrouillé
+    if (!(await lockAccepts(r)))
+      throw new Error(`Repo verrouillé : ce MCP est restreint à « ${LOCK} ». Ne passe pas le paramètre repo (ou passe « ${LOCK} »).`);
+  }
 
   // Construit une query string à partir des champs définis (ignore null/undefined/"").
   function qs(obj) {
@@ -54,6 +85,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
   function guard(fn) {
     return async (args) => {
       try {
+        if (LOCK) await enforceLock(args);
         return ok(await fn(args));
       } catch (e) {
         return fail(e);
@@ -108,7 +140,13 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
         "ou l'`id` sert de paramètre `repo` aux autres outils. Les entrées/nœuds sont scopés par repo.",
       inputSchema: {},
     },
-    guard(async () => apiGet("/api/repos"))
+    guard(async () => {
+      const repos = await apiGet("/api/repos");
+      if (!LOCK) return repos;
+      // MCP verrouillé : ne révèle QUE le dépôt verrouillé (pas les autres repos).
+      const list = Array.isArray(repos) ? repos : [];
+      return list.filter((r) => String(r.id) === LOCK || String(r.slug).toLowerCase() === LOCK.toLowerCase());
+    })
   );
   server.registerTool(
     "meowtrack_repo_add",

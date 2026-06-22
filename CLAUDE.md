@@ -20,6 +20,7 @@ node test/chat_sessions.test.mjs   # regression test for multi-session chat (nam
 node test/node_start.test.mjs      # regression test for manual node start (run_state='running' via meowtrack_node_start)
 node test/node_done_revert.test.mjs # regression test: editing title/description of a 'done' node reverts it to 'active'
 node test/mcp_compact.test.mjs     # regression test: MCP list tools project compact fields + paginate (full:true bypasses)
+node test/mcp_lock.test.mjs        # regression test: MEOWTRACK_LOCK_REPO locks the MCP transport to a single repo
 ./deploy.sh                       # SCP + npm install + systemctl restart (reads gitignored .deployEnv)
 ./install-service.sh              # one-shot: create+enable the systemd unit (run on the server)
 ```
@@ -72,7 +73,7 @@ Chat read access to source (`MEOWTRACK_AI_REPO_ACCESS=1`, default) is sandboxed:
 
 ## Configuration & conventions
 
-- Config via `dotenv` (`.env`, see `.env.example`). Key vars: `MEOWTRACK_HOST` (`127.0.0.1`; `0.0.0.0` to expose), `MEOWTRACK_PORT` (`7702`), `MEOWTRACK_TOKEN` (when set, `/api/*` **and `/mcp`** require `Authorization: Bearer` — **mandatory in deployment**), `MEOWTRACK_DB`, `MEOWTRACK_REPO_URL`/`MEOWTRACK_REPO` (default-repo bootstrap only), `MEOWTRACK_CLAUDE_BIN` (claude CLI), `MEOWTRACK_AI_REPO_ACCESS` (read sandbox toggle), `MEOWTRACK_GITHUB_CLIENT_ID` (device-flow client id). Git-versioned tracking adds `MEOWTRACK_TRACKING_GIT`/`_PUSH`/`_BRANCH`/`_REMOTE`/`_INTERVAL_MS`/`_NAME`/`_EMAIL`. MCP-client side: `MEOWTRACK_DEFAULT_REPO`, `MEOWTRACK_SERVER_URL`.
+- Config via `dotenv` (`.env`, see `.env.example`). Key vars: `MEOWTRACK_HOST` (`127.0.0.1`; `0.0.0.0` to expose), `MEOWTRACK_PORT` (`7702`), `MEOWTRACK_TOKEN` (when set, `/api/*` **and `/mcp`** require `Authorization: Bearer` — **mandatory in deployment**), `MEOWTRACK_DB`, `MEOWTRACK_REPO_URL`/`MEOWTRACK_REPO` (default-repo bootstrap only), `MEOWTRACK_CLAUDE_BIN` (claude CLI), `MEOWTRACK_AI_REPO_ACCESS` (read sandbox toggle), `MEOWTRACK_GITHUB_CLIENT_ID` (device-flow client id). Git-versioned tracking adds `MEOWTRACK_TRACKING_GIT`/`_PUSH`/`_BRANCH`/`_REMOTE`/`_INTERVAL_MS`/`_NAME`/`_EMAIL`. MCP-client side: `MEOWTRACK_DEFAULT_REPO`, `MEOWTRACK_SERVER_URL`, `MEOWTRACK_LOCK_REPO` (hard single-repo lock for the stdio MCP: rejects any divergent `repo`, hides others from `meowtrack_repos`; the loopback `POST /mcp` endpoint stays cross-repo).
 - `MEOWTRACK_NO_LISTEN=1` imports `server.js` (handlers, `parseAiTurn`) **without** starting the HTTP listener — used by the test.
 - The registry DB (`meowtrack.db*`) and the per-repo trackers (`.trackers/`) are **gitignored and per-machine**; `node_modules/`, `.env`, `.deployEnv`, and the DBs are never copied by `deploy.sh` (prod data/config preserved). When `MEOWTRACK_TRACKING_GIT=1`, each `.trackers/<slug>/` is a git worktree whose `tracker.db` is versioned in that repo's own `tracking` branch (not in the meowtrack code repo).
 - `deploy.sh` copies **explicit allowlists** (`FILES` for root modules, `DASHBOARD_FILES` for the SPA), not the whole tree — adding a new root-level module (e.g. `git-watch.js`) or a new `dashboard/*.js` means **adding it to the matching list**, or the deployed server crashes at boot with `ERR_MODULE_NOT_FOUND`. New `db/`, `ai/`, `routes/` files are copied recursively by directory, so they need no list edit.

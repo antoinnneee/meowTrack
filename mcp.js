@@ -21,6 +21,9 @@
 //                           ex. http://pattounecorp.ovh:7702).
 //   MEOWTRACK_TOKEN         jeton Bearer si le serveur en exige un (sinon vide).
 //   MEOWTRACK_DEFAULT_REPO  repo (slug/id) appliqué quand un appel n'en précise pas.
+//   MEOWTRACK_LOCK_REPO     VERROU mono-repo : restreint ce MCP à CE seul dépôt
+//                           (rejette tout `repo` divergent, masque les autres dans
+//                           meowtrack_repos). Idéal pour un MCP lancé par dépôt.
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -35,6 +38,7 @@ dotenv.config({ path: join(HERE, ".env") });
 const BASE = (process.env.MEOWTRACK_SERVER_URL || "http://127.0.0.1:7702").replace(/\/+$/, "");
 const TOKEN = (process.env.MEOWTRACK_TOKEN || "").trim();
 const DEFAULT_REPO = (process.env.MEOWTRACK_DEFAULT_REPO || "").trim();
+const LOCK_REPO = (process.env.MEOWTRACK_LOCK_REPO || "").trim();
 
 // ── Client HTTP de l'API du serveur distant ──────────────────────────────────
 async function apiFetch(method, path, body) {
@@ -66,7 +70,7 @@ async function apiFetch(method, path, body) {
 }
 
 const server = new McpServer({ name: "meowtrack", version: "1.0.0" });
-registerMeowtrackTools(server, { apiFetch, defaultRepo: DEFAULT_REPO });
+registerMeowtrackTools(server, { apiFetch, defaultRepo: DEFAULT_REPO, lockRepo: LOCK_REPO });
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
