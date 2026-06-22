@@ -61,6 +61,31 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
     };
   }
 
+  // ── Compaction des grandes listes (coût tokens) ─────────────────────────────
+  // Les listes (entrées, forêt de nœuds) peuvent être volumineuses : par défaut
+  // on projette les seuls champs utiles et on pagine. `full:true` rend l'objet
+  // brut complet (références, notes, etc.). Champs compacts par défaut :
+  const ISSUE_LIST_FIELDS = ["id", "ref", "type", "title", "status", "priority", "branch", "updatedAt"];
+  const NODE_LIST_FIELDS = ["id", "ref", "parentId", "depth", "title", "status", "kind", "progress", "childCount", "position"];
+  // Ne conserve que `keys` sur chaque élément d'un tableau (clés absentes ignorées).
+  function pick(rows, keys) {
+    if (!Array.isArray(rows)) return rows;
+    return rows.map((r) => {
+      const o = {};
+      for (const k of keys) if (k in r) o[k] = r[k];
+      return o;
+    });
+  }
+  // Pagination client : tranche [offset, …] + métadonnées { total, offset, count, items }.
+  function paginate(rows, { offset = 0 } = {}) {
+    if (!Array.isArray(rows)) return rows;
+    const start = Math.max(0, offset | 0);
+    const items = start ? rows.slice(start) : rows;
+    return { total: rows.length, offset: start, count: items.length, items };
+  }
+  const offsetParam = z.number().int().optional().describe("Pagination : ignorer les N premiers éléments (défaut 0).");
+  const fullParam = z.boolean().optional().describe("Renvoyer les objets bruts complets (sans projection ni pagination). Défaut false : vue compacte.");
+
   const refSpecSchema = z
     .string()
     .describe("Chemin repo-relatif, avec lignes optionnelles : 'chemin', 'chemin:120' ou 'chemin:120-145'.");
@@ -192,7 +217,8 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
       title: "Lister / filtrer les entrées",
       description:
         "Liste les entrées de suivi d'un repo, triées par activité puis priorité. Par défaut masque les entrées " +
-        "closes (done/wontfix) — passer includeClosed=true pour tout voir. Filtres combinables.",
+        "closes (done/wontfix) — passer includeClosed=true pour tout voir. Filtres combinables. Vue COMPACTE par " +
+        "défaut (id/ref/type/title/status/priority/branch) + pagination ; `full:true` pour les objets complets.",
       inputSchema: {
         repo: repoParam,
         type: z.enum(TYPES).optional(),
@@ -204,9 +230,14 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
         text: z.string().optional().describe("Recherche plein-texte sur titre/description/ref."),
         includeClosed: z.boolean().optional().describe("Inclure les entrées done/wontfix (défaut false)."),
         limit: z.number().int().optional().describe("Nombre max d'entrées (défaut 200)."),
+        offset: offsetParam,
+        full: fullParam,
       },
     },
-    guard(async ({ repo, ...a }) => apiGet("/api/issues" + qs({ repo: repoOf(repo), ...a })))
+    guard(async ({ repo, full, offset, ...a }) => {
+      const rows = await apiGet("/api/issues" + qs({ repo: repoOf(repo), ...a }));
+      return full ? rows : paginate(pick(rows, ISSUE_LIST_FIELDS), { offset });
+    })
   );
 
   // ── meowtrack_get ────────────────────────────────────────────────────────────
@@ -453,21 +484,28 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
       title: "Lister les nœuds (forêt ou racines)",
       description:
         "Liste les nœuds d'un repo. `view='forest'` (défaut) renvoie TOUT l'arbre à plat (avec parentId/depth) — " +
-        "idéal pour comprendre la structure. `view='roots'` ne renvoie que les objectifs racines.",
+        "idéal pour comprendre la structure. `view='roots'` ne renvoie que les objectifs racines. Vue COMPACTE par " +
+        "défaut (id/ref/parentId/depth/title/status/kind/progress) + pagination ; `full:true` pour les objets complets.",
       inputSchema: {
         repo: repoParam,
         view: z.enum(["forest", "roots"]).optional().describe("'forest' (tout, défaut) ou 'roots' (racines seules)."),
         status: z.enum(NODE_STATUSES).optional().describe("Filtre statut (racines uniquement)."),
         text: z.string().optional().describe("Recherche plein-texte (racines uniquement)."),
         limit: z.number().int().optional(),
-        includeNotes: z.boolean().optional().describe("Inclure les notes markdown de chaque nœud (défaut false pour view=forest — réduit fortement la taille de la réponse)."),
+        includeNotes: z.boolean().optional().describe("Inclure les notes markdown de chaque nœud (défaut false — réduit fortement la taille de la réponse)."),
+        offset: offsetParam,
+        full: fullParam,
       },
     },
-    guard(async ({ repo, view, includeNotes, ...rest }) =>
-      (view ?? "forest") === "forest"
-        ? apiGet("/api/nodes" + qs({ repo: repoOf(repo), view: "forest", includeNotes: includeNotes ?? false }))
-        : apiGet("/api/nodes" + qs({ repo: repoOf(repo), ...rest }))
-    )
+    guard(async ({ repo, view, includeNotes, full, offset, ...rest }) => {
+      const rows =
+        (view ?? "forest") === "forest"
+          ? await apiGet("/api/nodes" + qs({ repo: repoOf(repo), view: "forest", includeNotes: includeNotes ?? false }))
+          : await apiGet("/api/nodes" + qs({ repo: repoOf(repo), ...rest }));
+      if (full) return rows;
+      const fields = includeNotes ? [...NODE_LIST_FIELDS, "notes"] : NODE_LIST_FIELDS;
+      return paginate(pick(rows, fields), { offset });
+    })
   );
 
   // ── meowtrack_node_get ───────────────────────────────────────────────────────

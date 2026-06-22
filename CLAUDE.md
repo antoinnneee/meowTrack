@@ -19,6 +19,7 @@ node test/node_activation.test.mjs # regression test for the activation node (ki
 node test/chat_sessions.test.mjs   # regression test for multi-session chat (named conversations per node/forest)
 node test/node_start.test.mjs      # regression test for manual node start (run_state='running' via meowtrack_node_start)
 node test/node_done_revert.test.mjs # regression test: editing title/description of a 'done' node reverts it to 'active'
+node test/mcp_compact.test.mjs     # regression test: MCP list tools project compact fields + paginate (full:true bypasses)
 ./deploy.sh                       # SCP + npm install + systemctl restart (reads gitignored .deployEnv)
 ./install-service.sh              # one-shot: create+enable the systemd unit (run on the server)
 ```
