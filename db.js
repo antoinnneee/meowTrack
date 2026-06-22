@@ -114,6 +114,7 @@ export {
   finishRun,
   currentRunId,
   listRuns,
+  listRecentRuns,
   ingestRunReport,
   addReview,
   listReviews,

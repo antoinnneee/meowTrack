@@ -920,6 +920,25 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "", loc
     guard(async ({ repo, ref }) => apiGet("/api/nodes/" + encodeURIComponent(ref) + "/runs" + qs({ repo: repoOf(repo) })))
   );
 
+  // ── meowtrack_runs ───────────────────────────────────────────────────────────
+  server.registerTool(
+    "meowtrack_runs",
+    {
+      annotations: { readOnlyHint: true },
+      title: "Flux d'activité des agents (tous les runs)",
+      description:
+        "Liste TOUS les runs récents du repo (pas seulement ceux d'un nœud), du plus récent au plus ancien : " +
+        "nodeRef/nodeTitle, owner, état, branche, résumé, dates. `state` filtre (running/review/failed/done).",
+      inputSchema: {
+        repo: repoParam,
+        limit: z.number().int().optional().describe("Nombre max de runs (défaut 50, max 500)."),
+        offset: offsetParam,
+        state: z.enum(["running", "review", "failed", "done"]).optional().describe("Filtre d'état."),
+      },
+    },
+    guard(async ({ repo, ...a }) => apiGet("/api/nodes/runs" + qs({ repo: repoOf(repo), ...a })))
+  );
+
   // ── meowtrack_node_reviews ───────────────────────────────────────────────────
   server.registerTool(
     "meowtrack_node_reviews",

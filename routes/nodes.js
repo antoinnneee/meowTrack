@@ -34,6 +34,7 @@ import {
   failNode,
   currentRunId,
   listRuns,
+  listRecentRuns,
   ingestRunReport,
   listReviews,
   getReview,
@@ -263,6 +264,19 @@ export async function handle(ctx) {
   if (method === "GET" && path === "/api/nodes/reviews") {
     const id = repoOf(q);
     send(res, 200, listReviews({ state: q.get("state") || null, repoId: id }));
+    return true;
+  }
+  // GET /api/nodes/runs?limit&offset&state — flux repo-level de TOUS les runs récents
+  // (timeline d'activité des agents). Donnée de base de l'onglet Suivi refondu.
+  if (method === "GET" && path === "/api/nodes/runs") {
+    const id = repoOf(q);
+    const runs = listRecentRuns({
+      repoId: id,
+      limit: Number(q.get("limit")) || 50,
+      offset: Number(q.get("offset")) || 0,
+      state: q.get("state") || null,
+    });
+    send(res, 200, { runs });
     return true;
   }
 

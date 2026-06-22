@@ -155,6 +155,29 @@ export function listRuns(nodeRefOrId, repoId = null) {
   });
 }
 
+// Vue repo-level : TOUS les runs récents (pas seulement ceux d'un nœud), du plus
+// récent au plus ancien, joints au nœud pour `nodeRef`/`nodeTitle`. C'est la donnée
+// de base du « flux d'activité des agents ». Le scope repo est implicite (un
+// tracker.db par repo). Pagination limit/offset + filtre d'état optionnel.
+export function listRecentRuns({ limit = 50, offset = 0, state = null, repoId = null } = {}) {
+  return withRepo(repoId, () => {
+    const lim = Math.min(Math.max(1, limit | 0), 500);
+    const off = Math.max(0, offset | 0);
+    const where = state ? "WHERE r.state = ?" : "";
+    const args = state ? [state, lim, off] : [lim, off];
+    const rows = db
+      .prepare(
+        `SELECT r.*, n.ref AS node_ref, n.title AS node_title
+           FROM node_runs r JOIN nodes n ON n.id = r.node_id
+           ${where}
+          ORDER BY r.started_at DESC, r.id DESC
+          LIMIT ? OFFSET ?`
+      )
+      .all(...args);
+    return rows.map((r) => ({ ...rowToRun(r), nodeRef: r.node_ref, nodeTitle: r.node_title }));
+  });
+}
+
 // ── Points de revue (node_reviews) ───────────────────────────────────────────
 export function addReview(nodeId, { runId = null, kind = "discovery", message, blocking = false, suggested = [] } = {}, repoId = null) {
   return withRepo(repoId, () => {
