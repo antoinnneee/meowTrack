@@ -19,6 +19,7 @@ const TYPES = ["bug", "feature", "task", "chore"];
 const STATUSES = ["open", "in_progress", "done", "wontfix"];
 const PRIORITIES = ["low", "medium", "high", "critical"];
 const NODE_STATUSES = ["active", "paused", "done", "abandoned"];
+const NODE_KINDS = ["normal", "activation"];
 const NODE_COLORS = ["accent", "feature", "task", "bug", "high"];
 
 // Enregistre tous les outils Meowtrack sur `server` (un McpServer du SDK).
@@ -406,7 +407,8 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
       title: "Créer un nœud (objectif / jalon)",
       description:
         "Crée un nœud Vibes dans un repo. Sans `parentId` → objectif racine. Avec `parentId` → sous-jalon " +
-        "(qui hérite du repo du parent). La progression est dérivée automatiquement (ne pas la fixer). Retourne le nœud créé (code NODE-N, numéroté par repo).",
+        "(qui hérite du repo du parent). La progression est dérivée automatiquement (ne pas la fixer). Retourne le nœud créé (code NODE-N, numéroté par repo). " +
+        "`kind='activation'` crée un NODE D'ACTIVATION : porte manuelle qui bloque tous les nœuds qui le requièrent (meowtrack_node_link_add) tant qu'il n'est pas 'done' (= activé).",
       inputSchema: {
         repo: repoParam,
         title: z.string().describe("Titre du nœud."),
@@ -414,6 +416,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
         description: z.string().optional().describe("Description courte."),
         notes: notesSchema.optional(),
         status: z.enum(NODE_STATUSES).optional().describe("Statut (défaut 'active')."),
+        kind: z.enum(NODE_KINDS).optional().describe("Type : 'normal' (défaut) ou 'activation' (porte de prérequis manuelle)."),
         color: z.enum(NODE_COLORS).optional().describe("Couleur (défaut 'accent', ou héritée du parent)."),
         emoji: z.string().optional().describe("Emoji (défaut 🎯)."),
         targetDate: z.string().optional().describe("Échéance 'YYYY-MM-DD' (ou null pour aucune)."),
@@ -486,6 +489,7 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
         description: z.string().optional(),
         notes: notesSchema.optional(),
         status: z.enum(NODE_STATUSES).optional(),
+        kind: z.enum(NODE_KINDS).optional().describe("Type : 'normal' ou 'activation' (porte de prérequis manuelle ; activer = passer status='done')."),
         pendingInfo: z
           .string()
           .nullable()

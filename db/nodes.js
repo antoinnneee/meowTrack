@@ -18,6 +18,7 @@ import { db, withRepo, nowIso, nextRef } from "./connection.js";
 import { resolveRepoId } from "./registry.js";
 import {
   NODE_STATUS_SET,
+  NODE_KIND_SET,
   NODE_COLOR_SET,
   NODE_LINK_KIND_SET,
   MAX_DEPTH,
@@ -49,6 +50,9 @@ function rowToNode(r, { childCount } = {}) {
     description: r.description,
     notes: parseNotes(r.notes),
     status: r.status,
+    // Type de nœud : 'normal' (défaut) ou 'activation' (porte de prérequis manuelle).
+    // Tolère les bases pré-migration (colonne absente → 'normal').
+    kind: r.kind || "normal",
     color: r.color,
     emoji: r.emoji,
     // Info attendue de l'utilisateur (markdown) quand status='waiting' ; sinon null.
@@ -282,6 +286,13 @@ function _setNodeFields(id, fields = {}) {
     sets.push("pending_info = ?");
     vals.push(pi == null || pi === "" ? null : clampStr(String(pi), 8000));
   }
+  // `kind` : type de nœud (normal|activation). Permet de convertir un nœud existant
+  // en node d'activation (et inversement) depuis l'édition / l'IA.
+  if (fields.kind != null) {
+    if (!NODE_KIND_SET.has(fields.kind)) throw new Error(`Type de nœud invalide : ${fields.kind}`);
+    sets.push("kind = ?");
+    vals.push(fields.kind);
+  }
   if (fields.color != null) {
     if (!NODE_COLOR_SET.has(fields.color)) throw new Error(`Couleur invalide : ${fields.color}`);
     sets.push("color = ?");
@@ -308,8 +319,10 @@ function _insertChild(parentId, input = {}) {
   const title = String(input.title || "").trim().slice(0, 200);
   if (!title) throw new Error("Titre de nœud requis");
   const status = NODE_STATUS_SET.has(input.status) ? input.status : "active";
+  const kind = NODE_KIND_SET.has(input.kind) ? input.kind : "normal";
   const color = NODE_COLOR_SET.has(input.color) ? input.color : parent.color || "accent";
-  const emoji = clampEmoji(input.emoji);
+  // Un node d'activation prend ⚡ par défaut (reconnaissable) si aucun emoji fourni.
+  const emoji = clampEmoji(input.emoji || (kind === "activation" ? "⚡" : ""));
   const description = clampStr(input.description != null ? input.description : input.detail || "", 4000);
   const notes = normalizeNotesInput(input.notes != null ? input.notes : "");
   const targetDate = validDateOrNull(input.targetDate != null ? input.targetDate : input.dueDate);
@@ -318,10 +331,10 @@ function _insertChild(parentId, input = {}) {
   const position = Number.isFinite(input.position) ? input.position : nextPos;
   const res = db
     .prepare(
-      `INSERT INTO nodes(repo_id, ref, parent_id, root_id, depth, path, title, description, notes, status, color, emoji, target_date, progress, position)
-       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+      `INSERT INTO nodes(repo_id, ref, parent_id, root_id, depth, path, title, description, notes, status, kind, color, emoji, target_date, progress, position)
+       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
     )
-    .run(parent.repo_id, ref, parentId, parent.root_id, parent.depth + 1, "", title, description, notes, status, color, emoji, targetDate, status === "done" ? 100 : 0, position);
+    .run(parent.repo_id, ref, parentId, parent.root_id, parent.depth + 1, "", title, description, notes, status, kind, color, emoji, targetDate, status === "done" ? 100 : 0, position);
   const newId = Number(res.lastInsertRowid);
   db.prepare("UPDATE nodes SET path = ?, done_at = ? WHERE id = ?").run(parent.path + newId + "/", status === "done" ? nowIso() : null, newId);
   return newId;
@@ -334,8 +347,10 @@ function _insertRoot(repoId, input = {}) {
   const title = String(input.title || "").trim().slice(0, 200);
   if (!title) throw new Error("Titre requis");
   const status = NODE_STATUS_SET.has(input.status) ? input.status : "active";
+  const kind = NODE_KIND_SET.has(input.kind) ? input.kind : "normal";
   const color = NODE_COLOR_SET.has(input.color) ? input.color : "accent";
-  const emoji = clampEmoji(input.emoji);
+  // Un node d'activation prend ⚡ par défaut (reconnaissable) si aucun emoji fourni.
+  const emoji = clampEmoji(input.emoji || (kind === "activation" ? "⚡" : ""));
   const description = clampStr(input.description != null ? input.description : input.detail || "", 4000);
   const notes = normalizeNotesInput(input.notes != null ? input.notes : "");
   const targetDate = validDateOrNull(input.targetDate != null ? input.targetDate : input.dueDate);
@@ -344,10 +359,10 @@ function _insertRoot(repoId, input = {}) {
   const position = Number.isFinite(input.position) ? input.position : nextPos;
   const res = db
     .prepare(
-      `INSERT INTO nodes(repo_id, ref, parent_id, root_id, depth, path, title, description, notes, status, color, emoji, target_date, progress, position)
-       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+      `INSERT INTO nodes(repo_id, ref, parent_id, root_id, depth, path, title, description, notes, status, kind, color, emoji, target_date, progress, position)
+       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
     )
-    .run(repoId, ref, null, 0, 0, "", title, description, notes, status, color, emoji, targetDate, status === "done" ? 100 : 0, position);
+    .run(repoId, ref, null, 0, 0, "", title, description, notes, status, kind, color, emoji, targetDate, status === "done" ? 100 : 0, position);
   const newId = Number(res.lastInsertRowid);
   db.prepare("UPDATE nodes SET root_id = ?, path = ?, done_at = ? WHERE id = ?").run(newId, "/" + newId + "/", status === "done" ? nowIso() : null, newId);
   return newId;
@@ -870,6 +885,7 @@ export function claimNextNode(repoId, owner, { leaseMs = 600000, maxAttempts = 3
         WHERE id = @id
           AND repo_id = @repo
           AND status  = 'active'
+          AND kind IS NOT 'activation'                                                     -- node d'activation = porte manuelle, jamais exécutée
           AND NOT EXISTS (SELECT 1 FROM nodes c WHERE c.parent_id = nodes.id)              -- feuille
           AND run_state IS NOT 'done'                                                      -- pas terminée
           AND run_state IS NOT 'review'                                                    -- pas en attente de revue

@@ -14,6 +14,11 @@ export const PRIORITIES = ["low", "medium", "high", "critical"];
 // avant de pouvoir être implémenté. Bloqué pour l'orchestrateur (claimNextNode exige
 // status='active') ; l'info manquante est décrite dans la colonne `pending_info`.
 export const NODE_STATUSES = ["active", "paused", "waiting", "done", "abandoned"];
+// Type de nœud. `normal` = objectif/jalon classique. `activation` = NŒUD D'ACTIVATION :
+// une porte manuelle qui bloque tous les nœuds qui le requièrent (prérequis) tant qu'il
+// n'est pas « activé » (status='done'). Réutilise le moteur de prérequis ; exclu de
+// l'orchestrateur (jamais réclamé comme tâche exécutable).
+export const NODE_KINDS = ["normal", "activation"];
 export const NODE_COLORS = ["accent", "feature", "task", "bug", "high"];
 export const CHAT_MODELS = ["sonnet", "opus", "haiku"];
 export const MESSAGE_STATES = ["pending", "streaming", "complete", "error"];
@@ -52,6 +57,7 @@ export const PREFIX = { bug: "BUG", feature: "FEAT", task: "TASK", chore: "CHORE
 
 // ── Sets dérivés (validation O(1)) + regex date ──────────────────────────────
 export const NODE_STATUS_SET = new Set(NODE_STATUSES);
+export const NODE_KIND_SET = new Set(NODE_KINDS);
 export const NODE_COLOR_SET = new Set(NODE_COLORS);
 export const NODE_LINK_KIND_SET = new Set(NODE_LINK_KINDS);
 export const MSG_STATE_SET = new Set(MESSAGE_STATES);
