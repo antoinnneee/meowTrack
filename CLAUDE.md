@@ -23,6 +23,7 @@ node test/mcp_compact.test.mjs     # regression test: MCP list tools project com
 node test/mcp_lock.test.mjs        # regression test: MEOWTRACK_LOCK_REPO locks the MCP transport to a single repo
 node test/node_runs_feed.test.mjs  # regression test: repo-level runs feed (listRecentRuns) for the agent-activity view
 node test/node_done_guard.test.mjs # regression test: cannot mark a node 'done' while a direct child is unfinished
+node test/node_child_revert.test.mjs # regression test: adding an unfinished child to a 'done' node reverts it to 'active'
 ./deploy.sh                       # SCP + npm install + systemctl restart (reads gitignored .deployEnv)
 ./install-service.sh              # one-shot: create+enable the systemd unit (run on the server)
 ```

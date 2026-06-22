@@ -355,6 +355,15 @@ function _insertChild(parentId, input = {}) {
     .run(parent.repo_id, ref, parentId, parent.root_id, parent.depth + 1, "", title, description, notes, status, kind, color, emoji, targetDate, status === "done" ? 100 : 0, position);
   const newId = Number(res.lastInsertRowid);
   db.prepare("UPDATE nodes SET path = ?, done_at = ? WHERE id = ?").run(parent.path + newId + "/", status === "done" ? nowIso() : null, newId);
+  // NODE-324 : ajouter un sous-jalon NON terminé à un parent 'done' le réactive
+  // (cas symétrique de NODE-323 : le parent ne peut plus être validé tant que ce
+  // nouvel enfant n'est pas done). Un enfant ajouté déjà 'done' ne change pas la
+  // complétude → pas de revert. recomputeAncestorProgress (appelé par createNode)
+  // propage ensuite la progression ; comme pour NODE-322, seul le parent direct est
+  // réactivé (le rollup est monotone et ne rétrograde pas les ancêtres).
+  if (parent.status === "done" && status !== "done") {
+    _setNodeFields(parentId, { status: "active" });
+  }
   return newId;
 }
 
