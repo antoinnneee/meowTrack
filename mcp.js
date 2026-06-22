@@ -21,9 +21,10 @@
 //                           ex. http://pattounecorp.ovh:7702).
 //   MEOWTRACK_TOKEN         jeton Bearer si le serveur en exige un (sinon vide).
 //   MEOWTRACK_DEFAULT_REPO  repo (slug/id) appliqué quand un appel n'en précise pas.
-//   MEOWTRACK_LOCK_REPO     VERROU mono-repo : restreint ce MCP à CE seul dépôt
-//                           (rejette tout `repo` divergent, masque les autres dans
-//                           meowtrack_repos). Idéal pour un MCP lancé par dépôt.
+//   MEOWTRACK_LOCK_REPO     VERROU mono-repo OVERRIDE optionnel (slug/id) : restreint
+//                           ce MCP à CE seul dépôt. Normalement INUTILE — le verrou est
+//                           auto-détecté depuis le cwd (le MCP est lancé par dépôt) ;
+//                           cette variable ne sert qu'à forcer un dépôt explicitement.
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -69,8 +70,30 @@ async function apiFetch(method, path, body) {
   return data;
 }
 
+// Verrou mono-repo SANS config (NODE-301) : le MCP est lancé PAR dépôt (.mcp.json à
+// la racine du clone) → process.cwd() identifie le dépôt. On demande au serveur de
+// résoudre ce cwd vers un repo ; le repo trouvé devient le verrou. MEOWTRACK_LOCK_REPO
+// reste un override explicite optionnel (rétro-compat). Aucun match (ex. serveur
+// distant, FS différent) → mode non verrouillé (cross-repo) + avertissement stderr.
+async function resolveLockRepo() {
+  if (LOCK_REPO) return LOCK_REPO; // override explicite
+  const cwd = process.cwd();
+  try {
+    const r = await apiFetch("GET", "/api/repos/resolve?path=" + encodeURIComponent(cwd));
+    if (r && r.slug) {
+      console.error(`[meowtrack] MCP verrouillé sur « ${r.slug} » (déduit du cwd ${cwd}).`);
+      return r.slug;
+    }
+    console.error(`[meowtrack] MCP NON verrouillé : le cwd (${cwd}) ne correspond à aucun dépôt connu — accès cross-repo.`);
+  } catch (e) {
+    console.error(`[meowtrack] MCP NON verrouillé : résolution du dépôt depuis le cwd impossible (${e.message || e}).`);
+  }
+  return "";
+}
+
 const server = new McpServer({ name: "meowtrack", version: "1.0.0" });
-registerMeowtrackTools(server, { apiFetch, defaultRepo: DEFAULT_REPO, lockRepo: LOCK_REPO });
+const lockRepo = await resolveLockRepo();
+registerMeowtrackTools(server, { apiFetch, defaultRepo: DEFAULT_REPO, lockRepo });
 
 const transport = new StdioServerTransport();
 await server.connect(transport);

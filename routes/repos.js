@@ -17,6 +17,7 @@ import {
   searchPathsFor,
   refreshPathsFor,
   rootForRepo,
+  resolveRepoByPath,
 } from "../repos.js";
 import { improveDescriptionWithClaude } from "../ai/claude.js";
 
@@ -63,6 +64,14 @@ export async function handle(ctx) {
     } catch (e) {
       send(res, 400, { error: e.message || String(e) });
     }
+    return true;
+  }
+  // GET /api/repos/resolve?path=<cwd> — résout un chemin FS (cwd d'un MCP lancé par
+  // dépôt) vers le dépôt qui le contient → verrou mono-repo sans config (NODE-301).
+  // Doit précéder le match /api/repos/:idOrSlug (qui capturerait "resolve").
+  if (method === "GET" && path === "/api/repos/resolve") {
+    const match = resolveRepoByPath(q.get("path") || "");
+    send(res, 200, { slug: match ? match.slug : null, root: match ? match.root : null });
     return true;
   }
   // /api/repos/:idOrSlug  et  /api/repos/:idOrSlug/update

@@ -12,7 +12,7 @@
 
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync, readFileSync, statSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, relative, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { NODE_REF_RE, MAX_REPORT_BYTES } from "./db/constants.js";
@@ -113,6 +113,35 @@ export function rootForRepo(repoOrId) {
   _rootCache.set(repo.id, root);
   return root;
 }
+// Résout un chemin du système de fichiers (typiquement le `cwd` d'un MCP lancé PAR
+// dépôt) vers le dépôt dont il EST la racine ou un sous-dossier. Match le plus
+// spécifique (racine la plus longue) l'emporte. Renvoie { slug, root } ou null.
+// Sert au verrou mono-repo SANS config (NODE-301) : le MCP envoie son cwd, le
+// serveur en déduit le dépôt. Cohérent en déploiement mono-machine (MCP + serveur
+// partagent le FS) ; sinon aucun match → l'appelant retombe en mode non verrouillé.
+export function resolveRepoByPath(fsPath) {
+  if (!fsPath || !String(fsPath).trim()) return null;
+  let target;
+  try {
+    target = resolve(String(fsPath).trim());
+  } catch {
+    return null;
+  }
+  let best = null;
+  for (const repo of listRepoRows()) {
+    let root;
+    try {
+      root = rootForRepo(repo);
+    } catch {
+      continue;
+    }
+    const rel = relative(root, target);
+    const inside = rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+    if (inside && (!best || root.length > best.root.length)) best = { slug: repo.slug, root };
+  }
+  return best;
+}
+
 // À appeler si un repo change de local_path/url (invalide la mémoïsation + l'index).
 export function invalidateRepo(repoId) {
   _rootCache.delete(repoId);
