@@ -441,11 +441,16 @@ function toggleForestChat() {
   if (!chat) return;
   const open = !chat.classList.contains("collapsed") || vibes.fullscreen || vibes.pinned;
   if (open) {
+    // Mémorise le mode actif avant de fermer, pour le restaurer à la réouverture.
+    vibes._lastChatMode = vibes.fullscreen ? "fullscreen" : vibes.pinned ? "pinned" : "normal";
     if (vibes.fullscreen) setForestFullscreen(false);
     if (vibes.pinned) setForestPinned(false);
     chat.classList.add("collapsed");
   } else {
     chat.classList.remove("collapsed");
+    // Restaure le dernier mode (plein écran / épinglé) ; « normal » = rien de plus.
+    if (vibes._lastChatMode === "fullscreen") setForestFullscreen(true);
+    else if (vibes._lastChatMode === "pinned") setForestPinned(true);
   }
 }
 
