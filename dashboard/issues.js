@@ -266,6 +266,29 @@ function fmtRunTime(iso) {
   return sameDay ? hm : `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")} ${hm}`;
 }
 
+// Récap reçu du MCP à la clôture (NODE-320) : summary + report, en section
+// collapsable. Même source que la note de récap du nœud (jalon 168) — pas de
+// duplication. Vide si le run n'a encore ni récap, ni rapport, ni erreur.
+function runRecapHtml(r) {
+  const hasReport = r.report && typeof r.report === "object" && !Array.isArray(r.report);
+  const tr = (hasReport && r.report.testResult) || r.testResult || null;
+  if (!r.summary && !hasReport && !r.error) return "";
+  const parts = [];
+  if (r.error) parts.push(`<div class="run-error">⚠ ${esc(r.error)}</div>`);
+  if (r.summary) parts.push(`<div class="run-summary">${descToHtml(r.summary).replace(/\n/g, "<br>")}</div>`);
+  const badges = [];
+  if (tr) badges.push(`<span class="badge test-${esc(tr)}">tests : ${esc(tr)}</span>`);
+  if (hasReport) {
+    const nu = Array.isArray(r.report.nodeUpdates) ? r.report.nodeUpdates.length : 0;
+    const rp = Array.isArray(r.report.reviewPoints) ? r.report.reviewPoints.length : 0;
+    if (nu) badges.push(`<span class="badge">${nu} maj nœud/suivi</span>`);
+    if (rp) badges.push(`<span class="badge">${rp} point(s) de revue</span>`);
+  }
+  if (badges.length) parts.push(`<div class="run-report-meta">${badges.join(" ")}</div>`);
+  if (hasReport) parts.push(`<details class="run-report"><summary>rapport JSON</summary><pre>${esc(JSON.stringify(r.report, null, 2))}</pre></details>`);
+  return `<details class="run-recap"><summary>récap</summary><div class="run-recap-body">${parts.join("")}</div></details>`;
+}
+
 async function loadRuns() {
   const ul = $("#runFeed");
   if (!ul) return;
@@ -282,10 +305,13 @@ async function loadRuns() {
         const owner = r.owner ? `· ${esc(r.owner)} ` : "";
         const branch = r.branch ? `· ⎇ ${esc(r.branch)} ` : "";
         return `<li class="run-item state-${esc(r.state)}">
-          <span class="run-state" title="${esc(r.state)}">${icon}</span>
-          <span class="run-node" data-ref="${esc(r.nodeRef)}" title="Ouvrir dans Vibes">${esc(r.nodeRef)}</span>
-          <span class="run-title">${esc(r.nodeTitle || "")}</span>
-          <span class="run-meta">${owner}${branch}· ${esc(when)}</span>
+          <div class="run-line">
+            <span class="run-state" title="${esc(r.state)}">${icon}</span>
+            <span class="run-node" data-ref="${esc(r.nodeRef)}" title="Ouvrir dans Vibes">${esc(r.nodeRef)}</span>
+            <span class="run-title">${esc(r.nodeTitle || "")}</span>
+            <span class="run-meta">${owner}${branch}· ${esc(when)}</span>
+          </div>
+          ${runRecapHtml(r)}
         </li>`;
       })
       .join("");
