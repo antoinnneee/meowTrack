@@ -419,7 +419,6 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
         kind: z.enum(NODE_KINDS).optional().describe("Type : 'normal' (défaut) ou 'activation' (porte de prérequis manuelle)."),
         color: z.enum(NODE_COLORS).optional().describe("Couleur (défaut 'accent', ou héritée du parent)."),
         emoji: z.string().optional().describe("Emoji (défaut 🎯)."),
-        targetDate: z.string().optional().describe("Échéance 'YYYY-MM-DD' (ou null pour aucune)."),
         position: z.number().int().optional().describe("Position parmi les frères (défaut : à la fin)."),
       },
     },
@@ -481,8 +480,8 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
     {
       title: "Modifier un nœud",
       description:
-        "Met à jour les champs fournis d'un nœud (titre, description, NOTES markdown, statut, couleur, emoji, " +
-        "échéance). `notes` remplace toute la liste de notes. La progression reste automatique.",
+        "Met à jour les champs fournis d'un nœud (titre, description, NOTES markdown, statut, couleur, emoji). " +
+        "`notes` remplace toute la liste de notes. La progression reste automatique.",
       inputSchema: {
         repo: repoParam,
         ref: nodeRefSchema,
@@ -498,7 +497,6 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "" }) {
           .describe("Info attendue de l'utilisateur (markdown) quand status='waiting' ; null pour effacer. JAMAIS de secret (clé API…)."),
         color: z.enum(NODE_COLORS).optional(),
         emoji: z.string().optional(),
-        targetDate: z.string().nullable().optional().describe("'YYYY-MM-DD' ou null pour effacer."),
       },
     },
     guard(async ({ repo, ref, ...fields }) => apiFetch("PATCH", "/api/nodes/" + encodeURIComponent(ref) + qs({ repo: repoOf(repo) }), fields))

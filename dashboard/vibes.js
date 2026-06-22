@@ -575,7 +575,7 @@ function animateNodeRemoval(rootId, then) {
 function nodeCardHtml(n) {
   return `<div class="goal-card status-${esc(n.status)}${nodeFxClass(n.id)}" data-ref="${esc(n.ref)}" data-id="${n.id}" style="--gc:var(--${esc(n.color || "accent")})">
     <div class="gc-top"><span class="gc-emoji">${esc(n.emoji || "🎯")}</span><span class="gc-title">${esc(n.title)}</span></div>
-    <div class="gc-ref">${esc(n.ref)}${n.targetDate ? ` · 📅 ${esc(n.targetDate)}` : ""}</div>
+    <div class="gc-ref">${esc(n.ref)}</div>
     <div class="gc-bar"><div class="gc-fill" style="width:${n.progress}%"></div></div>
     <div class="gc-foot"><span>${n.progress}%</span><span>${n.childCount} sous-nœud${n.childCount > 1 ? "s" : ""}</span><span>${esc(NODE_STATUS_LABEL[n.status] || n.status)}</span></div>
   </div>`;
@@ -1738,8 +1738,6 @@ function renderNodeHeader(n) {
   stEl.className = "badge status-" + n.status; // colore le badge selon le statut (ex. waiting)
   $("#ndBar").style.width = n.progress + "%";
   $("#ndPct").textContent = n.progress + "%";
-  const tgt = $("#ndTarget");
-  if (n.targetDate) { tgt.textContent = "📅 " + n.targetDate; tgt.hidden = false; } else tgt.hidden = true;
   const desc = $("#ndDesc");
   desc.textContent = n.description || "";
   desc.hidden = !n.description;
@@ -2873,7 +2871,6 @@ function openNodeModal(node, parentId) {
   $("#nEmoji").value = node?.emoji || (isAct ? "⚡" : "🎯");
   $("#nStatus").value = node?.status || "active";
   if ($("#nKind")) $("#nKind").value = kind;
-  $("#nTarget").value = node?.targetDate || "";
   $("#nTitle").value = node?.title || "";
   $("#nDesc").value = node?.description || "";
   selectColorChip(node?.color || "accent");
@@ -2885,7 +2882,6 @@ async function saveNode() {
     emoji: $("#nEmoji").value.trim() || "🎯",
     status: $("#nStatus").value,
     kind: $("#nKind") ? $("#nKind").value : "normal", // normal | activation
-    targetDate: $("#nTarget").value || null,
     title: $("#nTitle").value.trim(),
     description: $("#nDesc").value,
     color: vibes._color,

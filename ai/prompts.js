@@ -36,7 +36,6 @@ function untrustedNode(n, { notesMax = 1500 } = {}) {
     // Type : exposé seulement s'il est spécial (node d'activation) pour économiser le contexte.
     ...(n.kind === "activation" ? { kind: "activation" } : {}),
     emoji: n.emoji,
-    targetDate: n.targetDate,
     progress: n.progress,
   };
   // Info attendue de l'utilisateur (status='waiting') : donnée UNTRUSTED, exposée à l'IA
@@ -181,9 +180,9 @@ export function buildNodePrompt(scopeNode, descendants, history, userMessage, au
     "   Sans modification : n'écris AUCUN bloc d'actions.",
     "",
     "ACTIONS DISPONIBLES (op + champs ; `id` = id RÉEL d'un nœud du sous-arbre) :",
-    '- {"op":"set_node_fields","title?":"…","description?":"…","notes?":[{"title":"…","body":"# markdown…"}],"status?":"active|paused|waiting|done|abandoned","pendingInfo?":"info attendue de l\'utilisateur (si status=waiting) | null","color?":"accent|feature|task|bug|high","emoji?":"🎯","targetDate?":"YYYY-MM-DD|null"}  (sans id = le nœud courant)',
+    '- {"op":"set_node_fields","title?":"…","description?":"…","notes?":[{"title":"…","body":"# markdown…"}],"status?":"active|paused|waiting|done|abandoned","pendingInfo?":"info attendue de l\'utilisateur (si status=waiting) | null","color?":"accent|feature|task|bug|high","emoji?":"🎯"}  (sans id = le nœud courant)',
     '- {"op":"add_node","parentId?":<id|défaut=courant>,"title":"…","description?":"…","notes?":[{"title":"…","body":"…"}],"status?":"…","kind?":"normal|activation","tmpKey?":"n1"}',
-    '- {"op":"update_node","id":<id>,"title?":"…","description?":"…","notes?":[{"title":"…","body":"…"}],"status?":"…","pendingInfo?":"…","kind?":"normal|activation","color?":"…","emoji?":"…","targetDate?":"…"}',
+    '- {"op":"update_node","id":<id>,"title?":"…","description?":"…","notes?":[{"title":"…","body":"…"}],"status?":"…","pendingInfo?":"…","kind?":"normal|activation","color?":"…","emoji?":"…"}',
     '  Statut `waiting` = EN ATTENTE D\'INFO utilisateur (clé API, config, décision) avant implémentation : pose-le avec `pendingInfo` décrivant ce qui manque. Le nœud est alors bloqué (non implémentable) jusqu\'à ce qu\'il repasse `active`.',
     '  `kind:"activation"` = NODE D\'ACTIVATION : une porte manuelle. Tant qu\'il n\'est pas `done` (= activé), TOUS les nœuds qui le requièrent (add_link vers lui) sont bloqués. Activé à la main par l\'utilisateur pour débloquer toute une séquence. Crée-en un puis relie les nœuds à gérer avec add_link (from=nœud à bloquer, to=node d\'activation).',
     '- {"op":"delete_node","id":<id>}  (un descendant ; PAS le nœud courant)',
@@ -266,8 +265,8 @@ export function buildForestPrompt(forestNodes, history, userMessage, author, rep
     "   Sans modification : n'écris AUCUN bloc d'actions.",
     "",
     "ACTIONS DISPONIBLES (op + champs ; `id` = id RÉEL d'un nœud de ce dépôt) :",
-    '- {"op":"add_node","parentId?":<id>,"title":"…","description?":"…","notes?":[{"title":"…","body":"# markdown…"}],"status?":"active|paused|done|abandoned","kind?":"normal|activation","color?":"accent|feature|task|bug|high","emoji?":"🎯","targetDate?":"YYYY-MM-DD|null","tmpKey?":"n1"}  (SANS parentId = NOUVEL OBJECTIF RACINE ; avec parentId = sous-jalon)',
-    '- {"op":"update_node","id":<id>,"title?":"…","description?":"…","notes?":[{"title":"…","body":"…"}],"status?":"active|paused|waiting|done|abandoned","pendingInfo?":"info attendue (si status=waiting) | null","kind?":"normal|activation","color?":"…","emoji?":"…","targetDate?":"…"}',
+    '- {"op":"add_node","parentId?":<id>,"title":"…","description?":"…","notes?":[{"title":"…","body":"# markdown…"}],"status?":"active|paused|done|abandoned","kind?":"normal|activation","color?":"accent|feature|task|bug|high","emoji?":"🎯","tmpKey?":"n1"}  (SANS parentId = NOUVEL OBJECTIF RACINE ; avec parentId = sous-jalon)',
+    '- {"op":"update_node","id":<id>,"title?":"…","description?":"…","notes?":[{"title":"…","body":"…"}],"status?":"active|paused|waiting|done|abandoned","pendingInfo?":"info attendue (si status=waiting) | null","kind?":"normal|activation","color?":"…","emoji?":"…"}',
     '- {"op":"set_node_fields","id":<id>,…}  (comme update_node ; `id` OBLIGATOIRE au niveau forêt)',
     '  Statut `waiting` = EN ATTENTE D\'INFO utilisateur avant implémentation (renseigne `pendingInfo`) ; le nœud reste bloqué jusqu\'à repasser `active`.',
     '  `kind:"activation"` = NODE D\'ACTIVATION : porte manuelle qui bloque tous les nœuds qui le requièrent tant qu\'il n\'est pas `done` (= activé). Sert à activer toute une séquence d\'un coup. Crée-le puis relie les nœuds à gérer via add_link (from=nœud à bloquer, to=node d\'activation).',
