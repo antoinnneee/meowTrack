@@ -1733,9 +1733,22 @@ function renderNodeHeader(n) {
   $("#ndEmoji").textContent = n.emoji || "🎯";
   $("#ndTitle").textContent = n.title;
   $("#ndRef").textContent = n.ref;
+  // Statut éditable INLINE (NODE-325) : sélecteur câblé sur patchNode (gère
+  // expectedVersion + toast d'erreur, ex. guard « enfants incomplets »). Exception :
+  // un node d'activation a déjà sa bascule activé/désactivé (#ndActToggle) → badge
+  // lecture seule pour éviter un double contrôle visuel.
   const stEl = $("#ndStatus");
-  stEl.textContent = NODE_STATUS_LABEL[n.status] || n.status;
-  stEl.className = "badge status-" + n.status; // colore le badge selon le statut (ex. waiting)
+  if (n.kind === "activation") {
+    stEl.className = "badge status-" + n.status;
+    stEl.textContent = NODE_STATUS_LABEL[n.status] || n.status;
+  } else {
+    stEl.className = "badge status-edit status-" + n.status;
+    const opts = ["active", "paused", "waiting", "done", "abandoned"]
+      .map((s) => `<option value="${s}" ${s === n.status ? "selected" : ""}>${esc(NODE_STATUS_LABEL[s])}</option>`)
+      .join("");
+    stEl.innerHTML = `<select class="ndstatus" title="Changer l'état">${opts}</select>`;
+    stEl.querySelector(".ndstatus").addEventListener("change", (e) => patchNode(n.id, { status: e.target.value }));
+  }
   $("#ndBar").style.width = n.progress + "%";
   $("#ndPct").textContent = n.progress + "%";
   const desc = $("#ndDesc");

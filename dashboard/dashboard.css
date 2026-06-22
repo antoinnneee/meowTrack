@@ -180,6 +180,15 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
 .badge.status-in_progress { color: var(--high); border-color: var(--high); }
 .badge.status-waiting { color: var(--high); border-color: var(--high); background: color-mix(in srgb, var(--high) 14%, transparent); }
 .badge.status-done { color: var(--feature); border-color: var(--feature); }
+/* Statut éditable inline dans l'en-tête du détail jalon (NODE-325) : le badge
+   garde sa couleur de statut, le <select> interne est transparent et hérite. */
+.badge.status-edit { padding: 0; }
+.badge.status-edit select.ndstatus {
+  background: transparent; border: none; color: inherit; font: inherit;
+  padding: 2px 8px; border-radius: 20px; cursor: pointer;
+}
+.badge.status-edit select.ndstatus:focus { outline: none; }
+.badge.status-edit select.ndstatus option { color: var(--text); background: var(--surface); }
 .badge.tag { background: var(--surface-2); }
 .badge.refcount { color: var(--accent-2); border-color: var(--accent-2); }
 .badge.nodecount { color: var(--feature); border-color: var(--feature); }
