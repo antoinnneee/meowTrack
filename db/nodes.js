@@ -235,6 +235,15 @@ function recomputeAncestorProgress(nodeId, { bumpSelf = true } = {}) {
 function _setNodeFields(id, fields = {}) {
   const row = db.prepare("SELECT status FROM nodes WHERE id = ?").get(id);
   if (!row) throw new Error(`Nœud introuvable : ${id}`);
+  // NODE-322 : éditer le titre ou la description d'un nœud TERMINÉ le réactive
+  // automatiquement (done → active, ce qui efface aussi done_at via la branche
+  // status ci-dessous). Volontairement limité à title/description : les notes
+  // (écrites par la clôture MCP sur un nœud done) et les champs cosmétiques
+  // (color/emoji/posX/posY/kind/targetDate) ne déclenchent PAS le revert, et un
+  // `status` explicite fourni par l'appelant a toujours priorité.
+  if (row.status === "done" && fields.status == null && (fields.title != null || fields.description != null)) {
+    fields = { ...fields, status: "active" };
+  }
   const sets = [];
   const vals = [];
   if (fields.title != null) {
