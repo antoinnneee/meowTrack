@@ -163,6 +163,8 @@ function aiErrorMessage(e) {
     ? "Réponse trop longue (tronquée), aucune action appliquée."
     : e && e.code === "ENOENT"
     ? `CLI Claude introuvable (${CLAUDE_BIN}). Vérifier MEOWTRACK_CLAUDE_BIN sur le serveur.`
+    : e && e.code === "SPAWN_ERROR"
+    ? detail ? `Lancement du CLI Claude impossible : ${detail}` : "Lancement du CLI Claude impossible (échec du spawn)."
     : e && e.code === "AI_RESULT_ERROR"
     ? detail ? `L'IA a renvoyé une erreur : ${detail}` : "L'IA a renvoyé une erreur."
     : e && e.code === "AI_EXIT"

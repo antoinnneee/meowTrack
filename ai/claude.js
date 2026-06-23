@@ -14,6 +14,23 @@ import { broadcast } from "../sse.js";
 
 const execFileAsync = promisify(execFile);
 
+// NODE-345 : décrit la CAUSE d'un échec de spawn du CLI (le simple code "SPAWN_ERROR"
+// ne disait rien). Extrait les champs utiles de l'erreur système Node (code/syscall/
+// path/errno/message) + le binaire visé, en une ligne lisible/journalisable. `extra`
+// = complément optionnel (ex. tail stderr déjà capté). Exporté pour le test de régression.
+export function spawnErrorDetail(cause, extra = "") {
+  const parts = [`bin=${CLAUDE_BIN}`];
+  if (cause) {
+    if (cause.code) parts.push(`code=${cause.code}`);
+    if (cause.syscall) parts.push(`syscall=${cause.syscall}`);
+    if (cause.path) parts.push(`path=${cause.path}`);
+    if (cause.errno != null) parts.push(`errno=${cause.errno}`);
+    if (cause.message) parts.push(String(cause.message));
+  }
+  const s = parts.join(" ; ");
+  return extra && extra.trim() ? `${s} ; stderr: ${extra.trim()}` : s;
+}
+
 // Lance `claude -p` headless SANS aucun outil (raisonnement pur, cwd hors repo) —
 // utilisé par « Améliorer la description » (réécriture de texte, pas besoin du repo).
 async function runClaudeSandboxed(prompt, model = "sonnet") {
@@ -86,7 +103,7 @@ export function runClaudeStreaming(prompt, model, root, { onThinking, onText, on
         claudeOpts(AI_REPO_ACCESS, root)
       );
     } catch (e) {
-      return reject(Object.assign(new Error("SPAWN_ERROR"), { code: "SPAWN_ERROR", cause: e }));
+      return reject(Object.assign(new Error("SPAWN_ERROR"), { code: "SPAWN_ERROR", cause: e, detail: spawnErrorDetail(e) }));
     }
     if (onChild) onChild(child);
 
@@ -154,7 +171,13 @@ export function runClaudeStreaming(prompt, model, root, { onThinking, onText, on
     child.stderr.on("data", (c) => {
       stderrTail = (stderrTail + c.toString("utf8")).slice(-4096);
     });
-    child.on("error", (e) => done(reject, Object.assign(new Error("SPAWN_ERROR"), { code: e.code === "ENOENT" ? "ENOENT" : "SPAWN_ERROR", cause: e })));
+    child.on("error", (e) =>
+      done(reject, Object.assign(new Error("SPAWN_ERROR"), {
+        code: e.code === "ENOENT" ? "ENOENT" : "SPAWN_ERROR",
+        cause: e,
+        detail: spawnErrorDetail(e, stderrTail),
+      }))
+    );
     child.on("close", (code) => {
       if (settled) return;
       // reliquat sans \n final

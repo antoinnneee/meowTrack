@@ -31,6 +31,7 @@ node test/chat_templates.test.mjs  # regression test: named preprompt-template C
 node test/chat_session_concurrency.test.mjs # regression test: per-session AI-turn queues (NODE-343) — independent FIFO + boot-resume pairs
 node test/graph_pages.test.mjs     # regression test: graph pages model (NODE-337) — exclusive ownership, default page, CRUD, move-between-pages
 node test/page_preprompt.test.mjs  # regression test: active-page preprompt injection into the forest prompt (NODE-340), outside UNTRUSTED
+node test/spawn_error_detail.test.mjs # regression test: SPAWN_ERROR detail enrichment (NODE-345) — cause code/syscall/path/errno + bin + stderr tail
 ./deploy.sh                       # SCP + npm install + systemctl restart (reads gitignored .deployEnv)
 ./install-service.sh              # one-shot: create+enable the systemd unit (run on the server)
 ```
