@@ -625,7 +625,8 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "", loc
       title: "Demander une info à l'utilisateur (mise en attente)",
       description:
         "Met un nœud EN ATTENTE d'info utilisateur (status='waiting') et décrit le manque (clé API, config, décision) " +
-        "requis avant l'implémentation. N'inclus JAMAIS de secret dans `info`.",
+        "requis avant l'implémentation. Couvre AUSSI un CHOIX entre plusieurs options d'implémentation proposées dans " +
+        "le plan (Option A / Option B…) : préfère cet outil plutôt que de trancher seul et clore. N'inclus JAMAIS de secret dans `info`.",
       inputSchema: {
         repo: repoParam,
         ref: nodeRefSchema,
@@ -796,7 +797,9 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "", loc
         "Tire ET réclame atomiquement la prochaine tâche exécutable d'un repo : une FEUILLE active, débloquée " +
         "(tous ses prérequis 'done'), au bail libre. Pose un bail au nom de `owner` (le nœud passe run_state='running'). " +
         "Renvoie { node, config } ou node=null si rien n'est prêt. Boucle : next → travailler dans un WORKTREE ISOLÉ " +
-        "(une branche dédiée par nœud) → écrire .meowtrack/runs/<ref>.json → complete → merger dans `main` (+push) → nœud suivant.",
+        "(une branche dédiée par nœud) → écrire .meowtrack/runs/<ref>.json → complete → merger dans `main` (+push) → nœud suivant. " +
+        "GARDE-FOU : si le plan du nœud présente des OPTIONS à trancher (Option A/B…) sans défaut désigné, appelle " +
+        "meowtrack_node_request_input (→ waiting) au lieu d'implémenter et clore — laisse l'utilisateur arbitrer.",
       inputSchema: {
         repo: repoParam,
         owner: z.string().describe("Identifiant du worker (ex. 'agent-1') — détenteur du bail."),
@@ -867,7 +870,9 @@ export function registerMeowtrackTools(server, { apiFetch, defaultRepo = "", loc
         "Clôt une tâche réclamée (détenteur du bail uniquement). Ingère le rapport (inline `report` ou " +
         ".meowtrack/runs/<ref>.json) : applique les `nodeUpdates` sûrs, persiste les `reviewPoints`. Sans point " +
         "bloquant → 'done' (débloque les dépendants, progression remonte) ; sinon → 'review'. Réponse " +
-        "hint:'compact_suggested' si auto_compact est ON. Après clôture : merger la branche dans `main` (+push) avant le nœud suivant.",
+        "hint:'compact_suggested' si auto_compact est ON. Après clôture : merger la branche dans `main` (+push) avant le nœud suivant. " +
+        "GARDE-FOU : ne clôs PAS un nœud dont le plan laisse un CHOIX utilisateur ouvert (Option A/B… sans défaut désigné) en " +
+        "tranchant toi-même — préfère meowtrack_node_request_input (→ waiting). Si tu implémentes une option par défaut recommandée, dis-le dans `summary`.",
       inputSchema: {
         repo: repoParam,
         ref: nodeRefSchema,

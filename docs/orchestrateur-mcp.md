@@ -27,6 +27,9 @@ server-side qui spawne des exécuteurs pointés sur le MCP de meowtrack).
 
 ```
 tant que (t = meowtrack_node_next(repo)) :          # une tâche prête, déjà réclamée
+    si le plan de t présente des OPTIONS à trancher (A/B…) sans défaut désigné :
+        meowtrack_node_request_input(t.ref, info="résume le choix")  # → waiting (cf. §1bis)
+        continuer                                    # rendre la main, NE PAS implémenter ni clore
     … faire le travail (Read/Edit/Bash/git) dans un WORKTREE ISOLÉ …
     écrire .meowtrack/runs/<ref>.json               # rapport + points de revue (§6)
     r = meowtrack_node_complete(t.ref, { … })        # le serveur ingère le rapport
@@ -48,6 +51,28 @@ Deux consignes adressées à **l'agent** (meowtrack reste passif, il n'exécute 
   garde `main` à jour pour les nœuds suivants (qui peuvent dépendre du travail précédent)
   et borne la taille des diffs. **Garde-fou** : c'est une consigne — l'agent décide et
   exécute le git ; meowtrack ne force ni ne vérifie rien.
+
+### 1bis. Nœud présentant des options à trancher → demander un arbitrage (ne pas choisir seul)
+
+Consigne adressée à **l'agent** (meowtrack reste passif). Quand le plan ou les notes
+d'un nœud présentent **plusieurs options mutuellement exclusives** (« Option A / Option
+B », ou toute décision qui appartient à l'utilisateur : choix de techno, d'API, de
+compromis produit), l'agent **ne tranche pas à la place de l'utilisateur** et ne clôt
+pas le nœud via `meowtrack_node_complete`. Il appelle **`meowtrack_node_request_input`**
+(`ref`, `info` = un résumé du choix A vs B), ce qui passe le nœud en `status='waiting'`
++ `pending_info` ; le chat du nœud bascule alors en mode collecte et l'utilisateur
+tranche (ou clique « Prêt à implémenter »). L'agent passe au nœud suivant.
+
+**Nuance — option par défaut désignée.** Si le plan **recommande explicitement** une
+option (« Option A — recommandée », ou un nœud dont le titre fixe déjà le choix, ex.
+« Option B — file persistée côté serveur »), l'agent peut l'implémenter **sans**
+demander d'arbitrage — mais il doit alors **mentionner le choix retenu** dans le récap
+de clôture (`summary`), pas le masquer. La demande d'info ne s'impose que lorsque
+**aucune** option n'est clairement désignée par défaut.
+
+**Garde-fou** : c'est une **consigne de jugement** — meowtrack ne sait pas distinguer
+« options à trancher » d'un simple plan structuré, et ne force rien. La détection
+relève de l'agent.
 
 ### Consigne de compactage (mode batch « traite les nœuds en attente »)
 
