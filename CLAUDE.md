@@ -25,6 +25,7 @@ node test/repo_resolve.test.mjs    # regression test: resolveRepoByPath maps a c
 node test/node_runs_feed.test.mjs  # regression test: repo-level runs feed (listRecentRuns) for the agent-activity view
 node test/node_done_guard.test.mjs # regression test: cannot mark a node 'done' while a direct child is unfinished
 node test/node_child_revert.test.mjs # regression test: adding an unfinished child to a 'done' node reverts it to 'active'
+node test/node_move_revert.test.mjs # regression test: moving an unfinished node under a 'done' goal reverts it to 'active' (drag & AI move_node)
 node test/chat_queue.test.mjs      # regression test: persisted AI-turn queue (Option B) — `queued` state, FIFO selection, boot resume
 node test/chat_templates.test.mjs  # regression test: named preprompt-template CRUD (chat_templates, per-repo)
 node test/chat_session_concurrency.test.mjs # regression test: per-session AI-turn queues (NODE-343) — independent FIFO + boot-resume pairs

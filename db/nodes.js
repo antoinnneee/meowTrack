@@ -423,6 +423,15 @@ function _reparentSubtree(id, newParentId, position) {
   // sous son nouveau parent.
   const upd = db.prepare("UPDATE nodes SET depth = ?, root_id = ?, path = ?, pos_x = NULL, pos_y = NULL WHERE id = ?");
   for (const r of rows) upd.run(r.depth + depthDelta, newRoot, newPath + r.path.slice(oldPath.length), r.id);
+  // NODE-342 : déplacer un nœud NON terminé sous un objectif 'done' le réactive
+  // (symétrique de NODE-324 pour la création). recomputeAncestorProgress est monotone
+  // et ne rétrograderait jamais le parent 'done', d'où le revert explicite. Placé ici
+  // (et non dans moveNode) pour couvrir AUSSI l'action IA move_node (applyNodeActions /
+  // applyForestActions appellent _reparentSubtree directement). Pas de revert si le nœud
+  // déplacé est lui-même 'done' (complétude préservée) ni à la remontée en racine.
+  if (newParent && newParent.status === "done" && row.status !== "done") {
+    _setNodeFields(newParentId, { status: "active" });
+  }
 }
 
 function _reorderChildrenRows(parentId, orderedIds, repoId = null) {
@@ -526,7 +535,7 @@ export function moveNode(refOrId, newParentRefOrId, position, repoId = null) {
   const oldParentId = row.parent_id;
   const newParentId = newParent ? newParent.id : null;
   db.transaction(() => {
-    _reparentSubtree(row.id, newParentId, Number.isFinite(position) ? position : null);
+    _reparentSubtree(row.id, newParentId, Number.isFinite(position) ? position : null); // NODE-342 : revert du parent done dedans
     recomputeAncestorProgress(row.id, { bumpSelf: true });
     if (oldParentId != null && oldParentId !== newParentId) recomputeAncestorProgress(oldParentId, { bumpSelf: true });
   })();
