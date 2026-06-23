@@ -100,11 +100,12 @@ function applyMixedNodeActions(repoId, nodeId, actions) {
   const issueRes = issueActions.length ? applyIssueActions(repoId, issueActions) : EMPTY_ISSUE_RES;
   return mergeActionResults(nodeRes, issueRes);
 }
-// Applique un flux d'actions au niveau forêt (nœuds + issues du repo).
-function applyMixedForestActions(repoId, actions) {
+// Applique un flux d'actions au niveau forêt (nœuds + issues du repo). `opts.pageId`
+// (NODE-349) = page de graphe active → page par défaut des racines créées via add_node.
+function applyMixedForestActions(repoId, actions, opts = {}) {
   const issueActions = (actions || []).filter(isIssueAction);
   const nodeActions = (actions || []).filter((a) => a && !isIssueAction(a));
-  const nodeRes = applyForestActions(repoId, nodeActions);
+  const nodeRes = applyForestActions(repoId, nodeActions, opts);
   const issueRes = issueActions.length ? applyIssueActions(repoId, issueActions) : EMPTY_ISSUE_RES;
   return mergeActionResults(nodeRes, issueRes);
 }
@@ -531,7 +532,7 @@ function forestStructuralChange(applied) {
   return (applied || []).some((a) => a && (a.op === "delete_node" || a.op === "move_node" || a.op === "reorder_children"));
 }
 
-async function runForestTurn(repoId, forestSnapshot, history, userText, author, model, pendingId, root, links, issues, policyPrompt = "", sessionId = 0, pagePreprompt = "", images = []) {
+async function runForestTurn(repoId, forestSnapshot, history, userText, author, model, pendingId, root, links, issues, policyPrompt = "", sessionId = 0, pagePreprompt = "", images = [], activePageId = null) {
   const lockKey = forestLockKey(repoId, sessionId); // verrou PAR SESSION (NODE-343)
   const room = forestKey(repoId);
   const batcher = makeStreamBatcher(room, pendingId);
@@ -638,7 +639,7 @@ async function runForestTurn(repoId, forestSnapshot, history, userText, author, 
       return;
     }
 
-    const applied = applyMixedForestActions(repoId, actions);
+    const applied = applyMixedForestActions(repoId, actions, { pageId: activePageId }); // NODE-349 : racines → page active
     console.error(
       `[meowtrack] runForestTurn repo=${repoId}: ${applied.applied.length} appliquée(s), ${applied.rejected.length} rejetée(s)` +
         (applied.rejected.length ? ` → rejets: ${JSON.stringify(applied.rejected)}` : "")
@@ -681,7 +682,7 @@ async function runForestTurn(repoId, forestSnapshot, history, userText, author, 
 // Démarre (ou enchaîne) un tour IA forêt : fige le snapshot, prend le verrou, diffuse
 // `start`, lance runForestTurn détaché. `pendingMessage` est le placeholder assistant
 // déjà persisté ; `triggerUserId` (le message humain) est exclu de l'historique.
-function startForestTurn(repoId, text, author, model, sessionId, pendingMessage, triggerUserId, pagePreprompt = "", images = []) {
+function startForestTurn(repoId, text, author, model, sessionId, pendingMessage, triggerUserId, pagePreprompt = "", images = [], activePageId = null) {
   const forestSnapshot = listForest(repoId);
   let forestLinks = [];
   try { forestLinks = listForestLinks(repoId); } catch { /* pas de liens */ }
@@ -695,7 +696,7 @@ function startForestTurn(repoId, text, author, model, sessionId, pendingMessage,
 
   let root = null;
   try { root = rootForRepo(repoId); } catch { /* IA sans accès fichiers */ }
-  runForestTurn(repoId, forestSnapshot, history, text, author, model, pendingMessage.id, root, forestLinks, issues, "", sessionId, pagePreprompt, images).catch(() => {});
+  runForestTurn(repoId, forestSnapshot, history, text, author, model, pendingMessage.id, root, forestLinks, issues, "", sessionId, pagePreprompt, images, activePageId).catch(() => {});
 }
 
 // Enchaîne le prochain tour en file d'une forêt POUR UNE SESSION (NODE-343).
@@ -737,8 +738,10 @@ export function handleForestChat(res, repoId, body) {
   // NODE-340 : préprompt de la PAGE DE GRAPHE active (transmise par le front ; « Tout »
   // → pas de pageId → "") injecté hors UNTRUSTED. Résolu à l'envoi : les tours mis en
   // file (drain ultérieur) repartent sans préprompt de page (dégradation acceptable).
+  // NODE-349 : page active = page par défaut des racines créées par l'IA (add_node).
+  const activePageId = body.pageId != null ? Number(body.pageId) : null;
   let pagePreprompt = "";
-  try { pagePreprompt = resolvePagePreprompt(body.pageId != null ? Number(body.pageId) : null, repoId); } catch { /* best-effort */ }
+  try { pagePreprompt = resolvePagePreprompt(activePageId, repoId); } catch { /* best-effort */ }
 
   // Verrou PAR SESSION (NODE-343) : « occupé » se juge sur CETTE session de forêt.
   const busy = aiLocks.has(forestLockKey(repoId, sessionId));
@@ -756,7 +759,7 @@ export function handleForestChat(res, repoId, body) {
   if (busy) return send(res, 202, { userMessage, pendingMessage, queued: true });
 
   send(res, 202, { userMessage, pendingMessage });
-  startForestTurn(repoId, text || displayText, author, model, sessionId, pendingMessage, userMessage.id, pagePreprompt, images);
+  startForestTurn(repoId, text || displayText, author, model, sessionId, pendingMessage, userMessage.id, pagePreprompt, images, activePageId);
 }
 
 // POST /api/forest/chat/confirm { messageId } — confirme une proposition destructive

@@ -1173,7 +1173,7 @@ export function bumpAutoReviews(refOrId, repoId = null) {
 // Pendant de applyNodeActions, mais la garde est l'appartenance au repo (et non un
 // sous-arbre) : add_node sans parentId crée un OBJECTIF RACINE. Tout id cible doit
 // appartenir au repo ; cap global par repo. Reste fail-closed et transactionnel.
-export function applyForestActions(repoIdParam, actions = []) {
+export function applyForestActions(repoIdParam, actions = [], opts = {}) {
   if (repoIdParam == null) throw new Error("repoId requis");
   return withRepo(repoIdParam, () => {
   const repoId = resolveRepoId(repoIdParam);
@@ -1227,7 +1227,11 @@ export function applyForestActions(repoIdParam, actions = []) {
             let newId;
             let parentId = null;
             if (a.parentId == null) {
-              newId = _insertRoot(repoId, a); // objectif racine
+              // NODE-349 : une racine créée depuis le chat atterrit sur la PAGE ACTIVE
+              // (opts.pageId, transmise par le front) à défaut de pageId explicite —
+              // sinon elle tombait toujours sur la page par défaut. Sans muter l'original.
+              const ra = a.pageId == null && opts.pageId != null ? { ...a, pageId: opts.pageId } : a;
+              newId = _insertRoot(repoId, ra); // objectif racine
             } else {
               parentId = resolve(a.parentId);
               if (!inRepo(parentId)) {
