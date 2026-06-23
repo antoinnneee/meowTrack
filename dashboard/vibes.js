@@ -1006,31 +1006,41 @@ function computeHiddenNodes() {
 function onActivePage(n) {
   return vibes.graph.activePage == null || n.pageId === vibes.graph.activePage;
 }
-// Dessine la minimap : vue d'ensemble de tout le graphe avec le rectangle de viewport.
+// Dessine la minimap : vue d'ensemble du graphe avec le rectangle de viewport.
 function renderMinimap(pos, hiddenIds) {
   const mm = $("#graphMinimap");
-  if (!mm || !pos || !pos.size) return;
-  // Bounding box de tous les nœuds (visibles ET masqués, pour que la minimap reste stable).
+  if (!mm || !pos) return;
+  // NODE-348 : la minimap suit la PAGE ACTIVE comme le graphe principal — les nœuds
+  // hors page sont EXCLUS (pas seulement estompés), sinon basculer de page ne change
+  // rien de visible (la bbox de toute la forêt écrasait la page active). Les nœuds
+  // estompés par un filtre de STATUT restent dessinés → la minimap reste stable au
+  // sein d'une même page.
+  const onPage = (id) => { const n = vibes.byId.get(id); return !!n && onActivePage(n); };
+  // Bounding box des seuls nœuds de la page active.
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const p of pos.values()) {
+  for (const [id, p] of pos) {
+    if (!onPage(id)) continue;
     minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
     maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y);
   }
+  // Toujours repartir d'une minimap vide (sinon le contenu de la page précédente persiste,
+  // notamment quand la nouvelle page est vide → on retourne après nettoyage).
+  while (mm.firstChild) mm.removeChild(mm.firstChild);
   if (!isFinite(minX)) { mm.style.display = "none"; return; }
   mm.style.display = "";
   const pad = 60;
   mm.setAttribute("viewBox", `${minX - pad} ${minY - pad} ${maxX - minX + pad * 2} ${maxY - minY + pad * 2}`);
-  while (mm.firstChild) mm.removeChild(mm.firstChild);
-  // Arêtes hiérarchiques (lignes fines).
+  // Arêtes hiérarchiques (lignes fines) — uniquement entre nœuds de la page active.
   for (const n of vibes.forest) {
-    if (n.parentId == null) continue;
+    if (n.parentId == null || !onPage(n.id) || !onPage(n.parentId)) continue;
     const pp = pos.get(n.parentId), pc = pos.get(n.id);
     if (!pp || !pc) continue;
     const dim = hiddenIds && (hiddenIds.has(n.id) || hiddenIds.has(n.parentId));
     mm.appendChild(svgEl("line", { x1: pp.x, y1: pp.y, x2: pc.x, y2: pc.y, stroke: "rgba(255,255,255,.18)", "stroke-width": "6", opacity: dim ? "0.3" : "1" }));
   }
-  // Nœuds (petits disques colorés).
+  // Nœuds (petits disques colorés) — uniquement ceux de la page active.
   for (const n of vibes.forest) {
+    if (!onPage(n.id)) continue;
     const p = pos.get(n.id);
     if (!p) continue;
     const dim = hiddenIds && hiddenIds.has(n.id);
