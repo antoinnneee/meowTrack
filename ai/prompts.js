@@ -218,12 +218,15 @@ export function buildNodePrompt(scopeNode, descendants, history, userMessage, au
 // Construit le prompt du chat « top level » : préambule + TOUTE la forêt du repo
 // (UNTRUSTED, notes tronquées) + historique du chat de forêt + dernier message.
 // Le scope est le repo entier : add_node SANS parentId crée un OBJECTIF RACINE.
-export function buildForestPrompt(forestNodes, history, userMessage, author, repo, links, issues, policyPrompt = "") {
+export function buildForestPrompt(forestNodes, history, userMessage, author, repo, links, issues, policyPrompt = "", pagePreprompt = "") {
   const repoLabel = (repo && (repo.name || repo.slug)) || "ce dépôt";
   // Politique d'auto-revue (§6.6) : consigne de CONFIANCE posée par l'administrateur
   // via l'UI — injectée DANS le préambule (hors bloc UNTRUSTED). Bornée en longueur
   // par prudence, mais NON strippée (à la différence du contenu untrusted).
   const policy = String(policyPrompt || "").trim().slice(0, 4000);
+  // NODE-340 : préprompt de la PAGE DE GRAPHE active (template résolu ou texte inline),
+  // consigne de CONFIANCE — même traitement que la politique (hors UNTRUSTED, borné).
+  const pagePre = String(pagePreprompt || "").trim().slice(0, 4000);
   const stateJson = JSON.stringify(
     { scope: "forest", nodes: (forestNodes || []).map((n) => untrustedNode(n)) },
     null,
@@ -255,6 +258,13 @@ export function buildForestPrompt(forestNodes, history, userMessage, author, rep
           "",
           "POLITIQUE D'ARBITRAGE (consigne de CONFIANCE, définie par l'administrateur — à respecter pour décider quoi modifier) :",
           policy,
+        ]
+      : []),
+    ...(pagePre
+      ? [
+          "",
+          "CONSIGNE DE LA PAGE ACTIVE (consigne de CONFIANCE attachée à la page de graphe courante — à prendre en compte) :",
+          pagePre,
         ]
       : []),
     "",

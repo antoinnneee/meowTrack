@@ -2883,7 +2883,9 @@ async function submitChat(ctx, text, nonce) {
   vibes.stickToBottom = true; // envoyer un message réactive le suivi du bas
   appendMessage({ id: 0, role: "user", author: vibes.user, body: text, state: "complete", clientNonce: nonce, sessionId: ctx.sessionId });
   try {
-    await api.send("POST", ctx.url("/chat"), { author: vibes.user, model: vibes.model, body: text, clientNonce: nonce, session: ctx.sessionId });
+    // NODE-340 : transmet la page de graphe active (chat forêt) pour injecter son
+    // préprompt. Ignoré par le chat de nœud (le serveur ne le lit pas). null = « Tout ».
+    await api.send("POST", ctx.url("/chat"), { author: vibes.user, model: vibes.model, body: text, clientNonce: nonce, session: ctx.sessionId, pageId: ctx.kind === "forest" ? vibes.graph.activePage : null });
     ctx.busy = true; // tour démarré (confirmé ensuite par ai:turn 'start')
   } catch (e) {
     if (/ai_busy/.test(e.message)) {

@@ -170,6 +170,7 @@ export {
   updatePage,
   deletePage,
   setNodePage,
+  resolvePagePreprompt,
 } from "./db/pages.js";
 
 // ── Initialisation au chargement (bootstrap + migrations idempotentes) ────────

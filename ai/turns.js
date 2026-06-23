@@ -38,6 +38,7 @@ import {
   listQueuedForestSessions,
   failDanglingForestTurns,
   listRepos,
+  resolvePagePreprompt,
 } from "../db.js";
 import { MAX_AUTO_REVIEWS } from "../db/constants.js";
 import { send, readBody } from "../http-util.js";
@@ -520,7 +521,7 @@ function forestStructuralChange(applied) {
   return (applied || []).some((a) => a && (a.op === "delete_node" || a.op === "move_node" || a.op === "reorder_children"));
 }
 
-async function runForestTurn(repoId, forestSnapshot, history, userText, author, model, pendingId, root, links, issues, policyPrompt = "", sessionId = 0) {
+async function runForestTurn(repoId, forestSnapshot, history, userText, author, model, pendingId, root, links, issues, policyPrompt = "", sessionId = 0, pagePreprompt = "") {
   const lockKey = forestLockKey(repoId, sessionId); // verrou PAR SESSION (NODE-343)
   const room = forestKey(repoId);
   const batcher = makeStreamBatcher(room, pendingId);
@@ -582,7 +583,7 @@ async function runForestTurn(repoId, forestSnapshot, history, userText, author, 
     /* repo introuvable → libellé générique */
   }
   try {
-    const prompt = buildForestPrompt(forestSnapshot, history, userText, author, repo, links, issues, policyPrompt);
+    const prompt = buildForestPrompt(forestSnapshot, history, userText, author, repo, links, issues, policyPrompt, pagePreprompt);
     const result = await runClaudeStreaming(prompt, model, root, {
       onChild: (child) => { const l = aiLocks.get(lockKey); if (l) l.child = child; },
       onThinking: (d) => {
@@ -670,7 +671,7 @@ async function runForestTurn(repoId, forestSnapshot, history, userText, author, 
 // Démarre (ou enchaîne) un tour IA forêt : fige le snapshot, prend le verrou, diffuse
 // `start`, lance runForestTurn détaché. `pendingMessage` est le placeholder assistant
 // déjà persisté ; `triggerUserId` (le message humain) est exclu de l'historique.
-function startForestTurn(repoId, text, author, model, sessionId, pendingMessage, triggerUserId) {
+function startForestTurn(repoId, text, author, model, sessionId, pendingMessage, triggerUserId, pagePreprompt = "") {
   const forestSnapshot = listForest(repoId);
   let forestLinks = [];
   try { forestLinks = listForestLinks(repoId); } catch { /* pas de liens */ }
@@ -684,7 +685,7 @@ function startForestTurn(repoId, text, author, model, sessionId, pendingMessage,
 
   let root = null;
   try { root = rootForRepo(repoId); } catch { /* IA sans accès fichiers */ }
-  runForestTurn(repoId, forestSnapshot, history, text, author, model, pendingMessage.id, root, forestLinks, issues, "", sessionId).catch(() => {});
+  runForestTurn(repoId, forestSnapshot, history, text, author, model, pendingMessage.id, root, forestLinks, issues, "", sessionId, pagePreprompt).catch(() => {});
 }
 
 // Enchaîne le prochain tour en file d'une forêt POUR UNE SESSION (NODE-343).
@@ -720,6 +721,11 @@ export function handleForestChat(res, repoId, body) {
   const model = resolveModel(body.model);
   const sessionId = Number(body.session) || 0; // 0 = conversation par défaut
   const clientNonce = body.clientNonce ? String(body.clientNonce).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 80) || null : null;
+  // NODE-340 : préprompt de la PAGE DE GRAPHE active (transmise par le front ; « Tout »
+  // → pas de pageId → "") injecté hors UNTRUSTED. Résolu à l'envoi : les tours mis en
+  // file (drain ultérieur) repartent sans préprompt de page (dégradation acceptable).
+  let pagePreprompt = "";
+  try { pagePreprompt = resolvePagePreprompt(body.pageId != null ? Number(body.pageId) : null, repoId); } catch { /* best-effort */ }
 
   // Verrou PAR SESSION (NODE-343) : « occupé » se juge sur CETTE session de forêt.
   const busy = aiLocks.has(forestLockKey(repoId, sessionId));
@@ -735,7 +741,7 @@ export function handleForestChat(res, repoId, body) {
   if (busy) return send(res, 202, { userMessage, pendingMessage, queued: true });
 
   send(res, 202, { userMessage, pendingMessage });
-  startForestTurn(repoId, text, author, model, sessionId, pendingMessage, userMessage.id);
+  startForestTurn(repoId, text, author, model, sessionId, pendingMessage, userMessage.id, pagePreprompt);
 }
 
 // POST /api/forest/chat/confirm { messageId } — confirme une proposition destructive

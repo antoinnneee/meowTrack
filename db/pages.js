@@ -123,6 +123,23 @@ export function setNodePage(nodeId, pageId, repoId = null) {
   });
 }
 
+// NODE-340 : résout le PRÉPROMPT effectif d'une page (consigne injectée dans le chat
+// forêt). Précédence : texte `preprompt` inline (override) ; sinon le corps du template
+// assigné (`template_id` → chat_templates.body) ; sinon "". pageId null/absent → "".
+export function resolvePagePreprompt(pageId, repoId = null) {
+  if (pageId == null) return "";
+  return withRepo(repoId, () => {
+    const p = db.prepare("SELECT preprompt, template_id FROM graph_pages WHERE id = ?").get(Number(pageId));
+    if (!p) return "";
+    if (p.preprompt && p.preprompt.trim()) return p.preprompt;
+    if (p.template_id != null) {
+      const t = db.prepare("SELECT body FROM chat_templates WHERE id = ?").get(p.template_id);
+      if (t && t.body) return t.body;
+    }
+    return "";
+  });
+}
+
 // Variante non-withRepo pour usage interne (déjà dans une portée withRepo).
 function ensureDefaultPageInline() {
   let r = db.prepare("SELECT id FROM graph_pages WHERE is_default = 1 ORDER BY id LIMIT 1").get();
