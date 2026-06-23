@@ -139,12 +139,15 @@ export function updateNodeMessage(messageId, { body, reasoning, state, actions }
 // L'ordre par id garantit le FIFO d'arrivée multi-clients ; la persistance fait
 // survivre la file à un reload.
 
-// Plus ancien tour en file d'un nœud (toutes sessions) : { assistant, user } ou null.
-export function nextQueuedNodeTurn(nodeId, repoId = null) {
+// Plus ancien tour en file d'un nœud, DANS UNE SESSION donnée (NODE-343 : la file
+// ne joue qu'au sein d'une même session — deux sessions tournent en parallèle) :
+// { assistant, user } ou null. sessionId 0/null = conversation par défaut.
+export function nextQueuedNodeTurn(nodeId, repoId = null, sessionId = 0) {
   return withRepo(repoId, () => {
-    const a = db
-      .prepare("SELECT * FROM node_messages WHERE node_id = ? AND role = 'assistant' AND state = 'queued' ORDER BY id LIMIT 1")
-      .get(nodeId);
+    const sid = normSession(sessionId);
+    const a = sid == null
+      ? db.prepare("SELECT * FROM node_messages WHERE node_id = ? AND role = 'assistant' AND state = 'queued' AND session_id IS NULL ORDER BY id LIMIT 1").get(nodeId)
+      : db.prepare("SELECT * FROM node_messages WHERE node_id = ? AND role = 'assistant' AND state = 'queued' AND session_id = ? ORDER BY id LIMIT 1").get(nodeId, sid);
     if (!a) return null;
     const u = a.session_id == null
       ? db.prepare("SELECT * FROM node_messages WHERE node_id = ? AND role = 'user' AND session_id IS NULL AND id < ? ORDER BY id DESC LIMIT 1").get(nodeId, a.id)
@@ -160,6 +163,16 @@ export function listQueuedNodeIds(repoId = null) {
       .prepare("SELECT DISTINCT node_id FROM node_messages WHERE role = 'assistant' AND state = 'queued' ORDER BY node_id")
       .all()
       .map((r) => r.node_id)
+  );
+}
+
+// Paires (nœud, session) ayant un tour en file — reprise au boot PAR SESSION (NODE-343).
+export function listQueuedNodeTurns(repoId = null) {
+  return withRepo(repoId, () =>
+    db
+      .prepare("SELECT DISTINCT node_id, session_id FROM node_messages WHERE role = 'assistant' AND state = 'queued' ORDER BY node_id, id")
+      .all()
+      .map((r) => ({ nodeId: r.node_id, sessionId: r.session_id || 0 }))
   );
 }
 
@@ -289,14 +302,16 @@ export function updateForestMessage(messageId, { body, reasoning, state, actions
 }
 
 // ── File persistée des tours IA — versant forêt (Option B, NODE-329) ─────────
-// Plus ancien tour en file d'une forêt (toutes sessions) : { assistant, user } ou null.
-export function nextQueuedForestTurn(repoId) {
+// Plus ancien tour en file d'une forêt, DANS UNE SESSION donnée (NODE-343) :
+// { assistant, user } ou null. sessionId 0/null = conversation par défaut.
+export function nextQueuedForestTurn(repoId, sessionId = 0) {
   if (repoId == null) throw new Error("repoId requis");
   return withRepo(repoId, () => {
     const rid = resolveRepoId(repoId);
-    const a = db
-      .prepare("SELECT * FROM forest_messages WHERE repo_id = ? AND role = 'assistant' AND state = 'queued' ORDER BY id LIMIT 1")
-      .get(rid);
+    const sid = normSession(sessionId);
+    const a = sid == null
+      ? db.prepare("SELECT * FROM forest_messages WHERE repo_id = ? AND role = 'assistant' AND state = 'queued' AND session_id IS NULL ORDER BY id LIMIT 1").get(rid)
+      : db.prepare("SELECT * FROM forest_messages WHERE repo_id = ? AND role = 'assistant' AND state = 'queued' AND session_id = ? ORDER BY id LIMIT 1").get(rid, sid);
     if (!a) return null;
     const u = a.session_id == null
       ? db.prepare("SELECT * FROM forest_messages WHERE repo_id = ? AND role = 'user' AND session_id IS NULL AND id < ? ORDER BY id DESC LIMIT 1").get(rid, a.id)
@@ -311,6 +326,18 @@ export function hasQueuedForestTurn(repoId) {
   return withRepo(repoId, () => {
     const rid = resolveRepoId(repoId);
     return !!db.prepare("SELECT 1 FROM forest_messages WHERE repo_id = ? AND role = 'assistant' AND state = 'queued' LIMIT 1").get(rid);
+  });
+}
+
+// Sessions de forêt (du repo) ayant un tour en file — reprise au boot PAR SESSION (NODE-343).
+export function listQueuedForestSessions(repoId) {
+  if (repoId == null) throw new Error("repoId requis");
+  return withRepo(repoId, () => {
+    const rid = resolveRepoId(repoId);
+    return db
+      .prepare("SELECT DISTINCT session_id FROM forest_messages WHERE repo_id = ? AND role = 'assistant' AND state = 'queued'")
+      .all(rid)
+      .map((r) => r.session_id || 0);
   });
 }
 

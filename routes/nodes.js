@@ -142,9 +142,10 @@ export async function handle(ctx) {
     handleForestChatConfirm(req, res, repoOf(q, body), body);
     return true;
   }
-  // POST /api/forest/chat/stop?repo= — interrompt le tour IA forêt en cours.
+  // POST /api/forest/chat/stop?repo= — interrompt le tour IA forêt EN COURS de la session.
   if (method === "POST" && path === "/api/forest/chat/stop") {
-    const stopped = stopForestTurn(repoOf(q));
+    const sBody = await readBody(req); // session PAR SESSION (NODE-343)
+    const stopped = stopForestTurn(repoOf(q), Number(sBody.session) || 0);
     send(res, 200, { ok: true, stopped });
     return true;
   }
@@ -409,7 +410,9 @@ export async function handle(ctx) {
       return true;
     }
     if (sub === "/chat/stop" && method === "POST") {
-      const stopped = stopNodeTurn(node.id);
+      // Stop PAR SESSION (NODE-343) : la session vient du body (défaut 0 = conversation par défaut).
+      const sBody = await readBody(req);
+      const stopped = stopNodeTurn(node.id, Number(sBody.session) || 0);
       send(res, 200, { ok: true, stopped });
       return true;
     }

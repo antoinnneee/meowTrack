@@ -3018,7 +3018,8 @@ async function stopChat() {
   if (!ctx.ready()) return;
   const stop = $(ctx.stopSel);
   if (stop) stop.disabled = true;
-  try { await api.send("POST", ctx.url("/chat/stop"), {}); }
+  // Stop PAR SESSION (NODE-343) : cible le tour de la session active uniquement.
+  try { await api.send("POST", ctx.url("/chat/stop"), { session: ctx.sessionId }); }
   catch (e) { toast("Échec : " + e.message); }
   finally { if (stop) stop.disabled = false; }
 }

@@ -65,13 +65,17 @@ try {
   check("FIFO : a2 devient la tête après complétion de a1", turn && turn.assistant.id === a2.id);
   check("FIFO : u2 est le user de a2 (pas u1)", turn && turn.user.id === u2.id && turn.user.body === "second");
 
-  // ── 4) Scope par session ───────────────────────────────────────────────────
+  // ── 4) Scope par session (NODE-343 : la file est PAR SESSION) ──────────────
   const uS = addNodeMessage(node.id, { role: "user", author: "carl", body: "en session 7", state: "complete", sessionId: 7 }, rid);
   const aS = addNodeMessage(node.id, { role: "assistant", author: "claude", model: "haiku", body: "", state: "queued", sessionId: 7 }, rid);
-  // a2 (session 0) reste la tête globale par id ; on vérifie l'appariement de aS via session.
+  // La file de la session 7 est indépendante de la session 0 (toujours en file avec a2).
+  turn = nextQueuedNodeTurn(node.id, rid, 7);
+  check("session 7 : aS apparié au user de SA session (uS)", turn && turn.assistant.id === aS.id && turn.user.id === uS.id);
+  // La session 0 ignore le tour de la session 7 : sa tête reste a2.
+  check("session 0 ignore la file de la session 7", nextQueuedNodeTurn(node.id, rid, 0).assistant.id === a2.id);
+  // Vide la session 0 → sa file devient nulle SANS toucher la session 7.
   updateNodeMessage(a2.id, { state: "complete" }, rid);
-  turn = nextQueuedNodeTurn(node.id, rid);
-  check("session : aS apparié au user de SA session (uS)", turn && turn.assistant.id === aS.id && turn.user.id === uS.id);
+  check("session 0 vidée → null (session 7 intacte)", nextQueuedNodeTurn(node.id, rid, 0) === null && nextQueuedNodeTurn(node.id, rid, 7).assistant.id === aS.id);
 
   // ── 5) listQueuedNodeIds (reprise boot) ────────────────────────────────────
   check("listQueuedNodeIds repère le nœud en file", listQueuedNodeIds(rid).includes(node.id));
