@@ -142,11 +142,95 @@ async function onReviewAction(e) {
   }
 }
 
+// ── Templates de préprompt (NODE-339) : CRUD nommé, réutilisable ─────────────
+let _templates = [];
+let _tplSel = null; // id du template en cours d'édition (null = création)
+
+function renderTemplates() {
+  const list = $("#tplList");
+  if (!list) return;
+  if (!_templates.length) {
+    list.innerHTML = '<li class="orch-empty">Aucun template. « ＋ Nouveau » pour en créer.</li>';
+    return;
+  }
+  list.innerHTML = _templates
+    .map((t) => `<li class="tpl-item${t.id === _tplSel ? " active" : ""}" data-id="${t.id}">${esc(t.name)}</li>`)
+    .join("");
+}
+
+function selectTemplate(id) {
+  const t = _templates.find((x) => x.id === id) || null;
+  _tplSel = t ? t.id : null;
+  $("#tplName").value = t ? t.name : "";
+  $("#tplBody").value = t ? t.body : "";
+  $("#tplDelete").hidden = !t;
+  $("#tplMsg").textContent = "";
+  renderTemplates();
+}
+
+async function loadTemplates() {
+  const list = $("#tplList");
+  if (!list) return;
+  try {
+    const { templates } = await api.get("/api/templates");
+    _templates = Array.isArray(templates) ? templates : [];
+    // Conserve la sélection si elle existe encore, sinon repart en mode création.
+    if (!_templates.some((t) => t.id === _tplSel)) selectTemplate(null);
+    else renderTemplates();
+  } catch (e) {
+    list.innerHTML = `<li class="orch-empty">Erreur : ${esc(e.message)}</li>`;
+  }
+}
+
+async function saveTemplate() {
+  const msg = $("#tplMsg");
+  const name = $("#tplName").value;
+  const body = $("#tplBody").value;
+  msg.textContent = "…";
+  try {
+    const t = _tplSel
+      ? await api.send("PATCH", `/api/templates/${_tplSel}`, { name, body })
+      : await api.send("POST", "/api/templates", { name, body });
+    _tplSel = t.id;
+    await loadTemplates();
+    selectTemplate(t.id);
+    msg.textContent = "✅ enregistré";
+    setTimeout(() => (msg.textContent = ""), 2000);
+  } catch (e) {
+    msg.textContent = "Erreur : " + e.message;
+  }
+}
+
+async function deleteTemplate() {
+  if (!_tplSel) return;
+  if (!confirm("Supprimer ce template de préprompt ?")) return;
+  try {
+    await api.send("DELETE", `/api/templates/${_tplSel}`);
+    _tplSel = null;
+    await loadTemplates();
+    selectTemplate(null);
+  } catch (e) {
+    $("#tplMsg").textContent = "Erreur : " + e.message;
+  }
+}
+
+function initTemplates() {
+  const list = $("#tplList");
+  if (list) list.addEventListener("click", (e) => {
+    const li = e.target.closest(".tpl-item");
+    if (li) selectTemplate(Number(li.dataset.id));
+  });
+  $("#tplNew")?.addEventListener("click", () => selectTemplate(null));
+  $("#tplSave")?.addEventListener("click", saveTemplate);
+  $("#tplDelete")?.addEventListener("click", deleteTemplate);
+}
+
 export function initOrchestrator() {
   // Affichage à l'entrée dans l'onglet (événement émis par switchView).
   document.addEventListener("meow:view", (e) => {
-    if (e.detail === "orch") { loadConfig(); loadReviews(); }
+    if (e.detail === "orch") { loadConfig(); loadReviews(); loadTemplates(); }
   });
+  initTemplates();
   const save = $("#orchCfgSave");
   const saveRepo = $("#orchCfgSaveRepo");
   const refresh = $("#orchRevRefresh");

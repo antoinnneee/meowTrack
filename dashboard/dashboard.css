@@ -1181,6 +1181,17 @@ button.xs { padding: 3px 8px; font-size: 11px; }
 .orch-msg { color: var(--text-dim); font-size: 0.85em; }
 .orch-review-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; max-height: 70vh; overflow: auto; }
 .orch-empty { color: var(--text-dim); font-size: 0.85em; padding: 8px; }
+
+/* NODE-339 : éditeur de templates de préprompt (liste + formulaire). */
+.orch-card h3 #tplNew { margin-left: auto; font-size: 0.82em; }
+.tpl-editor { display: flex; flex-direction: column; gap: 12px; }
+.tpl-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 180px; overflow: auto; }
+.tpl-item { padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); cursor: pointer; font-size: 0.9em; }
+.tpl-item:hover { border-color: var(--accent); }
+.tpl-item.active { border-color: var(--accent); background: var(--surface-2); }
+.tpl-form { display: flex; flex-direction: column; gap: 8px; }
+.tpl-form input, .tpl-form textarea { width: 100%; box-sizing: border-box; }
+.tpl-form textarea { resize: vertical; font-family: ui-monospace, monospace; font-size: 12.5px; }
 .orch-review { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: var(--bg); }
 .orch-review.state-resolved { opacity: 0.6; }
 .orch-review.state-dismissed { opacity: 0.5; }

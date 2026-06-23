@@ -150,6 +150,15 @@ export {
   deleteChatSession,
 } from "./db/messages.js";
 
+// ── Templates de préprompt (NODE-339) ────────────────────────────────────────
+export {
+  listTemplates,
+  getTemplate,
+  createTemplate,
+  updateTemplate,
+  deleteTemplate,
+} from "./db/templates.js";
+
 // ── Initialisation au chargement (bootstrap + migrations idempotentes) ────────
 // Exécutée APRÈS l'évaluation de tous les modules ci-dessus (registre + schéma
 // prêts) : préserve l'effet de bord historique « importer db.js initialise la base ».

@@ -458,6 +458,25 @@
             </div>
           </div>
 
+          <!-- Templates de préprompt customisables (NODE-339) -->
+          <div class="orch-card">
+            <h3>📝 Templates de préprompt
+              <button id="tplNew" class="ghost" title="Nouveau template">＋ Nouveau</button>
+            </h3>
+            <div class="tpl-editor">
+              <ul id="tplList" class="tpl-list"><li class="orch-empty">—</li></ul>
+              <div class="tpl-form">
+                <input type="text" id="tplName" placeholder="Nom du template" autocomplete="off" />
+                <textarea id="tplBody" rows="7" placeholder="Corps du préprompt…"></textarea>
+                <div class="orch-actions">
+                  <button id="tplSave" class="primary">Enregistrer</button>
+                  <button id="tplDelete" class="ghost" hidden>Supprimer</button>
+                  <span id="tplMsg" class="orch-msg"></span>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <!-- File des points de revue -->
           <div class="orch-card">
             <h3>Points de revue

@@ -38,6 +38,7 @@ import { handle as githubRoutes } from "./routes/github.js";
 import { handle as issuesRoutes } from "./routes/issues.js";
 import { handle as nodesRoutes } from "./routes/nodes.js";
 import { handle as settingsRoutes } from "./routes/settings.js";
+import { handle as templatesRoutes } from "./routes/templates.js";
 import { resumeQueuedTurns } from "./ai/turns.js";
 
 // Exporté pour les tests isolés (cf. test/parse_ai_turn.test.mjs, ghost_payload.test.mjs).
@@ -81,6 +82,7 @@ const server = createServer(async (req, res) => {
     if (await issuesRoutes(ctx)) return;
     if (await nodesRoutes(ctx)) return;
     if (await settingsRoutes(ctx)) return;
+    if (await templatesRoutes(ctx)) return;
 
     send(res, 404, { error: "not_found", path });
   } catch (e) {

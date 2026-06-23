@@ -266,6 +266,18 @@ export const TRACKING_SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS idx_chat_sessions_owner ON chat_sessions(scope, owner_id, id);
 
+  -- Templates de préprompt nommés et réutilisables (NODE-339) : du texte de consigne
+  -- customisable, créé/édité/supprimé librement, assignable à une « page » (autre nœud).
+  -- Indépendant du modèle de page ; per-dépôt (une base tracker par dépôt).
+  CREATE TABLE IF NOT EXISTS chat_templates (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL,
+    body       TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_chat_templates_name ON chat_templates(name, id);
+
   -- ── Orchestrateur : historique d'exécution d'un nœud (un run = un passage agent).
   CREATE TABLE IF NOT EXISTS node_runs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
