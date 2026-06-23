@@ -110,11 +110,6 @@
       <div class="chat-head">
         <button id="forestChatToggle" class="ghost forest-chat-toggle" title="Réduire / agrandir la discussion">💬 Discuter des objectifs</button>
         <div class="chat-head-actions">
-          <select id="forestModelSel" class="model-select" title="Modèle Claude">
-            <option value="sonnet">Sonnet</option>
-            <option value="opus">Opus</option>
-            <option value="haiku">Haiku</option>
-          </select>
           <button id="forestChatExpandBtn" class="ghost forest-chat-expand" title="Mettre la discussion en plein écran" aria-pressed="false">⛶</button>
           <button id="forestChatPinBtn" class="ghost forest-chat-pin" title="Épingler le chat sur toute la colonne de droite" aria-pressed="false">📌</button>
           <button id="forestChatClearBtn" class="ghost" title="Vider l'historique de la discussion">🗑</button>
@@ -132,8 +127,15 @@
           <textarea id="forestChatInput" rows="2" placeholder="Décris une ambition… @ pour citer un fichier, # pour citer un nœud · Entrée pour envoyer"></textarea>
           <ul id="forestChatMentionMenu" class="mention-menu up" hidden></ul>
         </div>
-        <button id="forestChatStopBtn" class="ghost chat-stop" title="Interrompre la réponse en cours" hidden>⏹️ Stop</button>
-        <button id="forestChatSend" class="primary">Envoyer</button>
+        <div class="chat-send-col">
+          <select id="forestModelSel" class="model-select" title="Modèle Claude">
+            <option value="sonnet">Sonnet</option>
+            <option value="opus">Opus</option>
+            <option value="haiku">Haiku</option>
+          </select>
+          <button id="forestChatStopBtn" class="ghost chat-stop" title="Interrompre la réponse en cours" hidden>⏹️ Stop</button>
+          <button id="forestChatSend" class="primary">Envoyer</button>
+        </div>
       </div>
     </aside>
 
