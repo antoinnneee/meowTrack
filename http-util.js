@@ -30,13 +30,18 @@ export function send(res, status, body, headers = {}) {
   res.end(data);
 }
 
-export function readBody(req) {
+// Plafond de corps pour les routes de chat IA (NODE-350) : un message peut porter
+// jusqu'à 4 images ≤ 5 Mo (20 Mo bruts → ~27 Mo une fois en base64 dans le JSON).
+// On laisse une marge → 30 Mo. Les autres routes gardent le plafond serré par défaut.
+export const CHAT_MAX_BODY = 30_000_000;
+
+export function readBody(req, maxBytes = 1_000_000) {
   return new Promise((resolve, reject) => {
     let raw = "";
     let size = 0;
     req.on("data", (c) => {
       size += c.length;
-      if (size > 1_000_000) {
+      if (size > maxBytes) {
         reject(new Error("Payload trop volumineux"));
         req.destroy();
         return;

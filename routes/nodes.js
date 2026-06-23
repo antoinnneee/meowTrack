@@ -2,7 +2,7 @@
 // chat « top level » (forêt) et flux SSE temps réel. L'ordre des routes est
 // SIGNIFIANT : /stream et /positions passent AVANT les routes paramétrées /:ref.
 
-import { send, readBody, repoOf } from "../http-util.js";
+import { send, readBody, repoOf, CHAT_MAX_BODY } from "../http-util.js";
 import {
   listForestMessages,
   clearForestMessages,
@@ -132,7 +132,7 @@ export async function handle(ctx) {
   }
   // POST /api/forest/chat?repo= — un message → tour IA streaming (objectifs racines…).
   if (method === "POST" && path === "/api/forest/chat") {
-    const body = await readBody(req);
+    const body = await readBody(req, CHAT_MAX_BODY); // NODE-350 : corps élargi (images base64)
     handleForestChat(res, repoOf(q, body), body);
     return true;
   }

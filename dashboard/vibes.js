@@ -88,12 +88,16 @@ const NODE_CHAT_CTX = {
   sessionSel: "#nodeSessionSel",
   renameSel: "#nodeSessionRename",
   delSel: "#nodeSessionDel",
+  imageBtnSel: "#chatImageBtn", // NODE-350 : trombone + input file + bande d'aperçu
+  imageInputSel: "#chatImageInput",
+  imagePreviewSel: "#chatImagePreview",
   sessionId: 0, // 0 = conversation par défaut (session_id NULL)
   emptyHtml: '<div class="empty">Discute de ce nœud : décris-le, demande des sous-jalons…</div>',
   url: (sub) => `/api/nodes/${encodeURIComponent(vibes.current)}${sub || ""}`,
   ready: () => !!vibes.current,
   queue: [], // NODE-327 : messages empilés pendant un tour IA (envoyés à sa fin)
   busy: false, // un tour IA est en cours pour ce contexte (verrou serveur ai_busy)
+  images: [], // NODE-350 : images en attente d'envoi [{mimeType, data, name}]
 };
 const FOREST_CHAT_CTX = {
   kind: "forest",
@@ -103,12 +107,16 @@ const FOREST_CHAT_CTX = {
   sessionSel: "#forestSessionSel",
   renameSel: "#forestSessionRename",
   delSel: "#forestSessionDel",
+  imageBtnSel: "#forestChatImageBtn",
+  imageInputSel: "#forestChatImageInput",
+  imagePreviewSel: "#forestChatImagePreview",
   sessionId: 0,
   emptyHtml: '<div class="empty">Discute de tes objectifs au plus haut niveau : décris une ambition, demande à créer des objectifs racines…</div>',
   url: (sub) => `/api/forest${sub || ""}`,
   ready: () => true,
   queue: [], // NODE-327 : messages empilés pendant un tour IA (envoyés à sa fin)
   busy: false,
+  images: [], // NODE-350
 };
 vibes.chat = NODE_CHAT_CTX;
 function chatFeedEl() {
@@ -2857,41 +2865,125 @@ function autoGrowChat(ta) {
   ta.style.height = "auto";
   ta.style.height = ta.scrollHeight + "px";
 }
+// ── Images jointes au chat IA (NODE-350) ─────────────────────────────────────
+// Staging côté front : trombone/coller → lecture base64 → aperçu cliquable → POST
+// { images:[{mimeType,data}] }. Le serveur revalide (allowlist + magic bytes + taille).
+const CHAT_IMG_MIME = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+const CHAT_IMG_MAX_BYTES = 5 * 1024 * 1024; // 5 Mo / image
+const CHAT_IMG_MAX = 4;
+
+// Lit un File en base64 nu (sans préfixe data URL). Résout null si illisible.
+function fileToBase64(file) {
+  return new Promise((resolve) => {
+    const r = new FileReader();
+    r.onload = () => {
+      const s = String(r.result || "");
+      const comma = s.indexOf(",");
+      resolve(comma >= 0 ? s.slice(comma + 1) : "");
+    };
+    r.onerror = () => resolve(null);
+    r.readAsDataURL(file);
+  });
+}
+// Ajoute des fichiers image au staging d'un contexte (type/taille/nombre validés),
+// puis rafraîchit l'aperçu. Feedback toast immédiat sur rejet. Le serveur tranche.
+async function addStagedImages(ctx, files) {
+  for (const file of Array.from(files || [])) {
+    if (!CHAT_IMG_MIME.includes(file.type)) { toast(`Type non supporté : ${file.type || file.name}`); continue; }
+    if (file.size > CHAT_IMG_MAX_BYTES) { toast(`Image trop lourde (max 5 Mo) : ${file.name}`); continue; }
+    if (ctx.images.length >= CHAT_IMG_MAX) { toast(`Max ${CHAT_IMG_MAX} images par message.`); break; }
+    const data = await fileToBase64(file);
+    if (!data) { toast(`Lecture impossible : ${file.name}`); continue; }
+    ctx.images.push({ mimeType: file.type, data, name: file.name || "image" });
+  }
+  renderImagePreview(ctx);
+}
+// (Re)construit la bande d'aperçu (miniatures + bouton ×) via le DOM (anti-XSS).
+function renderImagePreview(ctx) {
+  const box = $(ctx.imagePreviewSel);
+  if (!box) return;
+  box.textContent = "";
+  if (!ctx.images.length) { box.hidden = true; return; }
+  box.hidden = false;
+  ctx.images.forEach((im, i) => {
+    const cell = document.createElement("span");
+    cell.className = "chat-img-thumb";
+    const img = document.createElement("img");
+    img.src = `data:${im.mimeType};base64,${im.data}`;
+    img.alt = im.name;
+    img.title = im.name;
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "chat-img-del";
+    del.title = "Retirer cette image";
+    del.textContent = "×";
+    del.addEventListener("click", () => { ctx.images.splice(i, 1); renderImagePreview(ctx); });
+    cell.append(img, del);
+    box.appendChild(cell);
+  });
+}
+// Câble trombone + input file + collage (Ctrl+V) d'un contexte de chat (au boot).
+function setupChatImages(ctx) {
+  const btn = $(ctx.imageBtnSel);
+  const input = $(ctx.imageInputSel);
+  const ta = $(ctx.inputSel);
+  if (btn && input) {
+    btn.addEventListener("click", () => input.click());
+    input.addEventListener("change", () => { addStagedImages(ctx, input.files); input.value = ""; });
+  }
+  if (ta) {
+    ta.addEventListener("paste", (e) => {
+      const files = [...((e.clipboardData && e.clipboardData.files) || [])].filter((f) => CHAT_IMG_MIME.includes(f.type));
+      if (files.length) { e.preventDefault(); addStagedImages(ctx, files); }
+    });
+  }
+}
+// Libellé d'une bulle utilisateur (texte, ou marqueur si seules des images sont jointes).
+function chatBubbleText(text, images) {
+  if (text) return text;
+  const n = (images || []).length;
+  return n ? `🖼️ ${n} image${n > 1 ? "s" : ""}` : "";
+}
+
 async function sendChat() {
   const ctx = vibes.chat;
   const ta = $(ctx.inputSel);
   if (!ta) return;
   const text = ta.value.trim();
-  if (!text || !ctx.ready()) return;
+  const images = ctx.images.slice(); // NODE-350 : capture + vide le staging à l'envoi
+  if ((!text && !images.length) || !ctx.ready()) return;
   const nonce = crypto.randomUUID ? crypto.randomUUID() : "n" + Date.now() + Math.floor(Math.random() * 1e6);
   ta.value = "";
+  ctx.images = [];
+  renderImagePreview(ctx);
   autoGrowChat(ta);
   // NODE-327 : si un tour IA est déjà en cours pour ce contexte, on EMPILE plutôt
   // que de refuser — le message part automatiquement à la fin du tour courant.
-  if (ctx.busy) { enqueueChat(ctx, text, nonce); return; }
-  submitChat(ctx, text, nonce);
+  if (ctx.busy) { enqueueChat(ctx, text, nonce, images); return; }
+  submitChat(ctx, text, nonce, images);
 }
 // Empile un message « en file » (bulle ⏳ cliquable pour annuler) pour ce contexte.
-function enqueueChat(ctx, text, nonce) {
-  ctx.queue.push({ text, nonce, sessionId: ctx.sessionId });
+function enqueueChat(ctx, text, nonce, images = []) {
+  ctx.queue.push({ text, nonce, sessionId: ctx.sessionId, images });
   vibes.stickToBottom = true;
-  appendMessage({ id: 0, role: "user", author: vibes.user, body: text, state: "queued", clientNonce: nonce, sessionId: ctx.sessionId });
+  appendMessage({ id: 0, role: "user", author: vibes.user, body: chatBubbleText(text, images), state: "queued", clientNonce: nonce, sessionId: ctx.sessionId });
 }
 // Envoie réellement un message (bulle utilisateur + POST). Sur course `ai_busy`
 // (un tour a démarré entre-temps) → bascule en file au lieu de perdre le message.
-async function submitChat(ctx, text, nonce) {
+async function submitChat(ctx, text, nonce, images = []) {
   vibes.stickToBottom = true; // envoyer un message réactive le suivi du bas
-  appendMessage({ id: 0, role: "user", author: vibes.user, body: text, state: "complete", clientNonce: nonce, sessionId: ctx.sessionId });
+  appendMessage({ id: 0, role: "user", author: vibes.user, body: chatBubbleText(text, images), state: "complete", clientNonce: nonce, sessionId: ctx.sessionId });
   try {
     // NODE-340 : transmet la page de graphe active (chat forêt) pour injecter son
     // préprompt. Ignoré par le chat de nœud (le serveur ne le lit pas). null = « Tout ».
-    await api.send("POST", ctx.url("/chat"), { author: vibes.user, model: vibes.model, body: text, clientNonce: nonce, session: ctx.sessionId, pageId: ctx.kind === "forest" ? vibes.graph.activePage : null });
+    // NODE-350 : images base64 jointes (le serveur revalide et tranche).
+    await api.send("POST", ctx.url("/chat"), { author: vibes.user, model: vibes.model, body: text, clientNonce: nonce, session: ctx.sessionId, pageId: ctx.kind === "forest" ? vibes.graph.activePage : null, images });
     ctx.busy = true; // tour démarré (confirmé ensuite par ai:turn 'start')
   } catch (e) {
     if (/ai_busy/.test(e.message)) {
       ctx.busy = true;
       chatFeedEl()?.querySelector(`[data-nonce="${cssId(nonce)}"]`)?.remove();
-      enqueueChat(ctx, text, nonce);
+      enqueueChat(ctx, text, nonce, images);
       return;
     }
     if (/ai_overloaded/.test(e.message)) toast("Trop de discussions IA en cours, réessaie dans un instant.");
@@ -2899,6 +2991,7 @@ async function submitChat(ctx, text, nonce) {
     chatFeedEl()?.querySelector(`[data-nonce="${cssId(nonce)}"]`)?.remove();
     const ta = $(ctx.inputSel);
     if (ta) { ta.value = text; autoGrowChat(ta); }
+    if (images.length) { ctx.images = images.slice(); renderImagePreview(ctx); } // restaure le staging
   }
 }
 // Dépile le 1er message en attente d'un contexte (appelé à la fin d'un tour).
@@ -2908,7 +3001,7 @@ function drainQueue(ctx) {
   if (ctx.busy || !ctx.queue.length) return;
   const item = ctx.queue.shift();
   chatFeedEl()?.querySelector(`[data-nonce="${cssId(item.nonce)}"]`)?.remove(); // la bulle ⏳ devient un envoi normal
-  submitChat(ctx, item.text, item.nonce);
+  submitChat(ctx, item.text, item.nonce, item.images || []);
 }
 // Annule un message en file (clic sur la bulle ⏳) : le retire de la file + du DOM.
 function cancelQueued(nonce) {
@@ -3336,6 +3429,7 @@ export function initVibes() {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
   });
   $("#modelSel").addEventListener("change", (e) => (vibes.model = e.target.value));
+  setupChatImages(NODE_CHAT_CTX); // NODE-350 : trombone + collage d'images (chat nœud)
   // Chat « top level » (vue objectifs) — même rendu/flux, contexte forêt.
   $("#forestChatSend").addEventListener("click", sendChat);
   $("#forestChatClearBtn").addEventListener("click", clearChatHistory);
@@ -3360,6 +3454,7 @@ export function initVibes() {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
   });
   $("#forestModelSel").addEventListener("change", (e) => (vibes.model = e.target.value));
+  setupChatImages(FOREST_CHAT_CTX); // NODE-350 : trombone + collage d'images (chat forêt)
   const closeNodeModal = () => { $("#nodeBackdrop").hidden = true; vibes.graph.pendingCreatePos = null; };
   $("#nodeCancelBtn").addEventListener("click", closeNodeModal);
   $("#nodeSaveBtn").addEventListener("click", saveNode);

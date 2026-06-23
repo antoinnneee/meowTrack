@@ -480,7 +480,20 @@ body:not(.view-repo) .repo-only { display: none; }
 /* Colonne d'envoi : sélecteur de modèle empilé AU-DESSUS du bouton Envoyer. */
 .chat-send-col { display: flex; flex-direction: column; gap: 6px; flex: 0 0 auto; }
 .chat-send-col .model-select { width: 100%; max-width: none; }
-.chat-send-col .primary, .chat-send-col .chat-stop { width: 100%; }
+.chat-send-col .primary, .chat-send-col .chat-stop, .chat-send-col .chat-img-btn { width: 100%; }
+
+/* Images jointes (NODE-350) : bouton trombone + bande de miniatures sous le textarea. */
+.chat-img-btn { font-size: 16px; line-height: 1; }
+.chat-img-preview { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.chat-img-preview[hidden] { display: none; }
+.chat-img-thumb { position: relative; display: inline-flex; }
+.chat-img-thumb img { width: 56px; height: 56px; object-fit: cover; border-radius: 6px; border: 1px solid var(--border); display: block; }
+.chat-img-del {
+  position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; padding: 0; line-height: 16px;
+  border-radius: 50%; border: 1px solid var(--border); background: var(--bg, #222); color: var(--fg, #fff);
+  font-size: 13px; cursor: pointer; display: flex; align-items: center; justify-content: center;
+}
+.chat-img-del:hover { background: var(--danger, #c0392b); color: #fff; }
 
 /* Chat « top level » : dock flottant en bas à droite de la vue objectifs. */
 .forest-chat {

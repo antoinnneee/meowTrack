@@ -41,7 +41,7 @@ import {
   resolvePagePreprompt,
 } from "../db.js";
 import { MAX_AUTO_REVIEWS } from "../db/constants.js";
-import { send, readBody } from "../http-util.js";
+import { send, readBody, CHAT_MAX_BODY } from "../http-util.js";
 import {
   forestKey,
   nodeKey,
@@ -52,7 +52,7 @@ import {
   refreshAncestors,
 } from "../sse.js";
 import { buildNodePrompt, buildForestPrompt, resolveModel } from "./prompts.js";
-import { runClaudeStreaming, makeStreamBatcher } from "./claude.js";
+import { runClaudeStreaming, makeStreamBatcher, normalizeChatImages } from "./claude.js";
 import {
   ACTIONS_SENTINEL,
   MAX_ACTIONS_CAP,
@@ -203,7 +203,7 @@ function broadcastLinksChanged(repoId, nodeId) {
 }
 
 // ── Tour de chat IA STREAMING (async, détaché ; le HTTP a déjà répondu 202) ──
-async function runNodeTurn(repoId, nodeId, scopeSnapshot, descendants, history, userText, author, model, pendingId, root, repo, links, issues, sessionId = 0) {
+async function runNodeTurn(repoId, nodeId, scopeSnapshot, descendants, history, userText, author, model, pendingId, root, repo, links, issues, sessionId = 0, images = []) {
   const lockKey = nodeLockKey(nodeId, sessionId); // verrou PAR SESSION (NODE-343)
   const batcher = makeStreamBatcher(nodeKey(repoId, nodeId), pendingId);
   let reasoning = "";
@@ -283,7 +283,7 @@ async function runNodeTurn(repoId, nodeId, scopeSnapshot, descendants, history, 
         if (reasoning.length < 64 * 1024) reasoning += line;
         batcher.push("thinking", line); // l'activité (lecture de fichiers…) s'affiche dans la réflexion
       },
-    });
+    }, images);
     batcher.end();
 
     const raw = result || answer;
@@ -355,7 +355,7 @@ async function runNodeTurn(repoId, nodeId, scopeSnapshot, descendants, history, 
 // assistant DÉJÀ persisté (créé `pending` à chaud, ou réhydraté depuis `queued` au
 // drain) ; `triggerUserId` (le message humain du tour) est exclu de l'historique car
 // il est passé à part au prompt.
-function startNodeTurn(node, repoId, text, author, model, sessionId, pendingMessage, triggerUserId) {
+function startNodeTurn(node, repoId, text, author, model, sessionId, pendingMessage, triggerUserId, images = []) {
   const sub = getSubtree(node.id, { repoId });
   const snapshot = sub ? sub.node : getNode(node.id, { repoId });
   const descendants = sub ? sub.descendants : [];
@@ -378,7 +378,7 @@ function startNodeTurn(node, repoId, text, author, model, sessionId, pendingMess
   try { root = rootForRepo(repoId); } catch { /* repo sans clone → IA sans accès fichiers */ }
   let repo = null;
   try { repo = getRepo(repoId); } catch { /* repo introuvable → libellé générique */ }
-  runNodeTurn(repoId, node.id, snapshot, descendants, history, text, author, model, pendingMessage.id, root, repo, links, issues, sessionId).catch(() => {});
+  runNodeTurn(repoId, node.id, snapshot, descendants, history, text, author, model, pendingMessage.id, root, repo, links, issues, sessionId, images).catch(() => {});
 }
 
 // Enchaîne le prochain tour en file d'un nœud POUR UNE SESSION (NODE-343). Appelé au
@@ -412,9 +412,12 @@ function drainNodeQueue(repoId, nodeId, sessionId = 0) {
 // POST /api/nodes/:ref/chat — persiste le message humain + un placeholder IA
 // `pending`, répond 202, puis lance le tour IA streaming en tâche de fond (SSE).
 export async function handleNodeChat(req, res, node) {
-  const body = await readBody(req);
+  const body = await readBody(req, CHAT_MAX_BODY); // NODE-350 : corps élargi (images base64)
   const text = String(body.body || "").trim();
-  if (!text) return send(res, 400, { error: "Message vide" });
+  // NODE-350 : images attachées (base64) — validées/normalisées fail-closed avant tout.
+  let images;
+  try { images = normalizeChatImages(body.images); } catch (e) { return send(res, 400, { error: e.message || "Image invalide" }); }
+  if (!text && !images.length) return send(res, 400, { error: "Message vide" });
   const author = String(body.author || "anon").slice(0, 60) || "anon";
   const model = resolveModel(body.model);
   const sessionId = Number(body.session) || 0; // 0 = conversation par défaut
@@ -430,16 +433,21 @@ export async function handleNodeChat(req, res, node) {
   // saturé) ne s'applique qu'au démarrage à froid : sinon une file existe pour reprendre.
   if (!busy && aiInFlight >= MAX_CONCURRENT_AI) return send(res, 429, { error: "ai_overloaded" });
 
-  const userMessage = addNodeMessage(node.id, { role: "user", author, body: text, state: "complete", clientNonce, sessionId }, repoId);
+  // Texte affiché/persisté : si le message ne porte QUE des images, on historise un
+  // libellé (sinon bulle vide). Les images ne sont pas persistées (passées au spawn).
+  const displayText = text || `🖼️ ${images.length} image${images.length > 1 ? "s" : ""}`;
+  const userMessage = addNodeMessage(node.id, { role: "user", author, body: displayText, state: "complete", clientNonce, sessionId }, repoId);
   broadcastMessage(repoId, node.id, userMessage);
 
   const pendingMessage = addNodeMessage(node.id, { role: "assistant", author: "claude", model, body: "", state: busy ? "queued" : "pending", sessionId }, repoId);
   broadcastMessage(repoId, node.id, pendingMessage);
 
+  // Si occupé, le message est enfilé côté serveur (Option B) : les images ne survivent
+  // pas à l'enfilage (non persistées). Dégradation acceptable et rare (course de tour).
   if (busy) return send(res, 202, { userMessage, pendingMessage, queued: true });
 
   send(res, 202, { userMessage, pendingMessage });
-  startNodeTurn(node, repoId, text, author, model, sessionId, pendingMessage, userMessage.id);
+  startNodeTurn(node, repoId, text || displayText, author, model, sessionId, pendingMessage, userMessage.id, images);
 }
 
 // POST /api/nodes/:ref/chat/confirm { messageId } — applique une proposition
@@ -523,7 +531,7 @@ function forestStructuralChange(applied) {
   return (applied || []).some((a) => a && (a.op === "delete_node" || a.op === "move_node" || a.op === "reorder_children"));
 }
 
-async function runForestTurn(repoId, forestSnapshot, history, userText, author, model, pendingId, root, links, issues, policyPrompt = "", sessionId = 0, pagePreprompt = "") {
+async function runForestTurn(repoId, forestSnapshot, history, userText, author, model, pendingId, root, links, issues, policyPrompt = "", sessionId = 0, pagePreprompt = "", images = []) {
   const lockKey = forestLockKey(repoId, sessionId); // verrou PAR SESSION (NODE-343)
   const room = forestKey(repoId);
   const batcher = makeStreamBatcher(room, pendingId);
@@ -605,7 +613,7 @@ async function runForestTurn(repoId, forestSnapshot, history, userText, author, 
         if (reasoning.length < 64 * 1024) reasoning += line;
         batcher.push("thinking", line);
       },
-    });
+    }, images);
     batcher.end();
 
     const raw = result || answer;
@@ -673,7 +681,7 @@ async function runForestTurn(repoId, forestSnapshot, history, userText, author, 
 // Démarre (ou enchaîne) un tour IA forêt : fige le snapshot, prend le verrou, diffuse
 // `start`, lance runForestTurn détaché. `pendingMessage` est le placeholder assistant
 // déjà persisté ; `triggerUserId` (le message humain) est exclu de l'historique.
-function startForestTurn(repoId, text, author, model, sessionId, pendingMessage, triggerUserId, pagePreprompt = "") {
+function startForestTurn(repoId, text, author, model, sessionId, pendingMessage, triggerUserId, pagePreprompt = "", images = []) {
   const forestSnapshot = listForest(repoId);
   let forestLinks = [];
   try { forestLinks = listForestLinks(repoId); } catch { /* pas de liens */ }
@@ -687,7 +695,7 @@ function startForestTurn(repoId, text, author, model, sessionId, pendingMessage,
 
   let root = null;
   try { root = rootForRepo(repoId); } catch { /* IA sans accès fichiers */ }
-  runForestTurn(repoId, forestSnapshot, history, text, author, model, pendingMessage.id, root, forestLinks, issues, "", sessionId, pagePreprompt).catch(() => {});
+  runForestTurn(repoId, forestSnapshot, history, text, author, model, pendingMessage.id, root, forestLinks, issues, "", sessionId, pagePreprompt, images).catch(() => {});
 }
 
 // Enchaîne le prochain tour en file d'une forêt POUR UNE SESSION (NODE-343).
@@ -718,7 +726,10 @@ function drainForestQueue(repoId, sessionId = 0) {
 // `body` est déjà lu par le routeur (readBody ne se consomme qu'une fois).
 export function handleForestChat(res, repoId, body) {
   const text = String(body.body || "").trim();
-  if (!text) return send(res, 400, { error: "Message vide" });
+  // NODE-350 : images attachées (base64), validées fail-closed.
+  let images;
+  try { images = normalizeChatImages(body.images); } catch (e) { return send(res, 400, { error: e.message || "Image invalide" }); }
+  if (!text && !images.length) return send(res, 400, { error: "Message vide" });
   const author = String(body.author || "anon").slice(0, 60) || "anon";
   const model = resolveModel(body.model);
   const sessionId = Number(body.session) || 0; // 0 = conversation par défaut
@@ -734,16 +745,18 @@ export function handleForestChat(res, repoId, body) {
   // Option B (NODE-329) : tour de CETTE session déjà en vol → on ENFILE au lieu de 409.
   if (!busy && aiInFlight >= MAX_CONCURRENT_AI) return send(res, 429, { error: "ai_overloaded" });
 
-  const userMessage = addForestMessage(repoId, { role: "user", author, body: text, state: "complete", clientNonce, sessionId });
+  const displayText = text || `🖼️ ${images.length} image${images.length > 1 ? "s" : ""}`;
+  const userMessage = addForestMessage(repoId, { role: "user", author, body: displayText, state: "complete", clientNonce, sessionId });
   broadcastForestMessage(repoId, userMessage);
 
   const pendingMessage = addForestMessage(repoId, { role: "assistant", author: "claude", model, body: "", state: busy ? "queued" : "pending", sessionId });
   broadcastForestMessage(repoId, pendingMessage);
 
+  // Enfilé côté serveur → images non transmises (non persistées). Dégradation acceptable.
   if (busy) return send(res, 202, { userMessage, pendingMessage, queued: true });
 
   send(res, 202, { userMessage, pendingMessage });
-  startForestTurn(repoId, text, author, model, sessionId, pendingMessage, userMessage.id, pagePreprompt);
+  startForestTurn(repoId, text || displayText, author, model, sessionId, pendingMessage, userMessage.id, pagePreprompt, images);
 }
 
 // POST /api/forest/chat/confirm { messageId } — confirme une proposition destructive

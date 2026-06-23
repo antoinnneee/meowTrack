@@ -44,6 +44,92 @@ function writePromptStdin(child, prompt) {
   }
 }
 
+// ── Images attachées au chat IA (NODE-350) ──────────────────────────────────
+// Le CLI `claude` n'a AUCUN flag --image (vérifié empiriquement). Le seul vecteur
+// natif est `--input-format stream-json` : on écrit UN message user au format API,
+// avec des blocs {type:"image", source:{type:"base64", media_type, data}}. Le base64
+// est donc embarqué directement dans le message → aucun tmpfile, aucune écriture
+// disque, aucune surface de path-traversal (contrairement au plan initial du nœud,
+// bâti sur un `--image <path>` inexistant).
+export const IMAGE_MIME = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+const MAX_IMG_BYTES = 5 * 1024 * 1024; // 5 Mo par image
+const MAX_IMG_TOTAL = 20 * 1024 * 1024; // 20 Mo cumulés
+const MAX_IMG_COUNT = 4;
+
+// Détecte le vrai type via les magic bytes du buffer décodé (un client peut mentir
+// sur le mimeType déclaré). Renvoie le MIME réel ∈ IMAGE_MIME, ou null si inconnu.
+function sniffImageMime(buf) {
+  if (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return "image/png";
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return "image/jpeg";
+  if (buf.length >= 6 && buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x38) return "image/gif";
+  if (
+    buf.length >= 12 &&
+    buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 && // "RIFF"
+    buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50 // "WEBP"
+  )
+    return "image/webp";
+  return null;
+}
+
+const badImage = (msg) => Object.assign(new Error(msg), { code: "BAD_IMAGE" });
+
+// Valide/normalise les images reçues du front ([{mimeType, data}] — data = base64 nu
+// OU data URL "data:image/...;base64,XXXX"). FAIL-CLOSED : throw Error{code:"BAD_IMAGE"}
+// au moindre doute (MIME hors allowlist, base64 invalide, magic bytes incohérents,
+// taille/nombre). Renvoie [{mediaType, data}] (base64 canonique) prêt pour stream-json.
+export function normalizeChatImages(images) {
+  if (images == null) return [];
+  if (!Array.isArray(images)) throw badImage("Le champ images doit être un tableau.");
+  if (images.length > MAX_IMG_COUNT) throw badImage(`Trop d'images (max ${MAX_IMG_COUNT}).`);
+  const out = [];
+  let total = 0;
+  for (const im of images) {
+    if (!im || typeof im !== "object") throw badImage("Image invalide.");
+    const declared = String(im.mimeType || "").toLowerCase();
+    if (!IMAGE_MIME.has(declared)) throw badImage(`Type d'image non supporté : ${declared || "?"}.`);
+    let b64 = String(im.data || "");
+    if (b64.startsWith("data:")) {
+      const comma = b64.indexOf(",");
+      if (comma >= 0) b64 = b64.slice(comma + 1);
+    }
+    b64 = b64.trim();
+    if (!b64) throw badImage("Image vide.");
+    let buf;
+    try { buf = Buffer.from(b64, "base64"); } catch { buf = null; }
+    if (!buf || !buf.length) throw badImage("Base64 d'image invalide.");
+    if (buf.length > MAX_IMG_BYTES) throw badImage("Image trop lourde (max 5 Mo).");
+    const sniffed = sniffImageMime(buf);
+    if (!sniffed) throw badImage("Contenu d'image non reconnu.");
+    if (sniffed !== declared) throw badImage(`Le contenu (${sniffed}) ne correspond pas au type déclaré (${declared}).`);
+    total += buf.length;
+    if (total > MAX_IMG_TOTAL) throw badImage("Images trop lourdes au total (max 20 Mo).");
+    out.push({ mediaType: sniffed, data: buf.toString("base64") }); // base64 canonique re-encodé
+  }
+  return out;
+}
+
+// Construit le message user stream-json (texte + blocs image) à passer sur stdin.
+// Pur/exporté pour le test de régression. `images` = sortie de normalizeChatImages.
+export function chatStreamInput(prompt, images) {
+  const content = [{ type: "text", text: String(prompt == null ? "" : prompt) }];
+  for (const im of images || []) content.push({ type: "image", source: { type: "base64", media_type: im.mediaType, data: im.data } });
+  return JSON.stringify({ type: "user", message: { role: "user", content } });
+}
+
+// Alimente le stdin du tour de chat. Avec images → un message stream-json (cf.
+// chatStreamInput) ; sans image → prompt en texte brut (chemin NODE-346). Best-effort.
+function writeChatInput(child, prompt, images) {
+  if (!child || !child.stdin) return;
+  if (!images || !images.length) return writePromptStdin(child, prompt);
+  child.stdin.on("error", () => { /* EPIPE ignoré */ });
+  try {
+    child.stdin.write(chatStreamInput(prompt, images) + "\n");
+    child.stdin.end();
+  } catch {
+    /* ignore */
+  }
+}
+
 // Lance `claude -p` headless SANS aucun outil (raisonnement pur, cwd hors repo) —
 // utilisé par « Améliorer la description » (réécriture de texte, pas besoin du repo).
 // NODE-346 : prompt par STDIN (idem streaming) → fonctionne aussi avec shell:true sur
@@ -128,23 +214,37 @@ const AI_STREAM_TIMEOUT = 300000;
 const AI_MAX_OUTPUT = 12 * 1024 * 1024;
 const AI_MAX_LINE = 256 * 1024;
 
-export function runClaudeStreaming(prompt, model, root, { onThinking, onText, onTool, onChild } = {}) {
+export function runClaudeStreaming(prompt, model, root, { onThinking, onText, onTool, onChild } = {}, images = []) {
   return new Promise((resolve, reject) => {
     let child;
+    // NODE-350 : avec des images, on bascule l'entrée en `--input-format stream-json`
+    // (seul vecteur natif pour un bloc image) ; le message user (texte + base64) part
+    // sur stdin. Sans image, on garde l'entrée texte brut (chemin NODE-346, testé Win).
+    const hasImages = Array.isArray(images) && images.length > 0;
     try {
       // NODE-346 : le PROMPT est passé par STDIN, PAS en argv (`claude -p` lit stdin).
       // → pas de quoting/limite ARG_MAX, et la ligne de commande reste sûre même avec
       // shell:true sur Windows (cf. claudeOpts), où le shim .cmd l'exige.
       child = spawn(
         CLAUDE_BIN,
-        ["-p", "--model", resolveModel(model), "--output-format", "stream-json", "--include-partial-messages", "--verbose", ...claudeToolArgs(AI_REPO_ACCESS)],
+        [
+          "-p",
+          "--model",
+          resolveModel(model),
+          ...(hasImages ? ["--input-format", "stream-json"] : []),
+          "--output-format",
+          "stream-json",
+          "--include-partial-messages",
+          "--verbose",
+          ...claudeToolArgs(AI_REPO_ACCESS),
+        ],
         claudeOpts(AI_REPO_ACCESS, root)
       );
     } catch (e) {
       return reject(Object.assign(new Error("SPAWN_ERROR"), { code: "SPAWN_ERROR", cause: e, detail: spawnErrorDetail(e) }));
     }
     if (onChild) onChild(child);
-    writePromptStdin(child, prompt);
+    writeChatInput(child, prompt, images);
 
     let settled = false;
     let buf = "";

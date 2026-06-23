@@ -133,8 +133,11 @@
         <div class="ta-wrap chat-ta-wrap">
           <textarea id="forestChatInput" rows="2" placeholder="Décris une ambition… @ pour citer un fichier, # pour citer un nœud · Entrée pour envoyer"></textarea>
           <ul id="forestChatMentionMenu" class="mention-menu up" hidden></ul>
+          <div id="forestChatImagePreview" class="chat-img-preview" hidden></div>
         </div>
         <div class="chat-send-col">
+          <input id="forestChatImageInput" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
+          <button id="forestChatImageBtn" class="ghost chat-img-btn" title="Joindre une ou des images (max 4 · 5 Mo)">📎</button>
           <select id="forestModelSel" class="model-select" title="Modèle Claude">
             <option value="sonnet">Sonnet</option>
             <option value="opus">Opus</option>
@@ -258,8 +261,11 @@
             <div class="ta-wrap chat-ta-wrap">
               <textarea id="chatInput" rows="2" placeholder="Parle de ce nœud, demande des sous-jalons… @ pour citer un fichier, # pour citer un nœud · Entrée pour envoyer"></textarea>
               <ul id="chatMentionMenu" class="mention-menu up" hidden></ul>
+              <div id="chatImagePreview" class="chat-img-preview" hidden></div>
             </div>
             <div class="chat-send-col">
+              <input id="chatImageInput" type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
+              <button id="chatImageBtn" class="ghost chat-img-btn" title="Joindre une ou des images (max 4 · 5 Mo)">📎</button>
               <select id="modelSel" class="model-select" title="Modèle Claude">
                 <option value="sonnet">Sonnet</option>
                 <option value="opus">Opus</option>
