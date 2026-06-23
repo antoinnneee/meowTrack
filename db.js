@@ -161,6 +161,17 @@ export {
   deleteTemplate,
 } from "./db/templates.js";
 
+// ── Pages de graphe (NODE-337) ───────────────────────────────────────────────
+export {
+  ensureDefaultPage,
+  listPages,
+  getPage,
+  createPage,
+  updatePage,
+  deletePage,
+  setNodePage,
+} from "./db/pages.js";
+
 // ── Initialisation au chargement (bootstrap + migrations idempotentes) ────────
 // Exécutée APRÈS l'évaluation de tous les modules ci-dessus (registre + schéma
 // prêts) : préserve l'effet de bord historique « importer db.js initialise la base ».

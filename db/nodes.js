@@ -62,6 +62,7 @@ function rowToNode(r, { childCount, includeNotes = true } = {}) {
     position: r.position,
     posX: r.pos_x != null ? r.pos_x : null,
     posY: r.pos_y != null ? r.pos_y : null,
+    pageId: r.page_id != null ? r.page_id : null, // NODE-337 : page de graphe (appartenance exclusive)
     version: r.version,
     // Orchestrateur : état d'exécution (bail). `run_state` peut être absent sur les
     // bases pré-migration (colonne ajoutée) → null par défaut.
@@ -330,6 +331,24 @@ function _setNodeFields(id, fields = {}) {
 }
 
 // Insère un enfant sous parentId (depth+1, root_id, path, repo_id hérités). throw>MAX_DEPTH.
+// NODE-337 : page par défaut du dépôt courant (créée à la volée si absente). Sert de
+// rattachement aux nœuds racines sans page explicite (appartenance exclusive : un arbre
+// = la page de sa racine). Self-contained (pas d'import de db/pages.js → pas de cycle).
+function _defaultPageId() {
+  const row = db.prepare("SELECT id FROM graph_pages WHERE is_default = 1 ORDER BY id LIMIT 1").get();
+  if (row) return row.id;
+  const res = db.prepare("INSERT INTO graph_pages(name, position, is_default) VALUES('Principale', 0, 1)").run();
+  return Number(res.lastInsertRowid);
+}
+// Valide un pageId fourni (doit exister) ; sinon retombe sur la page par défaut.
+function _resolvePageId(pageId) {
+  if (pageId != null) {
+    const p = db.prepare("SELECT id FROM graph_pages WHERE id = ?").get(Number(pageId));
+    if (p) return p.id;
+  }
+  return _defaultPageId();
+}
+
 function _insertChild(parentId, input = {}) {
   const parent = db.prepare("SELECT * FROM nodes WHERE id = ?").get(parentId);
   if (!parent) throw new Error("Parent introuvable");
@@ -354,7 +373,9 @@ function _insertChild(parentId, input = {}) {
     )
     .run(parent.repo_id, ref, parentId, parent.root_id, parent.depth + 1, "", title, description, notes, status, kind, color, emoji, targetDate, status === "done" ? 100 : 0, position);
   const newId = Number(res.lastInsertRowid);
-  db.prepare("UPDATE nodes SET path = ?, done_at = ? WHERE id = ?").run(parent.path + newId + "/", status === "done" ? nowIso() : null, newId);
+  // NODE-337 : l'enfant hérite de la page de son parent (un arbre = une page).
+  db.prepare("UPDATE nodes SET path = ?, done_at = ?, page_id = ? WHERE id = ?")
+    .run(parent.path + newId + "/", status === "done" ? nowIso() : null, parent.page_id ?? _defaultPageId(), newId);
   // NODE-324 : ajouter un sous-jalon NON terminé à un parent 'done' le réactive
   // (cas symétrique de NODE-323 : le parent ne peut plus être validé tant que ce
   // nouvel enfant n'est pas done). Un enfant ajouté déjà 'done' ne change pas la
@@ -391,7 +412,9 @@ function _insertRoot(repoId, input = {}) {
     )
     .run(repoId, ref, null, 0, 0, "", title, description, notes, status, kind, color, emoji, targetDate, status === "done" ? 100 : 0, position);
   const newId = Number(res.lastInsertRowid);
-  db.prepare("UPDATE nodes SET root_id = ?, path = ?, done_at = ? WHERE id = ?").run(newId, "/" + newId + "/", status === "done" ? nowIso() : null, newId);
+  // NODE-337 : une racine est rattachée à sa page (fournie et valide, sinon page par défaut).
+  db.prepare("UPDATE nodes SET root_id = ?, path = ?, done_at = ?, page_id = ? WHERE id = ?")
+    .run(newId, "/" + newId + "/", status === "done" ? nowIso() : null, _resolvePageId(input.pageId), newId);
   return newId;
 }
 
@@ -423,6 +446,12 @@ function _reparentSubtree(id, newParentId, position) {
   // sous son nouveau parent.
   const upd = db.prepare("UPDATE nodes SET depth = ?, root_id = ?, path = ?, pos_x = NULL, pos_y = NULL WHERE id = ?");
   for (const r of rows) upd.run(r.depth + depthDelta, newRoot, newPath + r.path.slice(oldPath.length), r.id);
+  // NODE-337 : appartenance EXCLUSIVE — déplacé sous un parent, le sous-arbre adopte la
+  // page de ce parent. Remonté en racine (newParentId null), il conserve sa page (il
+  // devient sa propre racine). `path LIKE newPath%` couvre le nœud déplacé + descendants.
+  if (newParent) {
+    db.prepare("UPDATE nodes SET page_id = ? WHERE path LIKE ?").run(newParent.page_id ?? _defaultPageId(), newPath + "%");
+  }
   // NODE-342 : déplacer un nœud NON terminé sous un objectif 'done' le réactive
   // (symétrique de NODE-324 pour la création). recomputeAncestorProgress est monotone
   // et ne rétrograderait jamais le parent 'done', d'où le revert explicite. Placé ici

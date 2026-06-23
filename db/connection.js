@@ -171,6 +171,7 @@ export const TRACKING_SCHEMA = `
     position    INTEGER NOT NULL DEFAULT 0,           -- ordre parmi frères
     pos_x       REAL,                                 -- position manuelle graphe (drag & drop), NULL = auto
     pos_y       REAL,
+    page_id     INTEGER,                              -- page de graphe (NODE-337, appartenance exclusive ; arbre = page de sa racine)
     version     INTEGER NOT NULL DEFAULT 1,           -- pivot CAS, bumpé soi + ancêtres
     created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
     updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
@@ -278,6 +279,22 @@ export const TRACKING_SCHEMA = `
   );
   CREATE INDEX IF NOT EXISTS idx_chat_templates_name ON chat_templates(name, id);
 
+  -- Pages de graphe (NODE-337, Option B = appartenance EXCLUSIVE) : des « toiles »
+  -- separees regroupant des noeuds. Un noeud porte un page_id (cf. table nodes) ; un
+  -- arbre entier partage la page de sa racine. Une page is_default=1 par depot absorbe
+  -- les noeuds non rattaches (evite tout etat invalide). template_id pointe le preprompt
+  -- assigne (chat_templates, NODE-339) ; preprompt = texte inline optionnel.
+  CREATE TABLE IF NOT EXISTS graph_pages (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    position    INTEGER NOT NULL DEFAULT 0,
+    template_id INTEGER,
+    preprompt   TEXT NOT NULL DEFAULT '',
+    is_default  INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_graph_pages_pos ON graph_pages(position, id);
+
   -- ── Orchestrateur : historique d'exécution d'un nœud (un run = un passage agent).
   CREATE TABLE IF NOT EXISTS node_runs (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -341,6 +358,20 @@ function ensureTrackerSchema(conn) {
   ensureColumn(conn, "nodes", "lease_until", "lease_until TEXT");                   // ISO : expiration du bail
   ensureColumn(conn, "nodes", "run_attempts", "run_attempts INTEGER NOT NULL DEFAULT 0");
   ensureColumn(conn, "nodes", "auto_reviews", "auto_reviews INTEGER NOT NULL DEFAULT 0"); // compteur d'auto-revues (anti-boucle)
+  // Pages de graphe (NODE-337) : colonne d'appartenance + page par défaut absorbant
+  // les nœuds non rattachés (backfill idempotent — n'agit que sur les page_id NULL).
+  ensureColumn(conn, "nodes", "page_id", "page_id INTEGER");
+  if (hasTable(conn, "graph_pages") && hasTable(conn, "nodes")) {
+    const orphans = conn.prepare("SELECT COUNT(*) c FROM nodes WHERE page_id IS NULL").get().c;
+    if (orphans > 0) {
+      let def = conn.prepare("SELECT id FROM graph_pages WHERE is_default = 1 ORDER BY id LIMIT 1").get();
+      if (!def) {
+        const r = conn.prepare("INSERT INTO graph_pages(name, position, is_default) VALUES('Principale', 0, 1)").run();
+        def = { id: Number(r.lastInsertRowid) };
+      }
+      conn.prepare("UPDATE nodes SET page_id = ? WHERE page_id IS NULL").run(def.id);
+    }
+  }
 }
 
 export function trackDbFor(repoId) {
