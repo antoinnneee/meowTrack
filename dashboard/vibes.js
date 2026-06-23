@@ -520,6 +520,7 @@ async function loadForest() {
     indexForest(forest);
     indexLinks(links);
     renderForestViews();
+    loadNextNode(); // NODE-333 : rafraîchit l'indicateur « prochain nœud » (best-effort)
   } catch (e) {
     $("#graphSvg") && ($("#vibesSummary").textContent = "Erreur : " + e.message);
   }
@@ -1253,6 +1254,42 @@ function wireGraphSearch() {
     e.preventDefault();
     openGraphSearch(e.key);
   });
+}
+
+// ── NODE-333 : indicateur « prochain nœud » (peek de l'orchestrateur) ────────
+// Lecture seule (GET /api/nodes/next) : montre la prochaine feuille que
+// l'orchestrateur dispatcherait — INDICATIF (l'état peut changer avant un claim
+// réel). Survol → halo (NODE-326) ; clic → ouvre le nœud. No-op hors vue graphe.
+let _nextNodeId = null;
+async function loadNextNode() {
+  const box = $("#graphNextNode");
+  if (!box) return;
+  let node = null;
+  try { ({ node } = await api.get("/api/nodes/next")); }
+  catch { box.hidden = true; _nextNodeId = null; return; }
+  _nextNodeId = node ? node.id : null;
+  box.replaceChildren();
+  if (!node) {
+    box.classList.add("empty");
+    box.append(document.createTextNode("⏭️ Aucun nœud prêt"));
+    box.title = "Aucune feuille dispatchable pour l'instant (indicatif).";
+    box.hidden = false;
+    return;
+  }
+  box.classList.remove("empty");
+  const ico = document.createElement("span"); ico.className = "gn-ico"; ico.textContent = node.emoji || "⏭️";
+  const ref = document.createElement("span"); ref.className = "gn-ref"; ref.textContent = node.ref;
+  const title = document.createElement("span"); title.className = "gn-title"; title.textContent = node.title || "";
+  box.append(ico, ref, title);
+  box.title = `Prochain nœud dispatchable : ${node.ref} — ${node.title || ""} (indicatif, peut changer avant un claim).`;
+  box.hidden = false;
+}
+function wireNextNode() {
+  const box = $("#graphNextNode");
+  if (!box) return;
+  box.addEventListener("mouseenter", () => { if (_nextNodeId) highlightGraphNode(_nextNodeId); });
+  box.addEventListener("mouseleave", () => clearGraphHighlight());
+  box.addEventListener("click", () => { if (_nextNodeId) openNode(_nextNodeId); });
 }
 
 function fitView(pos, svg) {
@@ -3042,6 +3079,7 @@ function subscribeForest() {
   es.addEventListener("node:reparented", () => loadForest());
   es.addEventListener("nodes:reordered", () => loadForest());
   es.addEventListener("links:changed", () => loadForest()); // prérequis ajouté/retiré ailleurs
+  es.addEventListener("runs:changed", () => loadNextNode()); // NODE-333 : claim/lease/échec → maj du « prochain nœud »
   // Positions manuelles déplacées ailleurs : maj locale + re-rendu (sauf si on drague).
   es.addEventListener("nodes:moved", (e) => {
     if (vibes.graph.nodeDrag) return;
@@ -3249,6 +3287,7 @@ export function initVibes() {
   buildColorChips();
   wireGraph();
   wireGraphSearch(); // NODE-331 : recherche « type-to-search » dans le graphe
+  wireNextNode();    // NODE-333 : indicateur « prochain nœud » (peek orchestrateur)
   setVibesLayout(vibes.layout);
   window.addEventListener("beforeunload", closeStream);
   const viewFromHash = () =>

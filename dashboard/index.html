@@ -94,6 +94,8 @@
           <button class="graph-filter-btn active" data-status="paused" title="Afficher / masquer les nœuds en pause">⏸ En pause</button>
         </div>
         <button id="graphFit" class="ghost" title="Recentrer">⤢ Recentrer</button>
+        <!-- NODE-333 : peek lecture seule du prochain nœud dispatchable (survol = halo, clic = ouvre). -->
+        <button id="graphNextNode" class="graph-next" hidden></button>
       </div>
       <svg id="graphMinimap" class="graph-minimap"></svg>
     </main>
