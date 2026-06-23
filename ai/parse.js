@@ -9,6 +9,24 @@
 export const ACTIONS_SENTINEL = "<<<MEOWTRACK_ACTIONS>>>";
 export const MAX_ACTIONS_CAP = 200;
 
+// Jusqu'où le texte conversationnel peut être diffusé EN STREAMING sans risquer de
+// montrer un fragment de la sentinelle d'actions. Renvoie { visibleEnd, inActions } :
+//  - sentinelle complète présente → visibleEnd = sa position, inActions = true (bascule) ;
+//  - sinon → on ne retient une marge QUE si la fin du texte est un PRÉFIXE PARTIEL de la
+//    sentinelle (ex. « …<<<MEOW »). NODE-351 : auparavant on retenait toujours les 23
+//    derniers caractères, ce qui figeait la fin d'un texte court jusqu'à l'arrivée du
+//    bloc d'actions (« texte figé puis affiché en bloc à la création des nœuds »).
+export function streamVisibleEnd(answer) {
+  const s = String(answer || "");
+  const idx = s.indexOf(ACTIONS_SENTINEL);
+  if (idx >= 0) return { visibleEnd: idx, inActions: true };
+  const maxPartial = Math.min(ACTIONS_SENTINEL.length - 1, s.length);
+  for (let k = maxPartial; k > 0; k--) {
+    if (s.endsWith(ACTIONS_SENTINEL.slice(0, k))) return { visibleEnd: s.length - k, inActions: false };
+  }
+  return { visibleEnd: s.length, inActions: false };
+}
+
 // Construit le payload `node:ghost` d'une action `add_node` (ou null sinon). Partagé
 // par le chat par nœud ET le chat « top level ». `fallbackKey` sert quand l'action
 // n'a pas de tmpKey. `parentId` = id réel d'un parent ; `parentKey` = réf à un autre

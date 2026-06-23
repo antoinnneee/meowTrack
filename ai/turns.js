@@ -61,6 +61,7 @@ import {
   ghostPayloadFromAction,
   actionStatusLabel,
   describeDestructive,
+  streamVisibleEnd,
 } from "./parse.js";
 
 const aiLocks = new Map(); // clé de verrou (cf. nodeLockKey/forestLockKey) → { child } : 1 tour IA en vol
@@ -217,15 +218,12 @@ async function runNodeTurn(repoId, nodeId, scopeSnapshot, descendants, history, 
   // cas où une sentinelle partielle serait en cours d'arrivée, puis bascule en
   // mode « actions » dès que la sentinelle complète apparaît.
   const pumpVisible = () => {
-    const idx = answer.indexOf(ACTIONS_SENTINEL);
-    let visibleEnd;
-    if (idx >= 0) {
-      visibleEnd = idx; // tout ce qui précède la sentinelle = conversationnel
-      inActions = true;
-    } else {
-      visibleEnd = answer.length - ACTIONS_SENTINEL.length; // marge anti-sentinelle partielle
-      if (visibleEnd < shownLen) visibleEnd = shownLen;
-    }
+    // NODE-351 : ne retient une marge anti-sentinelle QUE si la fin du texte est un
+    // préfixe partiel de la sentinelle — sinon la fin d'un texte court figeait jusqu'à
+    // l'arrivée du bloc d'actions. `tout ce qui précède la sentinelle = conversationnel`.
+    const r = streamVisibleEnd(answer);
+    if (r.inActions) inActions = true;
+    const visibleEnd = Math.max(shownLen, r.visibleEnd);
     if (visibleEnd > shownLen) {
       batcher.push("text", answer.slice(shownLen, visibleEnd));
       shownLen = visibleEnd;
@@ -542,15 +540,10 @@ async function runForestTurn(repoId, forestSnapshot, history, userText, author, 
   let inActions = false;
   let actionStatus = "";
   const pumpVisible = () => {
-    const idx = answer.indexOf(ACTIONS_SENTINEL);
-    let visibleEnd;
-    if (idx >= 0) {
-      visibleEnd = idx;
-      inActions = true;
-    } else {
-      visibleEnd = answer.length - ACTIONS_SENTINEL.length;
-      if (visibleEnd < shownLen) visibleEnd = shownLen;
-    }
+    // NODE-351 : marge anti-sentinelle retenue seulement si la fin est un préfixe partiel.
+    const r = streamVisibleEnd(answer);
+    if (r.inActions) inActions = true;
+    const visibleEnd = Math.max(shownLen, r.visibleEnd);
     if (visibleEnd > shownLen) {
       batcher.push("text", answer.slice(shownLen, visibleEnd));
       shownLen = visibleEnd;
