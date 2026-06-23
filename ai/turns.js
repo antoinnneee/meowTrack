@@ -31,6 +31,13 @@ import {
   bumpAutoReviews,
   listIssues,
   applyIssueActions,
+  nextQueuedNodeTurn,
+  listQueuedNodeIds,
+  failDanglingNodeTurns,
+  nextQueuedForestTurn,
+  hasQueuedForestTurn,
+  failDanglingForestTurns,
+  listRepos,
 } from "../db.js";
 import { MAX_AUTO_REVIEWS } from "../db/constants.js";
 import { send, readBody } from "../http-util.js";
@@ -322,6 +329,67 @@ async function runNodeTurn(repoId, nodeId, scopeSnapshot, descendants, history, 
     aiLocks.delete(nodeId);
     aiInFlight = Math.max(0, aiInFlight - 1);
     broadcast(nodeKey(repoId, nodeId), "ai:turn", { nodeId, state: "end", turnId: pendingId });
+    drainNodeQueue(repoId, nodeId); // Option B : enchaîne le prochain tour en file (NODE-329)
+  }
+}
+
+// ── File persistée des tours IA — versant nœud (Option B, NODE-329) ──────────
+// Démarre (ou enchaîne) un tour IA pour un nœud : fige les snapshots, prend le verrou,
+// diffuse `start`, puis lance runNodeTurn détaché. `pendingMessage` est le placeholder
+// assistant DÉJÀ persisté (créé `pending` à chaud, ou réhydraté depuis `queued` au
+// drain) ; `triggerUserId` (le message humain du tour) est exclu de l'historique car
+// il est passé à part au prompt.
+function startNodeTurn(node, repoId, text, author, model, sessionId, pendingMessage, triggerUserId) {
+  const sub = getSubtree(node.id, { repoId });
+  const snapshot = sub ? sub.node : getNode(node.id, { repoId });
+  const descendants = sub ? sub.descendants : [];
+  const subtreeIds = new Set([snapshot.id, ...descendants.map((d) => d.id)]);
+  let links = [];
+  try {
+    links = listForestLinks(repoId).filter((l) => subtreeIds.has(l.fromId) && subtreeIds.has(l.toId));
+  } catch { /* pas de liens → prompt sans bloc */ }
+  let issues = [];
+  try {
+    issues = listIssues(repoId, { includeClosed: true, limit: 200 });
+  } catch { /* pas d'issues → prompt sans bloc */ }
+  const history = listNodeMessages(node.id, { limit: 1000, repoId, sessionId }).filter((m) => m.state === "complete" && m.id !== triggerUserId);
+
+  aiLocks.set(node.id, { child: null }); // atomique (pas d'await entre check et set)
+  aiInFlight++;
+  broadcast(nodeKey(repoId, node.id), "ai:turn", { nodeId: node.id, actor: author, model, state: "start", turnId: pendingMessage.id });
+
+  let root = null;
+  try { root = rootForRepo(repoId); } catch { /* repo sans clone → IA sans accès fichiers */ }
+  let repo = null;
+  try { repo = getRepo(repoId); } catch { /* repo introuvable → libellé générique */ }
+  runNodeTurn(repoId, node.id, snapshot, descendants, history, text, author, model, pendingMessage.id, root, repo, links, issues).catch(() => {});
+}
+
+// Enchaîne le prochain tour en file d'un nœud. Appelé au finally du tour précédent
+// (verrou déjà libéré) et au boot (reprise). Best-effort : aucune erreur ne casse la
+// chaîne. Réhydrate le placeholder `queued` → `pending`, puis démarre.
+function drainNodeQueue(repoId, nodeId) {
+  try {
+    if (aiLocks.has(nodeId)) return; // un tour est déjà en vol
+    if (aiInFlight >= MAX_CONCURRENT_AI) return; // sémaphore saturé → repris à la prochaine clôture / au boot
+    const turn = nextQueuedNodeTurn(nodeId, repoId);
+    if (!turn || !turn.assistant) return;
+    const node = getNode(nodeId, { repoId });
+    if (!node) return;
+    // Texte déclencheur absent (message source purgé) → on marque le placeholder en
+    // erreur et on tente le suivant, pour ne pas bloquer la file.
+    if (!turn.user || !turn.user.body) {
+      try {
+        updateNodeMessage(turn.assistant.id, { state: "error", body: "Message en file orphelin (source introuvable)." }, repoId);
+        broadcastMessage(repoId, nodeId, getNodeMessage(turn.assistant.id, repoId));
+      } catch { /* ignore */ }
+      return drainNodeQueue(repoId, nodeId);
+    }
+    const m = updateNodeMessage(turn.assistant.id, { state: "pending" }, repoId);
+    broadcastMessage(repoId, nodeId, m);
+    startNodeTurn(node, repoId, turn.user.body, turn.user.author, turn.assistant.model, turn.assistant.sessionId, m, turn.user.id);
+  } catch (e) {
+    console.error(`[meowtrack] drainNodeQueue node=${nodeId}: ${e.message || e}`);
   }
 }
 
@@ -336,53 +404,24 @@ export async function handleNodeChat(req, res, node) {
   const sessionId = Number(body.session) || 0; // 0 = conversation par défaut
   const clientNonce = body.clientNonce ? String(body.clientNonce).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 80) || null : null;
 
-  if (aiLocks.has(node.id)) return send(res, 409, { error: "ai_busy" });
-  if (aiInFlight >= MAX_CONCURRENT_AI) return send(res, 429, { error: "ai_overloaded" });
-
   const repoId = node.repoId;
+  const busy = aiLocks.has(node.id);
+  // Option B (NODE-329) : si un tour est DÉJÀ en vol pour ce nœud, on ENFILE le
+  // message (placeholder assistant `queued`) au lieu de renvoyer 409 — il sera
+  // enchaîné à la clôture du tour courant (drainNodeQueue). Le 429 (sémaphore global
+  // saturé) ne s'applique qu'au démarrage à froid : sinon une file existe pour reprendre.
+  if (!busy && aiInFlight >= MAX_CONCURRENT_AI) return send(res, 429, { error: "ai_overloaded" });
+
   const userMessage = addNodeMessage(node.id, { role: "user", author, body: text, state: "complete", clientNonce, sessionId }, repoId);
   broadcastMessage(repoId, node.id, userMessage);
 
-  const pendingMessage = addNodeMessage(node.id, { role: "assistant", author: "claude", model, body: "", state: "pending", sessionId }, repoId);
+  const pendingMessage = addNodeMessage(node.id, { role: "assistant", author: "claude", model, body: "", state: busy ? "queued" : "pending", sessionId }, repoId);
   broadcastMessage(repoId, node.id, pendingMessage);
 
-  // Snapshot (nœud + sous-arbre) + historique FIGÉS avant lock/202.
-  const sub = getSubtree(node.id, { repoId });
-  const snapshot = sub ? sub.node : getNode(node.id, { repoId });
-  const descendants = sub ? sub.descendants : [];
-  // Liens de prérequis internes au sous-arbre (contexte du prompt).
-  const subtreeIds = new Set([snapshot.id, ...descendants.map((d) => d.id)]);
-  let links = [];
-  try {
-    links = listForestLinks(repoId).filter((l) => subtreeIds.has(l.fromId) && subtreeIds.has(l.toId));
-  } catch { /* pas de liens → prompt sans bloc */ }
-  // Snapshot des entrées de suivi du repo (contexte pour update/delete/reorder issues).
-  let issues = [];
-  try {
-    issues = listIssues(repoId, { includeClosed: true, limit: 200 });
-  } catch { /* pas d'issues → prompt sans bloc */ }
-  const history = listNodeMessages(node.id, { limit: 1000, repoId, sessionId }).filter((m) => m.state === "complete" && m.id !== userMessage.id);
+  if (busy) return send(res, 202, { userMessage, pendingMessage, queued: true });
 
-  aiLocks.set(node.id, { child: null }); // atomique (pas d'await entre check et set)
-  aiInFlight++;
-  broadcast(nodeKey(repoId, node.id), "ai:turn", { nodeId: node.id, actor: author, model, state: "start", turnId: pendingMessage.id });
-
-  // Clone du repo du nœud → cwd de l'IA (lecture du code réel, multi-repos).
-  let root = null;
-  try {
-    root = rootForRepo(node.repoId);
-  } catch {
-    /* repo sans clone résolvable → IA sans accès fichiers */
-  }
-  // Métadonnées du repo (nom/slug) pour nommer le projet dans le prompt (multi-repos).
-  let repo = null;
-  try {
-    repo = getRepo(node.repoId);
-  } catch {
-    /* repo introuvable → libellé générique dans le prompt */
-  }
   send(res, 202, { userMessage, pendingMessage });
-  runNodeTurn(repoId, node.id, snapshot, descendants, history, text, author, model, pendingMessage.id, root, repo, links, issues).catch(() => {});
+  startNodeTurn(node, repoId, text, author, model, sessionId, pendingMessage, userMessage.id);
 }
 
 // POST /api/nodes/:ref/chat/confirm { messageId } — applique une proposition
@@ -608,6 +647,51 @@ async function runForestTurn(repoId, forestSnapshot, history, userText, author, 
     aiLocks.delete(forestLockKey(repoId));
     aiInFlight = Math.max(0, aiInFlight - 1);
     broadcast(room, "ai:turn", { repoId, scope: "forest", state: "end", turnId: pendingId });
+    drainForestQueue(repoId); // Option B : enchaîne le prochain tour en file (NODE-329)
+  }
+}
+
+// ── File persistée des tours IA — versant forêt (Option B, NODE-329) ─────────
+// Démarre (ou enchaîne) un tour IA forêt : fige le snapshot, prend le verrou, diffuse
+// `start`, lance runForestTurn détaché. `pendingMessage` est le placeholder assistant
+// déjà persisté ; `triggerUserId` (le message humain) est exclu de l'historique.
+function startForestTurn(repoId, text, author, model, sessionId, pendingMessage, triggerUserId) {
+  const forestSnapshot = listForest(repoId);
+  let forestLinks = [];
+  try { forestLinks = listForestLinks(repoId); } catch { /* pas de liens */ }
+  let issues = [];
+  try { issues = listIssues(repoId, { includeClosed: true, limit: 200 }); } catch { /* pas d'issues */ }
+  const history = listForestMessages(repoId, { limit: 1000, sessionId }).filter((m) => m.state === "complete" && m.id !== triggerUserId);
+
+  aiLocks.set(forestLockKey(repoId), { child: null });
+  aiInFlight++;
+  broadcast(forestKey(repoId), "ai:turn", { repoId, scope: "forest", actor: author, model, state: "start", turnId: pendingMessage.id });
+
+  let root = null;
+  try { root = rootForRepo(repoId); } catch { /* IA sans accès fichiers */ }
+  runForestTurn(repoId, forestSnapshot, history, text, author, model, pendingMessage.id, root, forestLinks, issues).catch(() => {});
+}
+
+// Enchaîne le prochain tour en file d'une forêt. Best-effort, même contrat que
+// drainNodeQueue. Réhydrate le placeholder `queued` → `pending`, puis démarre.
+function drainForestQueue(repoId) {
+  try {
+    if (aiLocks.has(forestLockKey(repoId))) return;
+    if (aiInFlight >= MAX_CONCURRENT_AI) return;
+    const turn = nextQueuedForestTurn(repoId);
+    if (!turn || !turn.assistant) return;
+    if (!turn.user || !turn.user.body) {
+      try {
+        updateForestMessage(turn.assistant.id, { state: "error", body: "Message en file orphelin (source introuvable)." }, repoId);
+        broadcastForestMessage(repoId, getForestMessage(turn.assistant.id, repoId));
+      } catch { /* ignore */ }
+      return drainForestQueue(repoId);
+    }
+    const m = updateForestMessage(turn.assistant.id, { state: "pending" }, repoId);
+    broadcastForestMessage(repoId, m);
+    startForestTurn(repoId, turn.user.body, turn.user.author, turn.assistant.model, turn.assistant.sessionId, m, turn.user.id);
+  } catch (e) {
+    console.error(`[meowtrack] drainForestQueue repo=${repoId}: ${e.message || e}`);
   }
 }
 
@@ -623,35 +707,20 @@ export function handleForestChat(res, repoId, body) {
   const clientNonce = body.clientNonce ? String(body.clientNonce).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 80) || null : null;
 
   const lockKey = forestLockKey(repoId);
-  if (aiLocks.has(lockKey)) return send(res, 409, { error: "ai_busy" });
-  if (aiInFlight >= MAX_CONCURRENT_AI) return send(res, 429, { error: "ai_overloaded" });
+  const busy = aiLocks.has(lockKey);
+  // Option B (NODE-329) : tour forêt déjà en vol → on ENFILE au lieu de 409.
+  if (!busy && aiInFlight >= MAX_CONCURRENT_AI) return send(res, 429, { error: "ai_overloaded" });
 
   const userMessage = addForestMessage(repoId, { role: "user", author, body: text, state: "complete", clientNonce, sessionId });
   broadcastForestMessage(repoId, userMessage);
 
-  const pendingMessage = addForestMessage(repoId, { role: "assistant", author: "claude", model, body: "", state: "pending", sessionId });
+  const pendingMessage = addForestMessage(repoId, { role: "assistant", author: "claude", model, body: "", state: busy ? "queued" : "pending", sessionId });
   broadcastForestMessage(repoId, pendingMessage);
 
-  // Snapshot (toute la forêt + liens) + historique FIGÉS avant lock/202.
-  const forestSnapshot = listForest(repoId);
-  let forestLinks = [];
-  try { forestLinks = listForestLinks(repoId); } catch { /* pas de liens */ }
-  let issues = [];
-  try { issues = listIssues(repoId, { includeClosed: true, limit: 200 }); } catch { /* pas d'issues */ }
-  const history = listForestMessages(repoId, { limit: 1000, sessionId }).filter((m) => m.state === "complete" && m.id !== userMessage.id);
+  if (busy) return send(res, 202, { userMessage, pendingMessage, queued: true });
 
-  aiLocks.set(lockKey, { child: null });
-  aiInFlight++;
-  broadcast(forestKey(repoId), "ai:turn", { repoId, scope: "forest", actor: author, model, state: "start", turnId: pendingMessage.id });
-
-  let root = null;
-  try {
-    root = rootForRepo(repoId);
-  } catch {
-    /* repo sans clone résolvable → IA sans accès fichiers */
-  }
   send(res, 202, { userMessage, pendingMessage });
-  runForestTurn(repoId, forestSnapshot, history, text, author, model, pendingMessage.id, root, forestLinks, issues).catch(() => {});
+  startForestTurn(repoId, text, author, model, sessionId, pendingMessage, userMessage.id);
 }
 
 // POST /api/forest/chat/confirm { messageId } — confirme une proposition destructive
@@ -787,4 +856,36 @@ export async function triggerAutoReview(repoId, nodeId, reviewIds, { model, poli
   if (affected.length) broadcastAffected(repoId, affected);
   broadcast(forestKey(repoId), "review:resolved", { repoId, nodeId, auto: true, messageId: pendingMessage.id });
   return { ok: true, messageId: pendingMessage.id, resolved: reviews.length, autoReviewCount: count };
+}
+
+// ── Reprise des tours en file au démarrage (Option B, NODE-329) ──────────────
+// Les tours `queued` survivent à un reload mais aucun tour ne tourne pour les
+// enchaîner. Au boot on : (1) repasse en erreur les placeholders pending/streaming
+// orphelins d'un crash (sinon bulle « en cours » figée), puis (2) (re)déclenche un
+// drain par nœud/forêt ayant des éléments en file. Best-effort, borné par le sémaphore
+// global : ne jamais casser le démarrage. Renvoie le nombre de tours relancés.
+export function resumeQueuedTurns() {
+  let resumed = 0;
+  let repos = [];
+  try { repos = listRepos(); } catch { return 0; }
+  for (const r of repos) {
+    const repoId = r.id;
+    try { failDanglingNodeTurns(repoId); } catch { /* best-effort */ }
+    try { failDanglingForestTurns(repoId); } catch { /* best-effort */ }
+    try {
+      for (const nodeId of listQueuedNodeIds(repoId)) {
+        if (aiInFlight >= MAX_CONCURRENT_AI) return resumed;
+        drainNodeQueue(repoId, nodeId);
+        resumed++;
+      }
+    } catch (e) { console.error(`[meowtrack] resumeQueuedTurns repo=${repoId} (nœuds): ${e.message || e}`); }
+    try {
+      if (hasQueuedForestTurn(repoId)) {
+        if (aiInFlight >= MAX_CONCURRENT_AI) return resumed;
+        drainForestQueue(repoId);
+        resumed++;
+      }
+    } catch (e) { console.error(`[meowtrack] resumeQueuedTurns repo=${repoId} (forêt): ${e.message || e}`); }
+  }
+  return resumed;
 }

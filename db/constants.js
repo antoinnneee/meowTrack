@@ -21,7 +21,11 @@ export const NODE_STATUSES = ["active", "paused", "waiting", "done", "abandoned"
 export const NODE_KINDS = ["normal", "activation"];
 export const NODE_COLORS = ["accent", "feature", "task", "bug", "high"];
 export const CHAT_MODELS = ["sonnet", "opus", "haiku"];
-export const MESSAGE_STATES = ["pending", "streaming", "complete", "error"];
+// `queued` = tour IA EN FILE (Option B) : un message reçu pendant qu'un autre tour
+// est déjà en vol pour le même nœud/forêt est persisté en placeholder `queued` au
+// lieu d'être refusé (409). Il est enchaîné automatiquement à la clôture du tour
+// courant (drainQueue) et survit à un reload (reprise au boot).
+export const MESSAGE_STATES = ["pending", "queued", "streaming", "complete", "error"];
 // Liens de prérequis entre nœuds (hors hiérarchie) : catalogue fermé des types.
 export const NODE_LINK_KINDS = ["requires"];
 

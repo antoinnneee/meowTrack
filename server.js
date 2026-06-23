@@ -38,6 +38,7 @@ import { handle as githubRoutes } from "./routes/github.js";
 import { handle as issuesRoutes } from "./routes/issues.js";
 import { handle as nodesRoutes } from "./routes/nodes.js";
 import { handle as settingsRoutes } from "./routes/settings.js";
+import { resumeQueuedTurns } from "./ai/turns.js";
 
 // Exporté pour les tests isolés (cf. test/parse_ai_turn.test.mjs, ghost_payload.test.mjs).
 export { parseAiTurn, ghostPayloadFromAction } from "./ai/parse.js";
@@ -101,6 +102,16 @@ if (process.env.MEOWTRACK_NO_LISTEN !== "1") {
     if (r.skipped) console.error(`[meowtrack]   ${r.slug} : clone local (pas d'URL) — ${r.branch || "?"}.`);
     else if (r.ok) console.error(`[meowtrack]   ${r.slug} : ${r.cloned ? "cloné" : "à jour"} (${r.branch || "?"} @ ${r.commit || "?"}).`);
     else console.error(`[meowtrack]   ⚠️  ${r.slug} : sync échouée — ${r.output || "erreur inconnue"}`);
+  }
+
+  // Reprise des tours de chat IA EN FILE (Option B, NODE-329) : enchaîne les messages
+  // `queued` persistés survivants à un reload, et purge les placeholders orphelins
+  // d'un crash. Best-effort — n'interrompt jamais le démarrage.
+  try {
+    const resumed = resumeQueuedTurns();
+    if (resumed) console.error(`[meowtrack] Reprise de ${resumed} tour(s) de chat IA en file.`);
+  } catch (e) {
+    console.error(`[meowtrack] ⚠️  Reprise des tours en file impossible : ${e.message || e}`);
   }
 
   // Versionnement git des tracker.db (opt-in MEOWTRACK_TRACKING_GIT=1) : prépare les

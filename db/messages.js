@@ -132,6 +132,49 @@ export function updateNodeMessage(messageId, { body, reasoning, state, actions }
   });
 }
 
+// ── File persistée des tours IA (Option B, NODE-329) ─────────────────────────
+// Un message ASSISTANT à l'état `queued` représente UN tour en file : son texte
+// déclencheur est le message UTILISATEUR qui le précède immédiatement (même nœud,
+// même session). On le réhydrate en cherchant le user le plus récent d'id inférieur.
+// L'ordre par id garantit le FIFO d'arrivée multi-clients ; la persistance fait
+// survivre la file à un reload.
+
+// Plus ancien tour en file d'un nœud (toutes sessions) : { assistant, user } ou null.
+export function nextQueuedNodeTurn(nodeId, repoId = null) {
+  return withRepo(repoId, () => {
+    const a = db
+      .prepare("SELECT * FROM node_messages WHERE node_id = ? AND role = 'assistant' AND state = 'queued' ORDER BY id LIMIT 1")
+      .get(nodeId);
+    if (!a) return null;
+    const u = a.session_id == null
+      ? db.prepare("SELECT * FROM node_messages WHERE node_id = ? AND role = 'user' AND session_id IS NULL AND id < ? ORDER BY id DESC LIMIT 1").get(nodeId, a.id)
+      : db.prepare("SELECT * FROM node_messages WHERE node_id = ? AND role = 'user' AND session_id = ? AND id < ? ORDER BY id DESC LIMIT 1").get(nodeId, a.session_id, a.id);
+    return { assistant: rowToNodeMessage(a), user: rowToNodeMessage(u) };
+  });
+}
+
+// Ids des nœuds (du repo courant) ayant au moins un tour en file — reprise au boot.
+export function listQueuedNodeIds(repoId = null) {
+  return withRepo(repoId, () =>
+    db
+      .prepare("SELECT DISTINCT node_id FROM node_messages WHERE role = 'assistant' AND state = 'queued' ORDER BY node_id")
+      .all()
+      .map((r) => r.node_id)
+  );
+}
+
+// Repasse en `error` les placeholders assistant orphelins (pending/streaming) d'un
+// tour tué par un redémarrage — sinon une bulle resterait « en cours » indéfiniment.
+export function failDanglingNodeTurns(repoId = null) {
+  return withRepo(repoId, () =>
+    db
+      .prepare(
+        "UPDATE node_messages SET state = 'error', body = CASE WHEN body = '' THEN '⚠️ Tour interrompu par un redémarrage du serveur.' ELSE body END WHERE role = 'assistant' AND state IN ('pending','streaming')"
+      )
+      .run().changes
+  );
+}
+
 // ── Chat « top level » (par repo / forêt) ────────────────────────────────────
 function rowToForestMessage(r) {
   if (!r) return null;
@@ -242,6 +285,45 @@ export function updateForestMessage(messageId, { body, reasoning, state, actions
   }
   if (sets.length) db.prepare(`UPDATE forest_messages SET ${sets.join(", ")} WHERE id = ?`).run(...vals, messageId);
   return getForestMessage(messageId);
+  });
+}
+
+// ── File persistée des tours IA — versant forêt (Option B, NODE-329) ─────────
+// Plus ancien tour en file d'une forêt (toutes sessions) : { assistant, user } ou null.
+export function nextQueuedForestTurn(repoId) {
+  if (repoId == null) throw new Error("repoId requis");
+  return withRepo(repoId, () => {
+    const rid = resolveRepoId(repoId);
+    const a = db
+      .prepare("SELECT * FROM forest_messages WHERE repo_id = ? AND role = 'assistant' AND state = 'queued' ORDER BY id LIMIT 1")
+      .get(rid);
+    if (!a) return null;
+    const u = a.session_id == null
+      ? db.prepare("SELECT * FROM forest_messages WHERE repo_id = ? AND role = 'user' AND session_id IS NULL AND id < ? ORDER BY id DESC LIMIT 1").get(rid, a.id)
+      : db.prepare("SELECT * FROM forest_messages WHERE repo_id = ? AND role = 'user' AND session_id = ? AND id < ? ORDER BY id DESC LIMIT 1").get(rid, a.session_id, a.id);
+    return { assistant: rowToForestMessage(a), user: rowToForestMessage(u) };
+  });
+}
+
+// Vrai si la forêt a au moins un tour en file — reprise au boot.
+export function hasQueuedForestTurn(repoId) {
+  if (repoId == null) throw new Error("repoId requis");
+  return withRepo(repoId, () => {
+    const rid = resolveRepoId(repoId);
+    return !!db.prepare("SELECT 1 FROM forest_messages WHERE repo_id = ? AND role = 'assistant' AND state = 'queued' LIMIT 1").get(rid);
+  });
+}
+
+// Repasse en `error` les placeholders forêt orphelins (pending/streaming) après crash.
+export function failDanglingForestTurns(repoId) {
+  if (repoId == null) throw new Error("repoId requis");
+  return withRepo(repoId, () => {
+    const rid = resolveRepoId(repoId);
+    return db
+      .prepare(
+        "UPDATE forest_messages SET state = 'error', body = CASE WHEN body = '' THEN '⚠️ Tour interrompu par un redémarrage du serveur.' ELSE body END WHERE repo_id = ? AND role = 'assistant' AND state IN ('pending','streaming')"
+      )
+      .run(rid).changes;
   });
 }
 
