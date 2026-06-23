@@ -82,6 +82,11 @@
     <!-- Vue Vibes : graphe organique -->
     <main class="view graph-view" id="graphView" hidden>
       <svg id="graphSvg" class="graph-svg" preserveAspectRatio="xMidYMid meet"></svg>
+      <!-- NODE-331 : recherche « type-to-search » (s'ouvre en tapant hors d'un champ). -->
+      <div class="graph-search" id="graphSearch" hidden>
+        <input type="text" id="graphSearchInput" placeholder="Rechercher un nœud…" autocomplete="off" spellcheck="false" />
+        <ul class="graph-search-results" id="graphSearchResults"></ul>
+      </div>
       <div class="graph-controls">
         <div class="graph-filters" id="graphFilters">
           <button class="graph-filter-btn active" data-status="done" title="Afficher / masquer les nœuds terminés">✅ Terminés</button>

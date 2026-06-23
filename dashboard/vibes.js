@@ -1141,6 +1141,120 @@ function panViewTo(svg, tx, ty) {
   };
   vibes.graph._panRaf = requestAnimationFrame(step);
 }
+
+// ── NODE-331 : recherche « type-to-search » dans le graphe ───────────────────
+// En vue graphe, taper (hors champ de saisie) ouvre un pop qui filtre la forêt EN
+// MÉMOIRE (titre/ref/description, insensible casse+accents). Le résultat actif est
+// mis en surbrillance (halo de NODE-326) ; Entrée/clic ouvre le nœud. Zéro API.
+const _normSearch = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+let _graphSearchActive = -1; // index du résultat actif (-1 = aucun)
+
+function graphSearchVisible() { return !$("#graphSearch")?.hidden; }
+
+function openGraphSearch(initialChar) {
+  const pop = $("#graphSearch");
+  if (!pop) return;
+  pop.hidden = false;
+  const input = $("#graphSearchInput");
+  input.value = initialChar && initialChar.length === 1 ? initialChar : "";
+  renderGraphSearch();
+  input.focus();
+  const n = input.value.length;
+  try { input.setSelectionRange(n, n); } catch { /* ignore */ }
+}
+function closeGraphSearch() {
+  const pop = $("#graphSearch");
+  if (!pop || pop.hidden) return;
+  pop.hidden = true;
+  $("#graphSearchInput").value = "";
+  $("#graphSearchResults").replaceChildren();
+  vibes.graph._searchItems = [];
+  _graphSearchActive = -1;
+  clearGraphHighlight();
+}
+function graphSearchMatches(q) {
+  const nq = _normSearch(q).trim();
+  if (!nq) return [];
+  const out = [];
+  for (const n of vibes.forest) {
+    if (!n) continue;
+    const hay = _normSearch(n.title) + " " + _normSearch(n.ref) + " " + _normSearch(n.description);
+    if (hay.includes(nq)) out.push(n);
+    if (out.length >= 8) break;
+  }
+  return out;
+}
+function renderGraphSearch() {
+  const ul = $("#graphSearchResults");
+  if (!ul) return;
+  const items = graphSearchMatches($("#graphSearchInput").value);
+  vibes.graph._searchItems = items;
+  _graphSearchActive = items.length ? 0 : -1;
+  ul.replaceChildren();
+  items.forEach((n, i) => {
+    const li = document.createElement("li");
+    li.className = "graph-search-item" + (i === 0 ? " active" : "");
+    li.dataset.id = n.id;
+    const emoji = document.createElement("span");
+    emoji.className = "gs-emoji";
+    emoji.textContent = n.emoji || "•";
+    const ref = document.createElement("span");
+    ref.className = "gs-ref";
+    ref.textContent = n.ref;
+    const title = document.createElement("span");
+    title.className = "gs-title";
+    title.textContent = n.title || "(sans titre)";
+    li.append(emoji, ref, title);
+    li.addEventListener("mouseenter", () => setGraphSearchActive(i));
+    li.addEventListener("mousedown", (e) => { e.preventDefault(); chooseGraphSearch(i); });
+    ul.appendChild(li);
+  });
+  if (items.length) highlightGraphNode(items[0].id);
+  else clearGraphHighlight();
+}
+function setGraphSearchActive(i) {
+  const items = vibes.graph._searchItems || [];
+  if (!items.length) return;
+  _graphSearchActive = ((i % items.length) + items.length) % items.length; // wrap ↑/↓
+  const lis = $("#graphSearchResults").querySelectorAll(".graph-search-item");
+  lis.forEach((li, k) => li.classList.toggle("active", k === _graphSearchActive));
+  const n = items[_graphSearchActive];
+  if (n) highlightGraphNode(n.id);
+  lis[_graphSearchActive]?.scrollIntoView({ block: "nearest" });
+}
+function chooseGraphSearch(i) {
+  const items = vibes.graph._searchItems || [];
+  const n = items[i != null ? i : _graphSearchActive];
+  if (!n) return;
+  closeGraphSearch();
+  openNode(n.id);
+}
+function wireGraphSearch() {
+  const input = $("#graphSearchInput");
+  if (!input) return;
+  input.addEventListener("input", renderGraphSearch);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown") { e.preventDefault(); setGraphSearchActive(_graphSearchActive + 1); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setGraphSearchActive(_graphSearchActive - 1); }
+    else if (e.key === "Enter") { e.preventDefault(); chooseGraphSearch(); }
+    else if (e.key === "Escape") { e.preventDefault(); closeGraphSearch(); }
+  });
+  input.addEventListener("blur", () => setTimeout(closeGraphSearch, 150)); // clic résultat = mousedown avant blur
+  // Déclencheur global « type-to-search » : une touche imprimable en vue graphe,
+  // hors champ de saisie, sans modificateur, ouvre le pop avec ce caractère.
+  document.addEventListener("keydown", (e) => {
+    if ($("#graphView")?.hidden) return;            // graphe non visible
+    if (graphSearchVisible()) return;               // déjà ouvert → l'input gère la frappe
+    if (vibes.graph.linking || document.getElementById("ctxMenu")) return; // lien-mode / menu actif
+    const el = document.activeElement;
+    if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return; // ne pas voler la frappe
+    if (e.key.length !== 1 || e.ctrlKey || e.metaKey || e.altKey) return; // touche imprimable seule
+    if (e.key.trim() === "") return;                // ignore l'espace
+    e.preventDefault();
+    openGraphSearch(e.key);
+  });
+}
+
 function fitView(pos, svg) {
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const p of pos.values()) {
@@ -3125,6 +3239,7 @@ export function initVibes() {
   $("#nodeBackdrop").addEventListener("mousedown", (e) => { if (e.target === $("#nodeBackdrop")) closeNodeModal(); });
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;
+    if (graphSearchVisible()) { closeGraphSearch(); return; } // NODE-331 : ferme le pop de recherche
     if (vibes.graph.linking) { cancelLinkMode(); return; }
     if (document.getElementById("ctxMenu")) { hideCtxMenu(); return; }
     if (vibes.graph.edgeDel) { hideEdgeDel(); return; }
@@ -3133,6 +3248,7 @@ export function initVibes() {
   });
   buildColorChips();
   wireGraph();
+  wireGraphSearch(); // NODE-331 : recherche « type-to-search » dans le graphe
   setVibesLayout(vibes.layout);
   window.addEventListener("beforeunload", closeStream);
   const viewFromHash = () =>
