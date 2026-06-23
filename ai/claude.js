@@ -1,18 +1,17 @@
-// ai/claude.js — invocations du CLI `claude` (spawn/execFile, JAMAIS un shell).
+// ai/claude.js — invocations du CLI `claude` (spawn ; le PROMPT passe par STDIN, jamais
+// sur la ligne de commande). `shell:true` UNIQUEMENT sur Windows (shim .cmd, cf.
+// config.js/claudeOpts) — sûr car aucune donnée arbitraire n'est en argv (NODE-346).
 //
 // Headless sans outil pour la réécriture de texte (description, message de commit)
 // et streaming NDJSON (`--output-format stream-json`) pour le chat. Sandbox :
 // cwd/outils selon le mode (lecture seule du repo si AI_REPO_ACCESS), env SANS
 // token, kill SIGKILL partout. Le batcher coalesce les deltas en events SSE.
 
-import { execFile, spawn } from "node:child_process";
-import { promisify } from "node:util";
+import { spawn } from "node:child_process";
 import { CLAUDE_BIN, claudeToolArgs, claudeOpts, AI_REPO_ACCESS } from "../config.js";
 import { stagedDiffFor } from "../repos.js";
 import { resolveModel } from "./prompts.js";
 import { broadcast } from "../sse.js";
-
-const execFileAsync = promisify(execFile);
 
 // NODE-345 : décrit la CAUSE d'un échec de spawn du CLI (le simple code "SPAWN_ERROR"
 // ne disait rien). Extrait les champs utiles de l'erreur système Node (code/syscall/
@@ -31,15 +30,51 @@ export function spawnErrorDetail(cause, extra = "") {
   return extra && extra.trim() ? `${s} ; stderr: ${extra.trim()}` : s;
 }
 
+// NODE-346 : écrit le prompt sur le STDIN du process `claude -p` (qui le lit) puis ferme.
+// Évite de mettre la donnée arbitraire sur la ligne de commande (sûr avec shell:true sur
+// Windows, pas de limite ARG_MAX). Best-effort : un EPIPE (process déjà mort) est ignoré.
+function writePromptStdin(child, prompt) {
+  if (!child || !child.stdin) return;
+  child.stdin.on("error", () => { /* EPIPE : le process a fermé son stdin → ignoré */ });
+  try {
+    child.stdin.write(String(prompt == null ? "" : prompt));
+    child.stdin.end();
+  } catch {
+    /* ignore */
+  }
+}
+
 // Lance `claude -p` headless SANS aucun outil (raisonnement pur, cwd hors repo) —
 // utilisé par « Améliorer la description » (réécriture de texte, pas besoin du repo).
+// NODE-346 : prompt par STDIN (idem streaming) → fonctionne aussi avec shell:true sur
+// Windows. Implémenté via spawn (execFile ne permet pas d'alimenter stdin).
 async function runClaudeSandboxed(prompt, model = "sonnet") {
-  const { stdout } = await execFileAsync(CLAUDE_BIN, ["-p", prompt, "--model", model, ...claudeToolArgs(false)], {
-    timeout: 120000,
-    maxBuffer: 8 * 1024 * 1024,
-    ...claudeOpts(false),
+  return new Promise((resolve, reject) => {
+    let child;
+    try {
+      child = spawn(CLAUDE_BIN, ["-p", "--model", resolveModel(model), ...claudeToolArgs(false)], claudeOpts(false));
+    } catch (e) {
+      return reject(Object.assign(new Error("SPAWN_ERROR"), { code: "SPAWN_ERROR", cause: e, detail: spawnErrorDetail(e) }));
+    }
+    let out = "", err = "", outBytes = 0, settled = false;
+    const fin = (fn, a) => { if (settled) return; settled = true; clearTimeout(timer); try { child.kill("SIGKILL"); } catch { /* ignore */ } fn(a); };
+    const timer = setTimeout(() => fin(reject, Object.assign(new Error("AI_TIMEOUT"), { code: "AI_TIMEOUT" })), 120000);
+    child.on("error", (e) =>
+      fin(reject, Object.assign(new Error("SPAWN_ERROR"), { code: e.code === "ENOENT" ? "ENOENT" : "SPAWN_ERROR", cause: e, detail: spawnErrorDetail(e, err) }))
+    );
+    child.stdout.on("data", (c) => {
+      outBytes += c.length;
+      if (outBytes > 8 * 1024 * 1024) return fin(reject, Object.assign(new Error("AI_OVERFLOW"), { code: "AI_OVERFLOW" }));
+      out += c.toString("utf8");
+    });
+    child.stderr.on("data", (c) => { err = (err + c.toString("utf8")).slice(-4096); });
+    child.on("close", (code) =>
+      code === 0
+        ? fin(resolve, String(out || ""))
+        : fin(reject, Object.assign(new Error("AI_EXIT"), { code: "AI_EXIT", exitCode: code, stderr: err }))
+    );
+    writePromptStdin(child, prompt);
   });
-  return String(stdout || "");
 }
 
 // Réécrit une description via Claude en mode headless (sonnet), sandboxé.
@@ -97,15 +132,19 @@ export function runClaudeStreaming(prompt, model, root, { onThinking, onText, on
   return new Promise((resolve, reject) => {
     let child;
     try {
+      // NODE-346 : le PROMPT est passé par STDIN, PAS en argv (`claude -p` lit stdin).
+      // → pas de quoting/limite ARG_MAX, et la ligne de commande reste sûre même avec
+      // shell:true sur Windows (cf. claudeOpts), où le shim .cmd l'exige.
       child = spawn(
         CLAUDE_BIN,
-        ["-p", prompt, "--model", resolveModel(model), "--output-format", "stream-json", "--include-partial-messages", "--verbose", ...claudeToolArgs(AI_REPO_ACCESS)],
+        ["-p", "--model", resolveModel(model), "--output-format", "stream-json", "--include-partial-messages", "--verbose", ...claudeToolArgs(AI_REPO_ACCESS)],
         claudeOpts(AI_REPO_ACCESS, root)
       );
     } catch (e) {
       return reject(Object.assign(new Error("SPAWN_ERROR"), { code: "SPAWN_ERROR", cause: e, detail: spawnErrorDetail(e) }));
     }
     if (onChild) onChild(child);
+    writePromptStdin(child, prompt);
 
     let settled = false;
     let buf = "";

@@ -6,6 +6,8 @@
 // http-util.js (résolus depuis la racine du dépôt).
 
 import { tmpdir } from "node:os";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 export const PORT = Number(process.env.MEOWTRACK_PORT) || 7702;
 // Défaut localhost (dev). En déploiement, MEOWTRACK_HOST=0.0.0.0 pour être
@@ -57,6 +59,24 @@ const AI_DENY_SETTINGS = JSON.stringify({
   },
 });
 
+// NODE-346 : `--settings` reçoit le CHEMIN d'un fichier JSON, PAS le JSON inline. Le
+// JSON inline (avec `"`, `(`, `)`, `*`…) serait mutilé par cmd.exe quand shell:true est
+// actif sur Windows (Node ne quote pas les args en mode shell). `claude --settings`
+// accepte indifféremment un chemin ou du JSON → on écrit le JSON une fois dans un fichier
+// temp et on passe son chemin (argv sûr). Repli sur l'inline si l'écriture échoue.
+let _denySettingsArg = null;
+function denySettingsArg() {
+  if (_denySettingsArg) return _denySettingsArg;
+  try {
+    const p = join(tmpdir(), "meowtrack-ai-deny-settings.json");
+    writeFileSync(p, AI_DENY_SETTINGS);
+    _denySettingsArg = p;
+  } catch {
+    _denySettingsArg = AI_DENY_SETTINGS; // best-effort (Linux/macOS : inline reste sûr, pas de shell)
+  }
+  return _denySettingsArg;
+}
+
 // Args d'outils selon le mode. repoAccess=false → AUCUN outil (raisonnement pur).
 // repoAccess=true → lecture seule (Read/Glob/Grep) + écriture/shell/réseau interdits
 // (deny gagne) + secrets en deny via --settings.
@@ -66,11 +86,20 @@ export function claudeToolArgs(repoAccess) {
   return [
     "--allowedTools", "Read", "Glob", "Grep",
     "--disallowedTools", "Bash", "Edit", "Write", "WebFetch", "WebSearch", "NotebookEdit", "Task",
-    "--settings", AI_DENY_SETTINGS,
+    "--settings", denySettingsArg(),
   ];
 }
 // cwd = racine du clone du repo concerné si accès ouvert (pour Read/Glob/Grep),
 // sinon dossier temp. `root` = clone du repo du nœud (multi-repos).
+//
+// NODE-346 : sur Windows, le CLI `claude` est un shim `.cmd`/`.ps1` (installation npm).
+// Depuis le correctif de sécurité Node (CVE-2024-27980), spawn REFUSE d'exécuter un
+// `.cmd`/`.bat` sans `shell:true` → échec « SPAWN_ERROR » (EINVAL) à chaque message.
+// On active donc `shell:true` UNIQUEMENT sur win32 ; c'est SÛR car le prompt (seule
+// donnée arbitraire) est passé par STDIN, pas par l'argv (cf. ai/claude.js) : la ligne
+// de commande ne contient que des flags statiques. `windowsHide` évite un flash de
+// console. Sur Linux/macOS, comportement inchangé (pas de shell).
+const IS_WIN = process.platform === "win32";
 export function claudeOpts(repoAccess, root) {
-  return { cwd: repoAccess && root ? root : tmpdir(), env: AI_ENV };
+  return { cwd: repoAccess && root ? root : tmpdir(), env: AI_ENV, shell: IS_WIN, windowsHide: true };
 }
