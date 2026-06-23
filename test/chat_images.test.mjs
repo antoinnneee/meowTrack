@@ -55,9 +55,12 @@ try {
   check("contenu non-image rejeté", throws(() => normalizeChatImages([{ mimeType: "image/png", data: b64(Buffer.from("pas une image")) }])));
   // Trop d'images (> 4).
   check("plus de 4 images rejeté", throws(() => normalizeChatImages(Array(5).fill({ mimeType: "image/png", data: b64(PNG) }))));
-  // Image trop lourde (> 5 Mo).
-  const big = Buffer.concat([PNG, Buffer.alloc(5 * 1024 * 1024 + 1)]);
-  check("image > 5 Mo rejetée", throws(() => normalizeChatImages([{ mimeType: "image/png", data: b64(big) }])));
+  // Une image de 5 Mo est désormais ACCEPTÉE (limite portée à 25 Mo).
+  const mid = Buffer.concat([PNG, Buffer.alloc(5 * 1024 * 1024)]);
+  check("image de 5 Mo acceptée (< 25 Mo)", normalizeChatImages([{ mimeType: "image/png", data: b64(mid) }]).length === 1);
+  // Image trop lourde (> 25 Mo).
+  const big = Buffer.concat([PNG, Buffer.alloc(25 * 1024 * 1024 + 1)]);
+  check("image > 25 Mo rejetée", throws(() => normalizeChatImages([{ mimeType: "image/png", data: b64(big) }])));
 
   // ── chatStreamInput : message user stream-json bien formé ───────────────────
   const imgs = normalizeChatImages([{ mimeType: "image/png", data: b64(PNG) }, { mimeType: "image/jpeg", data: b64(JPEG) }]);

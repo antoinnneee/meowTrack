@@ -52,8 +52,8 @@ function writePromptStdin(child, prompt) {
 // disque, aucune surface de path-traversal (contrairement au plan initial du nœud,
 // bâti sur un `--image <path>` inexistant).
 export const IMAGE_MIME = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
-const MAX_IMG_BYTES = 5 * 1024 * 1024; // 5 Mo par image
-const MAX_IMG_TOTAL = 20 * 1024 * 1024; // 20 Mo cumulés
+const MAX_IMG_BYTES = 25 * 1024 * 1024; // 25 Mo par image
+const MAX_IMG_TOTAL = 25 * 1024 * 1024; // 25 Mo cumulés
 const MAX_IMG_COUNT = 4;
 
 // Détecte le vrai type via les magic bytes du buffer décodé (un client peut mentir
@@ -97,12 +97,12 @@ export function normalizeChatImages(images) {
     let buf;
     try { buf = Buffer.from(b64, "base64"); } catch { buf = null; }
     if (!buf || !buf.length) throw badImage("Base64 d'image invalide.");
-    if (buf.length > MAX_IMG_BYTES) throw badImage("Image trop lourde (max 5 Mo).");
+    if (buf.length > MAX_IMG_BYTES) throw badImage("Image trop lourde (max 25 Mo).");
     const sniffed = sniffImageMime(buf);
     if (!sniffed) throw badImage("Contenu d'image non reconnu.");
     if (sniffed !== declared) throw badImage(`Le contenu (${sniffed}) ne correspond pas au type déclaré (${declared}).`);
     total += buf.length;
-    if (total > MAX_IMG_TOTAL) throw badImage("Images trop lourdes au total (max 20 Mo).");
+    if (total > MAX_IMG_TOTAL) throw badImage("Images trop lourdes au total (max 25 Mo).");
     out.push({ mediaType: sniffed, data: buf.toString("base64") }); // base64 canonique re-encodé
   }
   return out;

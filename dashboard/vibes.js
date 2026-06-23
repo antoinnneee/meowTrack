@@ -2879,7 +2879,7 @@ function autoGrowChat(ta) {
 // Staging côté front : trombone/coller → lecture base64 → aperçu cliquable → POST
 // { images:[{mimeType,data}] }. Le serveur revalide (allowlist + magic bytes + taille).
 const CHAT_IMG_MIME = ["image/png", "image/jpeg", "image/gif", "image/webp"];
-const CHAT_IMG_MAX_BYTES = 5 * 1024 * 1024; // 5 Mo / image
+const CHAT_IMG_MAX_BYTES = 25 * 1024 * 1024; // 25 Mo / image
 const CHAT_IMG_MAX = 4;
 
 // Lit un File en base64 nu (sans préfixe data URL). Résout null si illisible.
@@ -2900,7 +2900,7 @@ function fileToBase64(file) {
 async function addStagedImages(ctx, files) {
   for (const file of Array.from(files || [])) {
     if (!CHAT_IMG_MIME.includes(file.type)) { toast(`Type non supporté : ${file.type || file.name}`); continue; }
-    if (file.size > CHAT_IMG_MAX_BYTES) { toast(`Image trop lourde (max 5 Mo) : ${file.name}`); continue; }
+    if (file.size > CHAT_IMG_MAX_BYTES) { toast(`Image trop lourde (max 25 Mo) : ${file.name}`); continue; }
     if (ctx.images.length >= CHAT_IMG_MAX) { toast(`Max ${CHAT_IMG_MAX} images par message.`); break; }
     const data = await fileToBase64(file);
     if (!data) { toast(`Lecture impossible : ${file.name}`); continue; }
