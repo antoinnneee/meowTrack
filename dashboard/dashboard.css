@@ -319,6 +319,13 @@ kbd { background: var(--surface-2); border: 1px solid var(--border); border-radi
 .graph-next .gn-ico { flex: 0 0 auto; }
 .graph-next .gn-ref { font-family: ui-monospace, monospace; color: var(--accent-2); flex: 0 0 auto; }
 .graph-next .gn-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text-dim); }
+
+/* NODE-338 : sélecteur de pages de graphe (toiles séparées) dans la toolbar. */
+.graph-pages { display: inline-flex; align-items: center; gap: 4px; }
+.graph-pages #graphPageSel { max-width: 200px; }
+.graph-pages .xs { padding: 4px 7px; }
+.graph-pages .xs:disabled { opacity: 0.4; cursor: default; }
+.graph-pages .xs:disabled:hover { border-color: var(--border); }
 .mention-menu li .kind { opacity: .8; }
 .mention-menu li .base { font-weight: 600; }
 .mention-menu li .dir { color: var(--text-dim); }

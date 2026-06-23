@@ -94,6 +94,13 @@
           <button class="graph-filter-btn active" data-status="paused" title="Afficher / masquer les nœuds en pause">⏸ En pause</button>
         </div>
         <button id="graphFit" class="ghost" title="Recentrer">⤢ Recentrer</button>
+        <!-- NODE-338 : sélecteur de pages de graphe (toiles séparées). « Tout » = forêt complète. -->
+        <div class="graph-pages" id="graphPages">
+          <select id="graphPageSel" class="branch-select" title="Page de graphe active"></select>
+          <button id="graphPageNew" class="ghost xs" title="Nouvelle page">＋</button>
+          <button id="graphPageRename" class="ghost xs" title="Renommer la page">✎</button>
+          <button id="graphPageDel" class="ghost xs" title="Supprimer la page">🗑</button>
+        </div>
         <!-- NODE-333 : peek lecture seule du prochain nœud dispatchable (survol = halo, clic = ouvre). -->
         <button id="graphNextNode" class="graph-next" hidden></button>
       </div>

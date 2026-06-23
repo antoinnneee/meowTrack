@@ -71,7 +71,9 @@ export const vibes = {
     pendingCreatePos: null, // position graphe où créer le prochain nœud (menu fond)
     suppressClick: false,   // ignore le prochain click (après un drag)
     hiddenStatuses: new Set(), // statuts masqués par les filtres (done/abandoned/paused)
+    activePage: null,          // NODE-338 : page de graphe active (null = « Tout », forêt complète)
   },
+  pages: [],                   // NODE-338 : pages de graphe du repo [{ id, name, isDefault, nodeCount }]
 };
 
 // ── Contexte de chat actif (nœud vs « top level » / forêt) ───────────────────
@@ -521,6 +523,7 @@ async function loadForest() {
     indexLinks(links);
     renderForestViews();
     loadNextNode(); // NODE-333 : rafraîchit l'indicateur « prochain nœud » (best-effort)
+    loadPages();    // NODE-338 : rafraîchit le sélecteur de pages (best-effort)
   } catch (e) {
     $("#graphSvg") && ($("#vibesSummary").textContent = "Erreur : " + e.message);
   }
@@ -595,7 +598,7 @@ function renderGrid() {
   const wrap = $("#goalCards");
   if (!wrap) return;
   wrap.innerHTML =
-    rootsOf().map(nodeCardHtml).join("") +
+    rootsOf().filter(onActivePage).map(nodeCardHtml).join("") + // NODE-338 : filtre page active
     vibes._ghostNodes.map(ghostCardHtml).join("") +
     `<div class="goal-card ghost-card" id="ghostAddNode">＋ Nouvel objectif</div>`;
   wrap.querySelectorAll(".goal-card[data-ref]").forEach((c) => c.addEventListener("click", () => openNode(c.dataset.ref)));
@@ -979,13 +982,21 @@ function graphDefs() {
 function computeHiddenNodes() {
   const hidden = new Set();
   const h = vibes.graph.hiddenStatuses;
-  if (!h.size) return hidden;
+  const pageId = vibes.graph.activePage; // NODE-338 : null = « Tout »
+  if (!h.size && pageId == null) return hidden;
   const visit = (n) => {
-    if (h.has(n.status) || (n.parentId != null && hidden.has(n.parentId))) hidden.add(n.id);
+    // Masqué si : statut filtré, OU hors page active, OU ancêtre masqué (pas d'enfant
+    // visible suspendu). L'appartenance est par racine → l'arbre entier suit sa page.
+    const offPage = pageId != null && n.pageId !== pageId;
+    if (h.has(n.status) || offPage || (n.parentId != null && hidden.has(n.parentId))) hidden.add(n.id);
     for (const c of childrenOf(n.id)) visit(c);
   };
   for (const root of rootsOf()) visit(root);
   return hidden;
+}
+// NODE-338 : vrai si le nœud appartient à la page active (ou si « Tout » est sélectionné).
+function onActivePage(n) {
+  return vibes.graph.activePage == null || n.pageId === vibes.graph.activePage;
 }
 // Dessine la minimap : vue d'ensemble de tout le graphe avec le rectangle de viewport.
 function renderMinimap(pos, hiddenIds) {
@@ -1290,6 +1301,81 @@ function wireNextNode() {
   box.addEventListener("mouseenter", () => { if (_nextNodeId) highlightGraphNode(_nextNodeId); });
   box.addEventListener("mouseleave", () => clearGraphHighlight());
   box.addEventListener("click", () => { if (_nextNodeId) openNode(_nextNodeId); });
+}
+
+// ── NODE-338 : sélecteur de pages de graphe (toiles séparées) ────────────────
+// « Tout » (forêt complète) par défaut ; sinon le graphe/grille ne montrent que les
+// nœuds de la page active (appartenance par racine, cf. NODE-337). CRUD via /api/pages.
+async function loadPages() {
+  try {
+    const { pages } = await api.get("/api/pages");
+    vibes.pages = Array.isArray(pages) ? pages : [];
+  } catch { vibes.pages = []; }
+  // La page active a pu disparaître (supprimée ailleurs) → repli sur « Tout ».
+  if (vibes.graph.activePage != null && !vibes.pages.some((p) => p.id === vibes.graph.activePage)) {
+    vibes.graph.activePage = null;
+  }
+  renderPageSelector();
+}
+function renderPageSelector() {
+  const sel = $("#graphPageSel");
+  if (!sel) return;
+  sel.replaceChildren();
+  const all = document.createElement("option");
+  all.value = "";
+  all.textContent = `Tout (${vibes.forest.length})`;
+  sel.appendChild(all);
+  for (const p of vibes.pages) {
+    const o = document.createElement("option");
+    o.value = String(p.id);
+    o.textContent = p.nodeCount != null ? `${p.name} (${p.nodeCount})` : p.name;
+    sel.appendChild(o);
+  }
+  sel.value = vibes.graph.activePage == null ? "" : String(vibes.graph.activePage);
+  const active = vibes.pages.find((p) => p.id === vibes.graph.activePage);
+  const del = $("#graphPageDel"), ren = $("#graphPageRename");
+  if (del) del.disabled = !active || active.isDefault; // « Tout » + page par défaut non supprimables
+  if (ren) ren.disabled = !active;
+}
+function setActivePage(id) {
+  vibes.graph.activePage = id || null;
+  vibes.graph.userView = false; // recadrer sur les nœuds de la page
+  renderPageSelector();
+  renderForestViews();
+}
+async function createPagePrompt() {
+  const name = prompt("Nom de la nouvelle page :", "");
+  if (name == null) return;
+  try {
+    const p = await api.send("POST", "/api/pages", { name: name.trim() || "Sans titre" });
+    await loadPages();
+    setActivePage(p.id);
+  } catch (e) { toast("Erreur : " + e.message); }
+}
+async function renamePagePrompt() {
+  const active = vibes.pages.find((p) => p.id === vibes.graph.activePage);
+  if (!active) return;
+  const name = prompt("Renommer la page :", active.name);
+  if (name == null) return;
+  try { await api.send("PATCH", `/api/pages/${active.id}`, { name: name.trim() || active.name }); await loadPages(); }
+  catch (e) { toast("Erreur : " + e.message); }
+}
+async function deletePagePrompt() {
+  const active = vibes.pages.find((p) => p.id === vibes.graph.activePage);
+  if (!active || active.isDefault) return;
+  if (!confirm(`Supprimer la page « ${active.name} » ? Ses nœuds reviennent à la page par défaut.`)) return;
+  try {
+    await api.send("DELETE", `/api/pages/${active.id}`);
+    vibes.graph.activePage = null;
+    await loadForest(); // les nœuds ont changé de page → recharge forêt + pages
+    setActivePage(null);
+  } catch (e) { toast("Erreur : " + e.message); }
+}
+function wireGraphPages() {
+  $("#graphPageSel")?.addEventListener("change", (e) => setActivePage(Number(e.target.value) || null));
+  $("#graphPageNew")?.addEventListener("click", createPagePrompt);
+  $("#graphPageRename")?.addEventListener("click", renamePagePrompt);
+  $("#graphPageDel")?.addEventListener("click", deletePagePrompt);
 }
 
 function fitView(pos, svg) {
@@ -3289,6 +3375,7 @@ export function initVibes() {
   wireGraph();
   wireGraphSearch(); // NODE-331 : recherche « type-to-search » dans le graphe
   wireNextNode();    // NODE-333 : indicateur « prochain nœud » (peek orchestrateur)
+  wireGraphPages();  // NODE-338 : sélecteur de pages de graphe
   setVibesLayout(vibes.layout);
   window.addEventListener("beforeunload", closeStream);
   const viewFromHash = () =>
