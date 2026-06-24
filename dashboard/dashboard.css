@@ -594,6 +594,12 @@ body.forest-pinned.view-vibes #vibesView { margin-right: var(--forest-pin-w); }
 .g-disc { stroke: rgba(0, 0, 0, .28); stroke-width: 1.5; }
 .g-node.status-done .g-disc { stroke: var(--feature); stroke-width: 2.5; }
 .g-node.status-waiting .g-disc { stroke: var(--high); stroke-width: 2.5; stroke-dasharray: 5 4; }
+.g-node.status-waiting .g-ring { stroke: var(--high); }
+@keyframes waitingPulse { 0%,100%{opacity:1} 50%{opacity:.5} }
+.g-node.status-waiting .g-inner { animation: waitingPulse 1.8s ease-in-out infinite; }
+@keyframes runningPulse { 0%,100%{opacity:1} 50%{opacity:.72} }
+.g-node.run-state-running .g-disc { stroke: var(--accent); stroke-width: 2.5; }
+.g-node.run-state-running .g-inner { animation: runningPulse 2.4s ease-in-out infinite; }
 .g-node.status-paused { opacity: .7; }
 .g-node.status-abandoned { opacity: .42; }
 /* NODE-326 : halo au survol d'une puce de nœud sous un message du chat. Placé APRÈS
