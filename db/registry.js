@@ -6,8 +6,15 @@
 // circulaire SÛR avec ./connection.js (resolveRepoId y est consommé) et
 // ../repos.js (removeTrackerStoreFor) : usages en corps de fonction uniquement.
 
+import { randomBytes } from "node:crypto";
 import { registry, closeTrackerDb } from "./connection.js";
 import { removeTrackerStoreFor } from "../repos.js";
+
+// Secret PAR dépôt (NODE-372) : 48 hex (24 octets crypto). Auto-généré à la création
+// d'un dépôt + backfill des dépôts existants (cf. db/connection.js).
+export function genRepoToken() {
+  return randomBytes(24).toString("hex");
+}
 
 // ── Réglages globaux (clé/valeur) — base de REGISTRE (instance, par machine) ───
 export function getSetting(key, fallback = "") {
@@ -138,9 +145,12 @@ function parseHiddenBranches(raw) {
     return [];
   }
 }
-function rowToRepo(r) {
+// Sérialiseur registre → DTO. Le `token` est un SECRET : exclu par défaut, inclus
+// UNIQUEMENT quand l'appelant est autorisé pour CE dépôt (includeToken=true décidé
+// par la couche HTTP selon l'auth — admin global ou détenteur du token du dépôt).
+function rowToRepo(r, includeToken = false) {
   if (!r) return null;
-  return {
+  const o = {
     id: r.id,
     slug: r.slug,
     name: r.name,
@@ -151,6 +161,20 @@ function rowToRepo(r) {
     hiddenBranches: parseHiddenBranches(r.hidden_branches),
     createdAt: r.created_at,
   };
+  if (includeToken) o.token = r.token || null;
+  return o;
+}
+// Résout un token présenté → la ligne du dépôt propriétaire (ou null). Cœur de la
+// validation serveur (NODE-374) : un token de dépôt scope l'accès à CE dépôt.
+export function repoByToken(token) {
+  const t = String(token || "").trim();
+  if (!t) return null;
+  return registry.prepare("SELECT * FROM repos WHERE token = ?").get(t) || null;
+}
+// Token brut d'un dépôt (id/slug), ou null.
+export function getRepoToken(idOrSlug) {
+  const row = getRepoRow(idOrSlug);
+  return row ? row.token || null : null;
 }
 // Ligne brute par id (numérique) ou slug (chaîne). Utilisé par repos.js.
 export function getRepoRow(idOrSlug) {
@@ -165,8 +189,8 @@ export function listRepoRows() {
 export function listRepos() {
   return listRepoRows().map(rowToRepo);
 }
-export function getRepo(idOrSlug) {
-  return rowToRepo(getRepoRow(idOrSlug));
+export function getRepo(idOrSlug, includeToken = false) {
+  return rowToRepo(getRepoRow(idOrSlug), includeToken);
 }
 function defaultRepoRow() {
   return registry.prepare("SELECT * FROM repos WHERE is_default = 1").get() || registry.prepare("SELECT * FROM repos ORDER BY id LIMIT 1").get();
@@ -193,8 +217,8 @@ export function createRepo({ slug, name, url, localPath, defaultBranch, isDefaul
   const tx = registry.transaction(() => {
     if (isDefault) registry.prepare("UPDATE repos SET is_default = 0").run();
     const res = registry
-      .prepare("INSERT INTO repos(slug, name, url, local_path, default_branch, is_default) VALUES(?,?,?,?,?,?)")
-      .run(s, String(name || s), url || null, localPath || null, defaultBranch || null, isDefault ? 1 : 0);
+      .prepare("INSERT INTO repos(slug, name, url, local_path, default_branch, is_default, token) VALUES(?,?,?,?,?,?,?)")
+      .run(s, String(name || s), url || null, localPath || null, defaultBranch || null, isDefault ? 1 : 0, genRepoToken());
     // Premier repo du registre → forcément défaut.
     if (registry.prepare("SELECT COUNT(*) c FROM repos WHERE is_default = 1").get().c === 0)
       registry.prepare("UPDATE repos SET is_default = 1 WHERE id = ?").run(res.lastInsertRowid);
@@ -224,6 +248,15 @@ export function updateRepo(idOrSlug, fields = {}) {
   });
   tx();
   return getRepo(row.id);
+}
+// Régénère le token d'un dépôt (invalide l'ancien). Renvoie le DTO AVEC le token
+// (l'appelant est forcément autorisé — admin ou détenteur). NODE-372 (rotation).
+export function rotateRepoToken(idOrSlug) {
+  const row = getRepoRow(idOrSlug);
+  if (!row) throw new Error(`Repo introuvable : ${idOrSlug}`);
+  const token = genRepoToken();
+  registry.prepare("UPDATE repos SET token = ? WHERE id = ?").run(token, row.id);
+  return getRepo(row.id, true);
 }
 export function deleteRepo(idOrSlug) {
   const row = getRepoRow(idOrSlug);

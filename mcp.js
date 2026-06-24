@@ -28,18 +28,50 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { dirname, join } from "node:path";
+import { dirname, join, parse as parsePath } from "node:path";
 import { fileURLToPath } from "node:url";
+import { existsSync, readFileSync } from "node:fs";
 import dotenv from "dotenv";
 import { registerMeowtrackTools } from "./mcp-tools.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: join(HERE, ".env") });
 
+// NODE-372/377 : token PAR dépôt, lu depuis `.meowtrack/token` à la racine du clone
+// (le MCP est lancé PAR dépôt → process.cwd() est dans le clone). On remonte les
+// dossiers parents (comme la résolution d'un `.git`). Ce fichier prime sur l'env :
+// il SCOPE l'accès à CE seul dépôt côté serveur (remplace le verrou par cwd).
+function readLocalToken(startDir) {
+  let dir = startDir;
+  const root = parsePath(dir).root;
+  for (let i = 0; i < 64; i++) {
+    const f = join(dir, ".meowtrack", "token");
+    try {
+      if (existsSync(f)) {
+        const t = readFileSync(f, "utf8").trim();
+        if (t) return { token: t, path: f };
+      }
+    } catch { /* illisible : on continue de remonter */ }
+    if (dir === root) break;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return null;
+}
+
 const BASE = (process.env.MEOWTRACK_SERVER_URL || "http://127.0.0.1:7702").replace(/\/+$/, "");
-const TOKEN = (process.env.MEOWTRACK_TOKEN || "").trim();
+const _localToken = readLocalToken(process.cwd());
+// Le fichier local prime sur l'env (token de DÉPÔT > token global éventuel).
+const TOKEN = (_localToken ? _localToken.token : process.env.MEOWTRACK_TOKEN || "").trim();
 const DEFAULT_REPO = (process.env.MEOWTRACK_DEFAULT_REPO || "").trim();
 const LOCK_REPO = (process.env.MEOWTRACK_LOCK_REPO || "").trim();
+
+if (_localToken) console.error(`[meowtrack] MCP : token de dépôt lu depuis ${_localToken.path} (accès scopé à ce dépôt).`);
+else if (!TOKEN) console.error(
+  "[meowtrack] MCP : aucun token (.meowtrack/token absent du cwd et MEOWTRACK_TOKEN vide). " +
+  "Si le serveur exige un token, copie celui du dépôt depuis le dashboard (bouton 🔑) dans .meowtrack/token."
+);
 
 // ── Client HTTP de l'API du serveur distant ──────────────────────────────────
 async function apiFetch(method, path, body) {

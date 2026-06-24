@@ -21,6 +21,7 @@
       <select id="repoSel" class="branch-select" title="Repo actif : toutes les vues (entrées, Vibes) sont scopées sur ce dépôt"></select>
       <button id="addRepoBtn" class="ghost" title="Ajouter un dépôt git à suivre">＋ repo</button>
       <button id="importReposBtn" class="ghost" title="Importer tous les dépôts git d'un dossier">📁 dossier</button>
+      <button id="repoTokenBtn" class="ghost" title="Token du dépôt actif : à copier dans .meowtrack/token pour authentifier le MCP / les skills">🔑 token</button>
       <button id="removeRepoBtn" class="ghost" title="Retirer le repo actif du meowtrack (suppression LOCALE : entrées, nœuds et clone .repos/ ; le dépôt GitHub distant n'est pas touché)">🗑 repo</button>
       <select id="branchSel" class="branch-select track-only" title="Branche de contexte : autocomplete @ + branche par défaut des nouvelles entrées"></select>
       <button id="updateBtn" class="ghost track-only" title="Cloner / mettre à jour le repo (git fetch + pull)">⟳ Mettre à jour</button>
@@ -315,6 +316,29 @@
         <div class="modal-actions">
           <button id="nodeCancelBtn" class="ghost">Annuler</button>
           <button id="nodeSaveBtn" class="primary">Enregistrer</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modale token de dépôt (NODE-372) -->
+    <div class="modal-backdrop" id="repoTokenBackdrop" hidden>
+      <div class="modal" role="dialog" aria-modal="true" style="width:min(560px,100%)">
+        <h2 id="repoTokenTitle">Token du dépôt</h2>
+        <p class="muted" style="margin-top:0">
+          Ce secret authentifie le <b>MCP</b> et les <b>skills</b> et limite leur accès à <b>ce seul dépôt</b>.
+          Copie-le dans <code>.meowtrack/token</code> à la racine du clone (déjà gitignoré). Le
+          <code>MEOWTRACK_TOKEN</code> global reste l'accès admin du dashboard.
+        </p>
+        <label class="full">Token
+          <div class="form-row" style="align-items:stretch">
+            <input id="repoTokenValue" type="text" readonly spellcheck="false" style="font-family:ui-monospace,monospace" />
+            <button id="repoTokenCopy" class="ghost" title="Copier dans le presse-papier">📋 Copier</button>
+          </div>
+        </label>
+        <p class="muted" id="repoTokenHint" style="font-size:12px"></p>
+        <div class="modal-actions">
+          <button id="repoTokenRotate" class="ghost" title="Régénère le token : invalide l'ancien — les MCP/skills devront recopier le nouveau">♻ Régénérer</button>
+          <button id="repoTokenClose" class="primary">Fermer</button>
         </div>
       </div>
     </div>

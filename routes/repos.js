@@ -6,7 +6,7 @@
 
 import { send, readBody, repoOf } from "../http-util.js";
 import { PORT } from "../config.js";
-import { listRepos, createRepo, getRepo, getRepoRow, updateRepo, deleteRepo, resolveRepoId, stats } from "../db.js";
+import { listRepos, createRepo, getRepo, getRepoRow, updateRepo, deleteRepo, rotateRepoToken, resolveRepoId, stats } from "../db.js";
 import {
   ensureRepo,
   importReposFromDir,
@@ -18,6 +18,7 @@ import {
   refreshPathsFor,
   rootForRepo,
   resolveRepoByPath,
+  provisionRepoTokenFile,
 } from "../repos.js";
 import { improveDescriptionWithClaude } from "../ai/claude.js";
 
@@ -33,10 +34,13 @@ function safeRoot(repoId) {
 
 export async function handle(ctx) {
   const { req, res, method, path, q } = ctx;
+  const auth = ctx.auth || { admin: true };
 
-  // GET /api/repos — liste des repos suivis.
+  // GET /api/repos — liste des repos suivis. Un token de DÉPÔT ne voit que SON dépôt
+  // (NODE-374) ; les tokens ne sont jamais inclus dans la liste (secret).
   if (method === "GET" && path === "/api/repos") {
-    send(res, 200, listRepos());
+    const all = listRepos();
+    send(res, 200, auth.admin ? all : all.filter((r) => r.id === auth.repoId));
     return true;
   }
   // POST /api/repos — ajouter un repo (clone immédiat si une url est fournie).
@@ -74,6 +78,22 @@ export async function handle(ctx) {
     send(res, 200, { slug: match ? match.slug : null, root: match ? match.root : null });
     return true;
   }
+  // POST /api/repos/:idOrSlug/token/rotate — régénère le token du dépôt (NODE-372),
+  // invalide l'ancien. L'accès est déjà gardé en amont (admin, ou détenteur du token
+  // de CE dépôt). Doit précéder le match /api/repos/:idOrSlug (chemin plus profond).
+  {
+    const rot = path.match(/^\/api\/repos\/([^/]+)\/token\/rotate$/);
+    if (rot && method === "POST") {
+      try {
+        const repo = rotateRepoToken(decodeURIComponent(rot[1]));
+        provisionRepoTokenFile(repo.id); // réécrit le fichier local du clone géré (best-effort)
+        send(res, 200, repo); // inclut le nouveau token (appelant autorisé)
+      } catch (e) {
+        send(res, 400, { error: e.message || String(e) });
+      }
+      return true;
+    }
+  }
   // /api/repos/:idOrSlug  et  /api/repos/:idOrSlug/update
   const repoMatch = path.match(/^\/api\/repos\/([^/]+)(\/update)?$/);
   if (repoMatch) {
@@ -85,7 +105,8 @@ export async function handle(ctx) {
       return true;
     }
     if (sub === "" && method === "GET") {
-      const r = getRepo(key);
+      // Accès déjà gardé (admin ou détenteur du token de CE dépôt) → on inclut le token.
+      const r = getRepo(key, true);
       send(res, r ? 200 : 404, r || { error: "not_found", repo: key });
       return true;
     }
@@ -108,14 +129,16 @@ export async function handle(ctx) {
   }
 
   // GET /api/meta?repo= — contexte git + stats + racine repo (scopé) + registre.
+  // Un token de DÉPÔT ne voit que SON dépôt dans la liste `repos` (NODE-374).
   if (method === "GET" && path === "/api/meta") {
     const id = repoOf(q);
+    const repos = listRepos();
     send(res, 200, {
       ...stats(id),
       git: gitContextFor(id),
       repoRoot: safeRoot(id),
       repo: getRepo(id),
-      repos: listRepos(),
+      repos: auth.admin ? repos : repos.filter((r) => r.id === auth.repoId),
       port: PORT,
     });
     return true;

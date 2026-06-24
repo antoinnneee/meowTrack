@@ -12,6 +12,7 @@
 // n'utilise que des symboles locaux.
 
 import Database from "better-sqlite3";
+import { randomBytes } from "node:crypto";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { trackerDbPathFor } from "../repos.js";
@@ -52,6 +53,7 @@ registry.exec(`
     local_path    TEXT,                                 -- override du chemin de clone (sinon .repos/<slug>/)
     default_branch TEXT,                                -- branche par défaut (autocomplete / contexte)
     is_default    INTEGER NOT NULL DEFAULT 0,           -- repo utilisé quand le paramètre repo est omis
+    token         TEXT,                                 -- secret PAR dépôt (NODE-372) : scope MCP/skills à CE dépôt côté serveur
     created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
   );
   -- Réglages globaux de l'instance (clé/valeur), ex. github_client_id éditable via l'UI.
@@ -64,6 +66,20 @@ registry.exec(`
 // (sélecteurs de branche, autocomplete « @ »). La branche de suivi est toujours
 // masquée par défaut côté repos.js, sans figurer dans cette liste.
 ensureColumn(registry, "repos", "hidden_branches", "hidden_branches TEXT NOT NULL DEFAULT '[]'");
+// Token PAR dépôt (NODE-372) : colonne additive + backfill idempotent (tout repo sans
+// token reçoit un secret crypto). Le token scope l'accès MCP/skills à CE dépôt côté
+// serveur ; le MEOWTRACK_TOKEN global reste l'accès admin/dashboard cross-repo.
+ensureColumn(registry, "repos", "token", "token TEXT");
+{
+  const missing = registry.prepare("SELECT id FROM repos WHERE token IS NULL OR token = ''").all();
+  if (missing.length) {
+    const upd = registry.prepare("UPDATE repos SET token = ? WHERE id = ?");
+    const tx = registry.transaction((rows) => {
+      for (const r of rows) upd.run(randomBytes(24).toString("hex"), r.id);
+    });
+    tx(missing);
+  }
+}
 
 // Horodatage indépendant de la connexion tracker → registre (toujours disponible,
 // même hors portée withRepo).

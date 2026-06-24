@@ -142,6 +142,38 @@ export function resolveRepoByPath(fsPath) {
   return best;
 }
 
+// ── NODE-372/376 : provisioning du fichier local `.meowtrack/token` ───────────
+// Écrit le token du dépôt dans `<racine du clone>/.meowtrack/token` (texte brut) et
+// s'assure que `.meowtrack/` est gitignoré (un token commité = fuite). Best-effort :
+// ne lève JAMAIS (serveur distant / FS différent → l'utilisateur copie depuis l'UI).
+// Le MCP/skills lancés depuis ce clone lisent ce fichier au boot (cf. mcp.js).
+function ensureGitignored(root, line) {
+  try {
+    const gi = join(root, ".gitignore");
+    let body = "";
+    try { body = readFileSync(gi, "utf8"); } catch { /* absent → on le crée */ }
+    const has = body.split(/\r?\n/).some((l) => l.trim() === line || l.trim() === line.replace(/\/$/, ""));
+    if (has) return;
+    const sep = body && !body.endsWith("\n") ? "\n" : "";
+    writeFileSync(gi, body + sep + line + "\n", "utf8");
+  } catch { /* best-effort */ }
+}
+export function provisionRepoTokenFile(repoOrId) {
+  try {
+    const repo = typeof repoOrId === "object" ? repoOrId : getRepoRow(repoOrId);
+    if (!repo || !repo.token) return { written: false, reason: "no_token" };
+    const root = rootForRepo(repo);
+    if (!existsSync(root)) return { written: false, reason: "no_clone" }; // clone pas encore présent
+    const dir = join(root, ".meowtrack");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "token"), repo.token + "\n", "utf8");
+    ensureGitignored(root, ".meowtrack/");
+    return { written: true, path: join(dir, "token") };
+  } catch (e) {
+    return { written: false, reason: e.message || String(e) };
+  }
+}
+
 // À appeler si un repo change de local_path/url (invalide la mémoïsation + l'index).
 export function invalidateRepo(repoId) {
   _rootCache.delete(repoId);
@@ -579,11 +611,17 @@ export function ensureRepo(repoId) {
   const root = rootForRepo(repo);
   if (!repo.url || !String(repo.url).trim()) {
     // Pas d'URL : on ne clone/pull pas, on lit le clone existant.
+    provisionRepoTokenFile(repo); // NODE-376 : dépose le token dans le clone (best-effort)
     return { ok: true, skipped: true, reason: "no_url", branch: gitContext(root).branch, commit: gitContext(root).commit, root };
   }
-  if (isGitClone(root)) return pullRepo(repoId);
+  if (isGitClone(root)) {
+    const out = pullRepo(repoId);
+    provisionRepoTokenFile(repo);
+    return out;
+  }
   const r = cloneInto(repo.url, root);
   if (r.ok) refreshPathsFor(repoId);
+  provisionRepoTokenFile(repo); // après clone : le dossier existe désormais
   const ctx = gitContext(root);
   return { ok: r.ok, cloned: r.ok, branch: ctx.branch, commit: ctx.commit, output: r.output, root };
 }

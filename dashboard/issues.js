@@ -126,6 +126,49 @@ async function removeRepoPrompt() {
   }
 }
 
+// ── Token du dépôt (NODE-372) : afficher / copier / régénérer ─────────────────
+// Affiche le secret par dépôt (à recopier dans .meowtrack/token pour le MCP/skills).
+// Le dashboard utilise le token admin global → il peut lire le token de tout dépôt.
+async function manageRepoToken() {
+  const cur = activeRepo();
+  const repo = state.repos.find((r) => r.slug === cur) || state.repos.find((r) => r.isDefault) || state.repos[0];
+  if (!repo) return;
+  let data;
+  try {
+    data = await api.get("/api/repos/" + encodeURIComponent(repo.slug));
+  } catch (e) {
+    alert("Erreur : " + e.message);
+    return;
+  }
+  $("#repoTokenTitle").textContent = `Token du dépôt « ${repo.name || repo.slug} »`;
+  $("#repoTokenValue").value = data.token || "(aucun)";
+  $("#repoTokenHint").textContent = "";
+  $("#repoTokenBackdrop").dataset.repo = repo.slug;
+  $("#repoTokenBackdrop").hidden = false;
+}
+async function copyRepoToken() {
+  const val = $("#repoTokenValue").value;
+  try {
+    await navigator.clipboard.writeText(val);
+    $("#repoTokenHint").textContent = "Copié dans le presse-papier ✓";
+  } catch {
+    $("#repoTokenValue").select(); // repli : sélection pour copie manuelle
+    $("#repoTokenHint").textContent = "Sélectionné — copie manuelle (Ctrl+C).";
+  }
+}
+async function rotateRepoToken() {
+  const slug = $("#repoTokenBackdrop").dataset.repo;
+  if (!slug) return;
+  if (!window.confirm("Régénérer le token ?\n\nL'ancien token est immédiatement invalidé : les MCP/skills qui l'utilisent devront recopier le nouveau dans .meowtrack/token.")) return;
+  try {
+    const r = await api.send("POST", "/api/repos/" + encodeURIComponent(slug) + "/token/rotate");
+    $("#repoTokenValue").value = r.token || "(aucun)";
+    $("#repoTokenHint").textContent = "Nouveau token généré ✓ — pense à le recopier dans .meowtrack/token.";
+  } catch (e) {
+    $("#repoTokenHint").textContent = "Échec : " + e.message;
+  }
+}
+
 // Importe en masse un dossier contenant plusieurs dépôts git : le serveur détecte
 // les clones (profondeur 1) et les enregistre par local_path — utilisés SUR PLACE,
 // aucune copie. Bascule sur le 1er repo ajouté si la liste en contenait. Le dernier
@@ -966,6 +1009,12 @@ export function init() {
   $("#addRepoBtn")?.addEventListener("click", addRepoPrompt);
   $("#importReposBtn")?.addEventListener("click", importReposPrompt);
   $("#removeRepoBtn")?.addEventListener("click", removeRepoPrompt);
+  // Token du dépôt (NODE-372) : afficher / copier / régénérer.
+  $("#repoTokenBtn")?.addEventListener("click", manageRepoToken);
+  $("#repoTokenCopy")?.addEventListener("click", copyRepoToken);
+  $("#repoTokenRotate")?.addEventListener("click", rotateRepoToken);
+  $("#repoTokenClose")?.addEventListener("click", () => ($("#repoTokenBackdrop").hidden = true));
+  $("#repoTokenBackdrop")?.addEventListener("mousedown", (e) => { if (e.target === $("#repoTokenBackdrop")) $("#repoTokenBackdrop").hidden = true; });
 
   const desc = $("#mDesc");
   desc.addEventListener("input", onDescInput);
