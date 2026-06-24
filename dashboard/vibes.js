@@ -775,7 +775,8 @@ function nodeGroup(n, p) {
   // Node d'activation : porte manuelle. « activé » = status 'done' (débloque les dépendants).
   const isAct = n.kind === "activation";
   const actCls = isAct ? " kind-activation" + (n.status === "done" ? " activated" : " deactivated") : "";
-  const g = svgEl("g", { transform: `translate(${p.x},${p.y})`, class: "g-node status-" + n.status + fxCls + blocked + actCls, "data-ref": n.ref, "data-id": String(n.id), "data-kind": n.kind || "normal" });
+  const runCls = n.runState === "running" ? " run-state-running" : "";
+  const g = svgEl("g", { transform: `translate(${p.x},${p.y})`, class: "g-node status-" + n.status + fxCls + blocked + actCls + runCls, "data-ref": n.ref, "data-id": String(n.id), "data-kind": n.kind || "normal" });
   // Tooltip natif : le label étant tronqué, le survol révèle le titre complet.
   const ttl = svgEl("title", {});
   ttl.textContent = isAct ? `${n.title} — node d'activation (${n.status === "done" ? "activé" : "inactif"})` : n.title;
