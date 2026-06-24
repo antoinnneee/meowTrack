@@ -256,6 +256,8 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--a
   display: flex; align-items: flex-start; justify-content: center; padding: 40px 16px; overflow: auto; z-index: 50;
 }
 .modal-backdrop[hidden] { display: none; }
+.modal .muted { color: var(--text-dim); line-height: 1.5; }
+.modal .muted code { background: var(--surface-2); padding: 0 4px; border-radius: 4px; font-family: ui-monospace, monospace; }
 .modal { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 22px; width: min(680px, 100%); }
 .modal h2 { margin: 0 0 16px; }
 .modal label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 12px; }
@@ -853,6 +855,23 @@ body.forest-pinned.view-vibes #vibesView { margin-right: var(--forest-pin-w); }
 .g-edge-del circle { fill: var(--surface); stroke: var(--bug); stroke-width: 2; transition: fill .12s; }
 .g-edge-del:hover circle { fill: var(--bug); }
 .g-link-temp.req { stroke: #ffa94d; }
+
+/* NODE-355 : rubber band de sélection (Shift+drag sur le fond). Même langage visuel
+   que le filaire de lien temporaire (accent translucide + pointillé) → état transitoire
+   reconnaissable. `vector-effect` garde un trait net quel que soit le zoom. */
+.g-selrect {
+  fill: color-mix(in srgb, var(--accent) 10%, transparent);
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 4;
+  rx: 6;
+  pointer-events: none;
+  vector-effect: non-scaling-stroke;
+}
+/* Nœud retenu par la sélection : halo bleu (--accent-2), distinct du violet déjà utilisé
+   pour le survol (g-highlight) et l'exécution en cours (run-state-running). */
+.g-node.g-selected .g-disc { stroke: var(--accent-2); stroke-width: 3; filter: drop-shadow(0 0 5px var(--accent-2)); }
+.g-node.g-selected .g-ring { stroke: var(--accent-2); }
 
 /* Arêtes de PRÉREQUIS : pointillé orangé distinct de la hiérarchie (pleine).
    Les tirets s'écoulent VERS le prérequis (sens du lien « from dépend de to »),

@@ -72,6 +72,10 @@ export const vibes = {
     suppressClick: false,   // ignore le prochain click (après un drag)
     hiddenStatuses: new Set(), // statuts masqués par les filtres (done/abandoned/paused)
     activePage: null,          // NODE-338 : page de graphe active (null = « Tout », forêt complète)
+    selection: new Set(),      // NODE-355 : ids des nœuds sélectionnés (rubber band / Shift+clic)
+    rectSel: null,             // NODE-355 : état du rubber band { sx, sy, ex, ey } en coords SVG + { cx, cy } écran
+    multiLinkIds: null,        // NODE-355 : ids source pour une action de lien groupée (prérequis/parent commun)
+    groupAfterCreate: null,    // NODE-355 : ids à rattacher sous le nœud qui vient d'être créé (« regrouper »)
   },
   pages: [],                   // NODE-338 : pages de graphe du repo [{ id, name, isDefault, nodeCount }]
 };
@@ -1121,6 +1125,7 @@ function renderGraph() {
   if (!vibes.graph.userView || vibes._ghostNodes.length) fitView(fitPos, svg);
   else applyViewBox(svg);
   renderMinimap(pos, hiddenIds);
+  if (vibes.graph.selection.size) applySelectionClasses(svg); // NODE-355 : la sélection survit aux re-rendus
   // Feu d'artifice sur les nœuds qui viennent d'apparaître / d'être atteints.
   if (!REDUCED) {
     for (const id of vibes.graph.spawned) sparkleNode(svg, id, false);
@@ -1574,6 +1579,7 @@ function startLinkMode(sourceId, kind = "child") {
 }
 function cancelLinkMode() {
   vibes.graph.linking = null;
+  vibes.graph.multiLinkIds = null; // NODE-355 : sort aussi du mode lien groupé
   if (vibes.graph._linkLine) { vibes.graph._linkLine.remove(); vibes.graph._linkLine = null; }
 }
 function updateLinkLine(clientX, clientY) {
@@ -1586,8 +1592,15 @@ function updateLinkLine(clientX, clientY) {
 async function finishLink(targetId) {
   const sourceId = vibes.graph.linking;
   const kind = vibes.graph.linkKind;
+  const multiIds = vibes.graph.multiLinkIds; // NODE-355 : lien groupé (capturé avant reset)
   cancelLinkMode();
-  if (!sourceId || targetId == null || targetId === sourceId) return;
+  if (targetId == null) return;
+  // NODE-355 : action groupée — applique le lien depuis CHAQUE nœud sélectionné.
+  if (multiIds && multiIds.length) {
+    await finishMultiLink(multiIds, targetId, kind);
+    return;
+  }
+  if (!sourceId || targetId === sourceId) return;
   if (kind === "requires" || kind === "gate") {
     // requires : source dépend de target (target = prérequis).
     // gate : INVERSÉ — le node d'activation (source) bloque la cible, donc la cible
@@ -1622,6 +1635,42 @@ async function deleteReqLink(fromId, toId) {
   } catch (e) {
     toast("Échec : " + e.message);
   }
+}
+
+// ── NODE-355 : actions de lien GROUPÉES (depuis la multi-sélection) ───────────
+// Réutilise le mode lien existant (filaire + clic cible), mais mémorise tous les ids
+// dans `multiLinkIds` ; `finishLink` route alors vers `finishMultiLink`.
+function startMultiLinkMode(ids, kind) {
+  cancelLinkMode();
+  vibes.graph.multiLinkIds = ids.slice();
+  startLinkMode(ids[0], kind); // affiche le filaire depuis le 1er nœud sélectionné
+  toast(kind === "requires"
+    ? `Clique le nœud PRÉREQUIS commun (les ${ids.length} nœuds en dépendront). Échap pour annuler.`
+    : `Clique le nœud PARENT (les ${ids.length} nœuds y seront rattachés). Échap pour annuler.`);
+}
+// Applique le lien choisi (cible) à chacun des nœuds de la sélection.
+async function finishMultiLink(ids, targetId, kind) {
+  let ok = 0, fail = 0;
+  for (const sid of ids) {
+    if (sid === targetId) continue; // jamais se lier à soi-même
+    try {
+      if (kind === "requires") {
+        await api.send("POST", "/api/nodes/links", { fromId: sid, toId: targetId });
+      } else { // 'child' : rattache chaque nœud sous la cible
+        await api.send("POST", `/api/nodes/${encodeURIComponent(sid)}/move`, { newParentId: targetId });
+        vibes.graph.spawned.add(sid);
+      }
+      ok++;
+    } catch (e) {
+      fail++;
+      if (/cycle|sous-arbre/i.test(e.message)) { /* ignoré : signalé dans le bilan */ }
+    }
+  }
+  clearSelection();
+  toast(kind === "requires"
+    ? `Prérequis commun ajouté à ${ok} nœud(s)${fail ? ` (${fail} échec/s)` : ""}.`
+    : `${ok} nœud(s) rattaché(s)${fail ? ` (${fail} échec/s — cycle ?)` : ""}.`);
+  loadForest();
 }
 
 // ── Poubelle de suppression d'arête (double-clic sur un lien) ─────────────────
@@ -1694,6 +1743,43 @@ function showReqDel(fromId, toId) {
   g.addEventListener("click", (e) => { e.stopPropagation(); hideReqDel(); deleteReqLink(fromId, toId); });
   $("#graphSvg").appendChild(g);
   positionReqDel();
+}
+
+// ── NODE-355 : sélection multi-nœuds (rubber band Shift+drag / Shift+clic) ────
+// Dessine / met à jour le rectangle de sélection (coords SVG, ajouté au <svg>).
+function drawSelRect(svg) {
+  const r = vibes.graph.rectSel;
+  if (!r) return;
+  let el = svg.querySelector(".g-selrect");
+  if (!el) { el = svgEl("rect", { class: "g-selrect" }); svg.appendChild(el); }
+  const x = Math.min(r.sx, r.ex), y = Math.min(r.sy, r.ey);
+  el.setAttribute("x", x); el.setAttribute("y", y);
+  el.setAttribute("width", Math.abs(r.ex - r.sx)); el.setAttribute("height", Math.abs(r.ey - r.sy));
+}
+// Ajoute à la sélection tous les nœuds dont le centre tombe dans le rectangle.
+function commitRectSel(svg) {
+  const r = vibes.graph.rectSel;
+  if (!r) return;
+  const x1 = Math.min(r.sx, r.ex), x2 = Math.max(r.sx, r.ex);
+  const y1 = Math.min(r.sy, r.ey), y2 = Math.max(r.sy, r.ey);
+  for (const [id, p] of vibes.graph.posMap) {
+    if (p && p.x >= x1 && p.x <= x2 && p.y >= y1 && p.y <= y2) vibes.graph.selection.add(id);
+  }
+  svg.querySelector(".g-selrect")?.remove();
+  applySelectionClasses(svg);
+}
+// Reflète l'état `selection` sur le DOM (classe .g-selected) ; purge les ids disparus.
+function applySelectionClasses(svg) {
+  if (!svg) return;
+  for (const id of [...vibes.graph.selection]) if (!vibes.byId.has(id)) vibes.graph.selection.delete(id);
+  svg.querySelectorAll(".g-node").forEach((el) => {
+    el.classList.toggle("g-selected", vibes.graph.selection.has(Number(el.dataset.id)));
+  });
+}
+function clearSelection() {
+  if (!vibes.graph.selection.size) return;
+  vibes.graph.selection.clear();
+  applySelectionClasses($("#graphSvg"));
 }
 
 const NODE_DRAG_THRESHOLD = 4; // px avant de basculer click → drag
@@ -1820,11 +1906,25 @@ function wireGraph() {
     hideEdgeDel();
     hideReqDel();
     const gNode = e.target.closest(".g-node");
+    // NODE-355 : Shift → sélection. Sur le fond : rubber band (pas de pan simultané).
+    // Sur un nœud : la bascule se fait au click (pas de drag déclenché ici).
+    if (e.shiftKey) {
+      if (!gNode) {
+        const at = clientToSvg(e.clientX, e.clientY);
+        vibes.graph.rectSel = { sx: at.x, sy: at.y, ex: at.x, ey: at.y, cx: e.clientX, cy: e.clientY };
+      }
+      return;
+    }
     if (gNode) {
       const id = Number(gNode.dataset.id);
-      const ids = subtreeIds(id);
+      // NODE-355 : si on saisit un nœud appartenant à une multi-sélection, le drag porte
+      // sur l'union des sous-arbres de tous les sélectionnés (déplacement en bloc).
+      const multi = vibes.graph.selection.size > 1 && vibes.graph.selection.has(id);
+      const ids = multi
+        ? [...new Set([...vibes.graph.selection].flatMap((i) => subtreeIds(i)))]
+        : subtreeIds(id);
       const start = new Map(ids.map((i) => [i, { ...(vibes.graph.posMap.get(i) || { x: 0, y: 0 }) }]));
-      vibes.graph.nodeDrag = { id, ids, start, cx: e.clientX, cy: e.clientY, moved: false, ref: gNode.dataset.ref };
+      vibes.graph.nodeDrag = { id, ids, start, cx: e.clientX, cy: e.clientY, moved: false, ref: gNode.dataset.ref, multiSel: multi };
     } else {
       vibes.graph.drag = { x: e.clientX, y: e.clientY, vx: vibes.graph.view.x, vy: vibes.graph.view.y };
     }
@@ -1832,6 +1932,13 @@ function wireGraph() {
 
   window.addEventListener("mousemove", (e) => {
     if (vibes.graph.linking) { updateLinkLine(e.clientX, e.clientY); return; }
+    // NODE-355 : tracé du rubber band en cours.
+    if (vibes.graph.rectSel) {
+      const at = clientToSvg(e.clientX, e.clientY);
+      vibes.graph.rectSel.ex = at.x; vibes.graph.rectSel.ey = at.y;
+      drawSelRect(svg);
+      return;
+    }
     const nd = vibes.graph.nodeDrag;
     if (nd) {
       if (!nd.moved && Math.hypot(e.clientX - nd.cx, e.clientY - nd.cy) < NODE_DRAG_THRESHOLD) return;
@@ -1852,6 +1959,7 @@ function wireGraph() {
     }
     const d = vibes.graph.drag;
     if (!d) return;
+    d.moved = true; // NODE-355 : un pan effectif ne doit pas vider la sélection au click suivant
     const v = vibes.graph.view;
     // Même correction d'échelle réelle pour le pan du fond (ctm.a/ctm.d).
     const ctm = svg.getScreenCTM();
@@ -1862,6 +1970,13 @@ function wireGraph() {
   });
 
   window.addEventListener("mouseup", () => {
+    // NODE-355 : clôture du rubber band → calcule la sélection puis efface le rect.
+    if (vibes.graph.rectSel) {
+      commitRectSel(svg);
+      vibes.graph.rectSel = null;
+      vibes.graph.suppressClick = true; // évite que le click suivant ne désélectionne aussitôt
+      return;
+    }
     const nd = vibes.graph.nodeDrag;
     if (nd && nd.moved) {
       vibes.graph.userView = true;   // on ne re-fit pas la vue après un placement manuel
@@ -1869,6 +1984,8 @@ function wireGraph() {
       persistPositions(nd.ids);
       svg.style.cursor = "";
     }
+    // NODE-355 : un pan du fond (drag déplacé) ne doit pas vider la sélection au click.
+    if (vibes.graph.drag && vibes.graph.drag.moved) vibes.graph.suppressClick = true;
     vibes.graph.nodeDrag = null;
     vibes.graph.drag = null;
   });
@@ -1882,9 +1999,19 @@ function wireGraph() {
       else cancelLinkMode();
       return;
     }
+    // NODE-355 : Shift+clic sur un nœud → bascule sa présence dans la sélection.
+    if (e.shiftKey && gNode) {
+      const id = Number(gNode.dataset.id);
+      if (vibes.graph.selection.has(id)) vibes.graph.selection.delete(id);
+      else vibes.graph.selection.add(id);
+      applySelectionClasses(svg);
+      return;
+    }
     if (gNode) { openNode(gNode.dataset.ref); return; }
     const req = e.target.closest(".g-req-edge");
     if (req) { showReqDel(Number(req.dataset.from), Number(req.dataset.to)); return; }
+    // NODE-355 : clic simple sur le fond → vide la sélection courante.
+    clearSelection();
   });
 
   // double-clic sur une arête de hiérarchie → poubelle de détachement.
@@ -1901,6 +2028,19 @@ function wireGraph() {
     if (gNode) {
       const id = Number(gNode.dataset.id);
       const ref = gNode.dataset.ref;
+      // NODE-355 : clic droit sur un nœud d'une multi-sélection → menu d'actions groupées.
+      if (vibes.graph.selection.size > 1 && vibes.graph.selection.has(id)) {
+        const sel = [...vibes.graph.selection];
+        const n = sel.length;
+        showCtxMenu(e.clientX, e.clientY, [
+          { label: `🗑 Supprimer la sélection (${n} nœuds)`, danger: true, onClick: () => deleteSelectedNodes(sel) },
+          { label: "🔒 Marquer un prérequis commun…", onClick: () => startMultiLinkMode(sel, "requires") },
+          { label: "🔗 Rattacher comme enfants…", onClick: () => startMultiLinkMode(sel, "child") },
+          { label: "📦 Regrouper sous un nouveau nœud…", onClick: () => groupSelectedUnderNew(sel) },
+          { label: "✖ Désélectionner tout", onClick: () => clearSelection() },
+        ]);
+        return;
+      }
       const node = vibes.byId.get(id);
       const isAct = node && node.kind === "activation";
       const items = [];
@@ -1972,6 +2112,12 @@ function wireGraph() {
     const t = e.target;
     if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
+    // NODE-355 : Suppr / Retour arrière → supprime la sélection multiple.
+    if ((e.key === "Delete" || e.key === "Backspace") && vibes.graph.selection.size > 0) {
+      e.preventDefault();
+      deleteSelectedNodes([...vibes.graph.selection]);
+      return;
+    }
     if (e.key === "+" || e.key === "=") { e.preventDefault(); zoomGraph(0.85); }
     else if (e.key === "-" || e.key === "_") { e.preventDefault(); zoomGraph(1 / 0.85); }
   });
@@ -2581,6 +2727,35 @@ async function deleteCurrentNode() {
   if (!vibes.currentNode) return;
   if (!confirm(`Supprimer ${vibes.currentNode.ref} et tout son sous-arbre ?`)) return;
   await deleteNodeById(vibes.currentNode.id);
+}
+// NODE-355 : supprime une sélection multiple (chaque nœud + son sous-arbre). On supprime
+// les plus profonds d'abord (enfants avant parents) ; les suppressions par cascade qui
+// échouent ensuite (404) sont silencieusement ignorées.
+async function deleteSelectedNodes(ids) {
+  const n = ids.length;
+  if (!n) return;
+  if (!confirm(`Supprimer ${n} nœud(s) et leurs sous-arbres ?`)) return;
+  const sorted = ids
+    .map((id) => ({ id, depth: (vibes.byId.get(id) || {}).depth || 0 }))
+    .sort((a, b) => b.depth - a.depth)
+    .map((o) => o.id);
+  clearSelection();
+  for (const id of sorted) {
+    try { await deleteNodeById(id); } catch { /* déjà supprimé par cascade */ }
+  }
+}
+// NODE-355 : crée un nouveau nœud (au barycentre de la sélection) puis y rattache tous
+// les nœuds sélectionnés comme enfants (reparentage appliqué dans saveNode après création).
+function groupSelectedUnderNew(ids) {
+  const pts = ids.map((id) => vibes.graph.posMap.get(id)).filter(Boolean);
+  if (pts.length) {
+    const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
+    const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
+    vibes.graph.pendingCreatePos = { x: cx, y: cy - 140 }; // un cran au-dessus du groupe
+  }
+  vibes.graph.groupAfterCreate = ids.slice();
+  vibes._createKind = null;
+  openNodeModal(null, null);
 }
 function backToForest() {
   closeStream();
@@ -3383,6 +3558,19 @@ async function saveNode() {
         // nœud avec posX/posY encore NULL (course) → il atterrit en auto-layout, pas au clic.
         await persistPositions([n.id]);
       }
+      // NODE-355 : « regrouper sous un nouveau nœud » → rattache la sélection sous le nouveau nœud.
+      const groupIds = vibes.graph.groupAfterCreate;
+      vibes.graph.groupAfterCreate = null;
+      if (groupIds && groupIds.length) {
+        for (const cid of groupIds) {
+          if (cid === n.id) continue;
+          try { await api.send("POST", `/api/nodes/${encodeURIComponent(cid)}/move`, { newParentId: n.id }); }
+          catch { /* cycle / sous-arbre : ignoré */ }
+        }
+        clearSelection();
+        loadForest(); // rester sur le graphe pour voir le regroupement
+        return;
+      }
       if (vibes.current) scheduleSubtreeRefetch();
       else if (at) loadForest(); // créé via le menu fond → rester sur le graphe pour le voir apparaître
       else { vibes.layout === "graph" ? openNode(n.ref) : loadForest(); }
@@ -3466,7 +3654,7 @@ export function initVibes() {
   });
   $("#forestModelSel").addEventListener("change", (e) => (vibes.model = e.target.value));
   setupChatImages(FOREST_CHAT_CTX); // NODE-350 : trombone + collage d'images (chat forêt)
-  const closeNodeModal = () => { $("#nodeBackdrop").hidden = true; vibes.graph.pendingCreatePos = null; };
+  const closeNodeModal = () => { $("#nodeBackdrop").hidden = true; vibes.graph.pendingCreatePos = null; vibes.graph.groupAfterCreate = null; };
   $("#nodeCancelBtn").addEventListener("click", closeNodeModal);
   $("#nodeSaveBtn").addEventListener("click", saveNode);
   $("#nodeBackdrop").addEventListener("mousedown", (e) => { if (e.target === $("#nodeBackdrop")) closeNodeModal(); });
@@ -3475,9 +3663,10 @@ export function initVibes() {
     if (graphSearchVisible()) { closeGraphSearch(); return; } // NODE-331 : ferme le pop de recherche
     if (vibes.graph.linking) { cancelLinkMode(); return; }
     if (document.getElementById("ctxMenu")) { hideCtxMenu(); return; }
+    if (vibes.graph.selection.size > 0) { clearSelection(); return; } // NODE-355 : vide la sélection
     if (vibes.graph.edgeDel) { hideEdgeDel(); return; }
     if (vibes._notesEditing && !$("#nodeView").hidden) { closeNotesEditor(); return; }
-    if (!$("#nodeBackdrop").hidden) { $("#nodeBackdrop").hidden = true; vibes.graph.pendingCreatePos = null; }
+    if (!$("#nodeBackdrop").hidden) { $("#nodeBackdrop").hidden = true; vibes.graph.pendingCreatePos = null; vibes.graph.groupAfterCreate = null; }
   });
   buildColorChips();
   wireGraph();
