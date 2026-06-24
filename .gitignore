@@ -11,8 +11,10 @@ meowtrack.db-shm
 # Dépendances Node.
 node_modules/
 
-# Données de l'outil Claude Code (worktrees, état de session) — jamais versionné.
-.claude/
+# Données de l'outil Claude Code (worktrees, état de session) — jamais versionné…
+.claude/*
+# …SAUF les skills meowtrack (NODE-357), eux VERSIONNÉS et déployés avec le dépôt.
+!.claude/skills/
 
 # Secrets de déploiement / config locale.
 .deployEnv

@@ -114,6 +114,36 @@ défaut du serveur est utilisé (ou `MEOWTRACK_DEFAULT_REPO` côté MCP). Cf. [M
 
 Le MCP et le dashboard partagent la même base (WAL → lectures concurrentes). Les deux peuvent tourner simultanément.
 
+## Skills (à la demande) — alternative légère au MCP
+
+Le serveur MCP charge **~43 schémas d'outils à CHAQUE session** Claude Code (coût en
+contexte permanent). Les **skills meowtrack** (`.claude/skills/`) couvrent les mêmes
+fonctions mais sont **invoqués à la demande** : seule la description (une ligne) est en
+contexte tant qu'on ne s'en sert pas. Ils attaquent **l'API HTTP `/api/*` en direct**
+(curl) — aucune dépendance au transport MCP.
+
+| Skill | Domaine |
+| --- | --- |
+| `meowtrack` | **Fondation** : base URL, auth (`.meowtrack/token`), résolution du dépôt, format de sortie. Réutilisée par les autres. |
+| `meowtrack-repos` | Registre des dépôts (lister / ajouter / importer / mettre à jour / retirer). |
+| `meowtrack-issues` | Suivi : CRUD, statut, ordre, références, commentaires, branches, chemins, stats. |
+| `meowtrack-nodes` | Arbre Vibes : CRUD, statut, notes, déplacement, ordre, liens de prérequis. |
+| `meowtrack-links` | Ponts issue ↔ jalon (lier / délier). |
+| `meowtrack-orchestrate` | Boucle agent : réclamer / peek / démarrer / clôturer un nœud + cycle de vie. |
+
+**Auth (NODE-372).** Les skills lisent le **token du dépôt** dans `.meowtrack/token` (à la
+racine du clone, gitignoré, déposé par le serveur ou copié depuis le dashboard via le bouton
+**🔑 token**) et l'envoient en `Authorization: Bearer`. Ce token **scope l'accès à ce seul
+dépôt** côté serveur — inutile de passer `?repo=` (le serveur l'épingle). À défaut, repli sur
+`MEOWTRACK_TOKEN` (admin global) + résolution du dépôt via `GET /api/repos/resolve?path=<cwd>`.
+
+**Installation.** Les skills sont **versionnés** dans `meowtrack/.claude/skills/` (le reste de
+`.claude/` reste gitignoré). Pour les utiliser depuis **un autre dépôt**, les copier (ou lier)
+dans `~/.claude/skills/` (portée globale) — ils résolvent le dépôt depuis le `cwd` /
+`.meowtrack/token`, donc fonctionnent quel que soit le projet courant. **MCP et skills sont
+complémentaires** : garder le MCP pour une intégration outillée riche, préférer les skills
+pour minimiser le contexte chargé.
+
 ## Modèle de données
 
 - **issue** : `ref` (code lisible `BUG-1`, `FEAT-2`…), `type`, `title`, `description`, `status`, `priority`, `tags[]`, `branch`/`commit` (capturés à la création), timestamps.
