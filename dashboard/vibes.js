@@ -2880,12 +2880,11 @@ function messageEl(m) {
   // JSON brut pendant que l'IA rédige son bloc d'actions.
   let statusEl = null;
   if (streaming) {
-    // Pendant le streaming on interprète le markdown au fil de l'eau (même rendu
-    // qu'à la finalisation). renderMarkdown échappe tout le HTML d'abord, donc le
-    // markdown incomplet (** non fermé, fence ouverte) reste juste non transformé.
+    // Pendant le streaming on affiche le texte brut (pas de rendu markdown) : il
+    // n'est interprété qu'à la finalisation du message. textContent neutralise
+    // tout HTML.
     if (m.body) {
-      body.classList.add("markdown-body");
-      body.innerHTML = renderMarkdown(m.body);
+      body.textContent = m.body;
     } else {
       const dots = document.createElement("span");
       dots.className = "dots";
@@ -2969,29 +2968,17 @@ function appendMessage(m) {
   feed.appendChild(messageEl(m));
   scrollFeed();
 }
-// Repeint le corps d'un message en streaming en interprétant le markdown.
-// Throttlé par requestAnimationFrame : les deltas arrivent token par token, mais
-// renderMarkdown re-parse tout le texte → on coalesce à au plus un rendu par frame.
+// Repeint le corps d'un message en streaming en texte brut (pas de rendu markdown :
+// il n'est interprété qu'à la finalisation). Throttlé par requestAnimationFrame :
+// les deltas arrivent token par token → on coalesce à au plus un repaint par frame.
 function paintStreamBody(s) {
   if (!s.bodyEl || s._raf) return;
   s._raf = requestAnimationFrame(() => {
     s._raf = null;
     if (!s.bodyEl) return;
-    if (s.text) {
-      s.bodyEl.classList.add("markdown-body");
-      // Le rendu markdown re-parse tout le texte à chaque frame sur un état
-      // intermédiaire (markdown incomplet). Si renderMarkdown lève, on retombe sur
-      // le texte brut : le streaming continue d'avancer au lieu de figer l'affichage
-      // au dernier bon rendu (bug NODE-292). textContent neutralise aussi tout HTML.
-      try {
-        s.bodyEl.innerHTML = renderMarkdown(s.text);
-      } catch {
-        s.bodyEl.classList.remove("markdown-body");
-        s.bodyEl.textContent = s.text;
-      }
-    } else {
-      s.bodyEl.textContent = "";
-    }
+    // textContent neutralise tout HTML ; le texte brut s'affiche tel quel jusqu'à
+    // la finalisation du message (qui applique alors renderMarkdown).
+    s.bodyEl.textContent = s.text || "";
     scrollFeed();
   });
 }
